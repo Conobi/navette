@@ -9,7 +9,7 @@
 #
 # The full main.mojo refactor (replacing the I/O loop in
 # examples/reverse_proxy/main.mojo) is intentionally deferred — that file
-# has pre-existing compilation errors on main (boucle.net path imports +
+# has pre-existing compilation errors on main (bouclette.net path imports +
 # duplicate __init__) that are out of scope for M2.5a. The purpose of this
 # test is to prove the trait surface supports the proxy pattern.
 

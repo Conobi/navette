@@ -69,12 +69,12 @@ from navette.tls import (
 )
 from navette.tls.config import QuicServerConfig
 
-from boucle import WatchLoop
-from boucle.proactor.completion import Completion
-from boucle.handle import OwnedHandle
-from boucle.net.socket import Socket
-from boucle.net.addr import SocketAddrV4, SocketAddrStorV4
-from boucle.net.options import Backlog
+from bouclette import WatchLoop
+from bouclette.proactor.completion import Completion
+from bouclette.handle import OwnedHandle
+from bouclette.net.socket import Socket
+from bouclette.net.addr import SocketAddrV4, SocketAddrStorV4
+from bouclette.net.options import Backlog
 
 from navette.runtime.socket_helpers import tcp_v4_nonblocking, udp_listener
 from navette.quic.trans_param import default_transport_params
@@ -764,7 +764,7 @@ struct ProxyHandler(Movable):
     free functions; this struct is just the dispatch + TLS-handshake
     completion driver.
 
-    It is no longer a `CompletionHandler`: boucle routes each CQE straight
+    It is no longer a `CompletionHandler`: bouclette routes each CQE straight
     to the `Completion` its SQE carried, so there is no single entry point
     receiving every completion and no token to decode. What is left of the
     old central switch is `_dispatch_conn`, which the five per-connection

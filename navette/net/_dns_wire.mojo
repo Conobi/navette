@@ -11,7 +11,7 @@ from std.io.file import FileHandle
 
 from navette.util.owned_alloc import Owned
 
-from boucle.net.ip import IpAddrV4
+from bouclette.net.ip import IpAddrV4
 
 
 # ── wire constants ─────────────────────────────────────────────────────────

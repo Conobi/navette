@@ -50,7 +50,7 @@ from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.ffi import external_call
 
-from boucle import (
+from bouclette import (
     WatchLoop,
     RecvFuture,
     SendFuture,
@@ -58,8 +58,8 @@ from boucle import (
     Socket,
     AcceptFuture,
 )
-from boucle.handle import OwnedHandle
-from boucle.net import Shutdown
+from bouclette.handle import OwnedHandle
+from bouclette.net import Shutdown
 
 from navette.http.handler import StreamHandler
 from navette.h1.handler_server import H1HandlerServer

@@ -14,7 +14,7 @@ These helpers replicate the syscall sequence that the equivalent
 SO_REUSEPORT`, `IPV6_V6ONLY=0`, `SOCK_NONBLOCK + SOCK_CLOEXEC`, `bind`
 + `listen` for TCP listeners; blocking `connect(2)` for clients) but
 hand back an `OwnedHandle` directly. They use only public symbols
-from `boucle.*` (`OwnedHandle`, address types via `ResolvedAddr`).
+from `bouclette.*` (`OwnedHandle`, address types via `ResolvedAddr`).
 
 When `Socket` gains a way to extract its underlying `OwnedHandle`
 (either by becoming `Movable` or via a consuming `into_handle()`),
@@ -25,7 +25,7 @@ from std.ffi import external_call
 from std.memory import Pointer
 from navette.util.owned_alloc import Owned
 
-from boucle.handle import RawHandle, OwnedHandle
+from bouclette.handle import RawHandle, OwnedHandle
 
 from navette.net.resolver import ResolvedAddr
 

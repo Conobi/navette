@@ -5,7 +5,7 @@ description = "h2_client — HTTP/2 client example using navette"
 requires-python = ">=3.11"
 dependencies = [
     "navette",
-    "boucle",
+    "bouclette",
     "mojox>=0.5",
     "mojo-compiler==1.0.0",
 ]
@@ -24,7 +24,7 @@ requires = [
     "mojo-compiler==1.0.0",
     "mojo-compiler-mojo-libs==1.0.0",
     "navette",
-    "boucle",
+    "bouclette",
 ]
 build-backend = "mojox_build"
 
@@ -39,4 +39,4 @@ prerelease = "allow"
 
 [tool.uv.sources]
 navette     = { path = "../..", editable = true }
-boucle      = { git = "https://github.com/Conobi/boucle", rev = "4195dc7a640608551803d5bb423b248a7963d73d" }
+bouclette   = { git = "https://github.com/Conobi/bouclette", rev = "ce958d6" }

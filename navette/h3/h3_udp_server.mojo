@@ -83,7 +83,7 @@ from std.collections.dict import Dict
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
-from boucle import (
+from bouclette import (
     WatchLoop,
     TimerFuture,
     BufferPool,
@@ -95,7 +95,7 @@ from boucle import (
     SocketAddrV4,
     SocketAddrV6,
 )
-from boucle.handle import OwnedHandle
+from bouclette.handle import OwnedHandle
 
 from navette.runtime.udp_socket_state import UdpSocketState
 from navette.tls.lib import TlsBackend
@@ -127,7 +127,7 @@ comptime PBUF_SIZE: Int = 1600
 comptime _RECV_CONTROL_CAPACITY: Int = 48
 
 # Peer address capacity used by the delivery header decoder. Must
-# match boucle's _NAME_CAPACITY (sizeof(sockaddr_in6) = 28 on x86_64).
+# match bouclette's _NAME_CAPACITY (sizeof(sockaddr_in6) = 28 on x86_64).
 comptime _RECV_NAME_CAPACITY: Int = 28
 
 # Control capacity for egress Messages. 24 bytes holds one IP_TOS (1 B)

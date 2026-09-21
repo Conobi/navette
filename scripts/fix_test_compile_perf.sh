@@ -30,12 +30,12 @@ elif [ ! -e "$target" ]; then
     echo "Already removed: $target"
 fi
 
-# Ensure boucle.mojoc is available alongside navette.mojoc so tests that
-# directly import boucle resolve without the site-packages path.
+# Ensure bouclette.mojoc is available alongside navette.mojoc so tests that
+# directly import bouclette resolve without the site-packages path.
 pkg_dir="$(dirname "$(dirname "$0")")/.mojox/build/pkg"
-boucle_src="$SITE_MOJO/boucle.mojoc"
-boucle_dst="$pkg_dir/boucle.mojoc"
-if [ -f "$boucle_src" ] && [ ! -e "$boucle_dst" ]; then
-    ln -s "$boucle_src" "$boucle_dst"
-    echo "Symlinked boucle.mojoc into $pkg_dir"
+bouclette_src="$SITE_MOJO/bouclette.mojoc"
+bouclette_dst="$pkg_dir/bouclette.mojoc"
+if [ -f "$bouclette_src" ] && [ ! -e "$bouclette_dst" ]; then
+    ln -s "$bouclette_src" "$bouclette_dst"
+    echo "Symlinked bouclette.mojoc into $pkg_dir"
 fi

@@ -5,7 +5,7 @@
 # (H2 variant) to demonstrate end-to-end streaming on both protocols with one
 # shared handler body.
 #
-# The handler shape is boucle's `CoroutineBody[State]`:
+# The handler shape is bouclette's `CoroutineBody[State]`:
 #   def (mut Yielder[State]) raises -> None
 # with the per-stream ctx reached through the typed state channel,
 # `yld.state()[]`. H2 and H3 streaming ctx are protocol-specific structs

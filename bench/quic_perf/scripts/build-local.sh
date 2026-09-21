@@ -11,7 +11,7 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 BUILD_DIR="$REPO_ROOT/bench/build"
-BOUCLE_DIR="$REPO_ROOT/../boucle"
+BOUCLETTE_DIR="$REPO_ROOT/../bouclette"
 JSONETTE_DIR="$REPO_ROOT/../jsonette"
 
 MARCH="${MARCH:-x86-64-v3+pclmul+aes}"
@@ -37,7 +37,7 @@ build_server() {
         uv run mojo build
         --march="$MARCH"
         -I "$REPO_ROOT"
-        -I "$BOUCLE_DIR"
+        -I "$BOUCLETTE_DIR"
     )
     if [ -n "$extra_i" ]; then
         cmd+=(-I "$extra_i")

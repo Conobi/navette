@@ -3,7 +3,7 @@
 # Smoke test: connect to 1.1.1.1:443 with TLS + ALPN h2, send a GET request
 # using H2Session, print the response body.
 #
-# Uses blocking POSIX sockets (no boucle event loop needed for a one-shot
+# Uses blocking POSIX sockets (no bouclette event loop needed for a one-shot
 # request). The TLS and H2 layers stay sans-I/O; we just shuttle bytes
 # synchronously.
 #

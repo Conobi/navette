@@ -13,7 +13,7 @@ from std.memory import Pointer
 from std.collections import Optional, Span
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
-from boucle import WatchLoop, TimerFuture
+from bouclette import WatchLoop, TimerFuture
 
 from navette.h3.h3_udp_server import (
     H3UdpServer,

@@ -2,7 +2,7 @@
 #
 # HTTP/2 TLS benchmark server on port 8443 (TCP).
 #
-# Uses navette's H2TcpServer[BenchHandler] with boucle's WatchLoop for
+# Uses navette's H2TcpServer[BenchHandler] with bouclette's WatchLoop for
 # all I/O (accept, recv, send). The library server handles TLS negotiation,
 # HTTP/2 framing, per-connection lifecycle, and buffer management internally.
 #
@@ -27,7 +27,7 @@ from bench.lib.handler import (
     _load_dataset,
 )
 
-from boucle import WatchLoop
+from bouclette import WatchLoop
 
 from interop.file_io import read_file, getenv_opt
 

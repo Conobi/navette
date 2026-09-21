@@ -17,7 +17,7 @@ from std.memory import Pointer
 from std.collections import Span
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
-from boucle.watch import WatchLoop
+from bouclette.watch import WatchLoop
 
 from navette.h2.h2_tcp_server import H2TcpServer
 from navette.http.handler import (

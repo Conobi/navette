@@ -2,7 +2,7 @@
 #
 # Session implementation backed by ClientConnection. Exposes a feed/drain
 # byte interface for tests and example I/O loops; the actual transport is
-# the caller's responsibility (boucle, raw socket, mock).
+# the caller's responsibility (bouclette, raw socket, mock).
 
 from std.collections.deque import Deque
 from std.collections.optional import Optional

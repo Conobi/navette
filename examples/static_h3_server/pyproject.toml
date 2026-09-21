@@ -5,7 +5,7 @@ description = "static_h3_server — fast static-payload HTTP/3 server using nave
 requires-python = ">=3.11"
 dependencies = [
     "navette",
-    "boucle",
+    "bouclette",
     "mojox>=0.5",
     "mojo-compiler==1.0.0",
 ]
@@ -22,7 +22,7 @@ requires = [
     "mojo-compiler==1.0.0",
     "mojo-compiler-mojo-libs==1.0.0",
     "navette",
-    "boucle",
+    "bouclette",
 ]
 build-backend = "mojox_build"
 
@@ -40,4 +40,4 @@ prerelease = "allow"
 
 [tool.uv.sources]
 navette     = { path = "../..", editable = true }
-boucle      = { git = "https://github.com/Conobi/boucle" }
+bouclette   = { git = "https://github.com/Conobi/bouclette", rev = "ce958d6" }

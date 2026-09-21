@@ -38,7 +38,7 @@ Each resolved dir is then compiled as a separate `.mojopkg` named after its leaf
 
 ## Stdlib-name-collision constraint
 
-Per `boucle/CLAUDE.md` and the existing src/ naming: Mojo 0.26.2's implicit stdlib imports cause local packages named `io`, `http`, `json` etc. to collide with `std.io`, `std.http`, `std.json`. **Auto-discovery under `package-root = "src"` would publish `io.mojopkg`, `http.mojopkg`, etc., which consumers cannot import without colliding with stdlib.** That option is dead.
+Per `bouclette/CLAUDE.md` and the existing src/ naming: Mojo 0.26.2's implicit stdlib imports cause local packages named `io`, `http`, `json` etc. to collide with `std.io`, `std.http`, `std.json`. **Auto-discovery under `package-root = "src"` would publish `io.mojopkg`, `http.mojopkg`, etc., which consumers cannot import without colliding with stdlib.** That option is dead.
 
 ## Three viable paths
 

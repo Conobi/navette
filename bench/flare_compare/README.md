@@ -89,12 +89,12 @@ implementation.
     ```
     <parent>/
         navette/                  ← this repo
-        boucle/                   ← required for navette image build
+        bouclette/                ← required for navette image build
         jsonette/           ← required for navette image build
     ```
 
-    `*-build` mirrors (`boucle-build`, `jsonette-build`) are
-    accepted as fallbacks. Override with the env vars `BOUCLE_DIR=`
+    `*-build` mirrors (`bouclette-build`, `jsonette-build`) are
+    accepted as fallbacks. Override with the env vars `BOUCLETTE_DIR=`
     and `JSONETTE_DIR=` if your layout differs.
 
 ### One-time setup
@@ -150,7 +150,7 @@ diff -u bench/flare_compare/results/<earlier-ts>-<sha>/summary.md \
 | `BENCH_PORT`          | `8080`        | Loopback port the server binds on                    |
 | `BENCH_PROBE_SEC`     | `20`          | Per-probe duration in the binary search             |
 | `BUILD_NET`           | `--network=host` | Passed to every `docker build` (NixOS DNS quirk) |
-| `BOUCLE_DIR`          | `../boucle`   | Mojo dep for navette image                           |
+| `BOUCLETTE_DIR`       | `../bouclette`| Mojo dep for navette image                           |
 | `JSONETTE_DIR`        | `../jsonette` | Mojo dep for navette image                     |
 
 ### Running on a remote bench host

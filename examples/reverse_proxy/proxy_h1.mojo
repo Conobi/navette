@@ -31,7 +31,7 @@ from navette.http import (
 from navette.http.session import RequestHandle
 from navette.tls import TlsConnection
 
-from boucle.handle import OwnedHandle
+from bouclette.handle import OwnedHandle
 
 from proxy_common import (
     ConnSendState,

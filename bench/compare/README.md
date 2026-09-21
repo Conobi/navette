@@ -18,7 +18,7 @@ full-coverage profiling (json, static, gateway, db, grpc, …) use
 ## One-time setup
 
 ```bash
-# Build navette image (uses bench/Dockerfile + boucle/jsonette
+# Build navette image (uses bench/Dockerfile + bouclette/jsonette
 # build contexts):
 bash bench/build.sh
 
@@ -43,7 +43,7 @@ Knobs (env vars):
 
 ## Why navette needs `--security-opt seccomp=unconfined`
 
-navette uses io_uring via boucle. Docker's default seccomp profile
+navette uses io_uring via bouclette. Docker's default seccomp profile
 restricts several io_uring syscalls; without `seccomp=unconfined` the
 worker processes raise on first I/O setup. The comparator servers
 (epoll-based) don't strictly need this flag, but they're given the

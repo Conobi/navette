@@ -58,7 +58,7 @@ for ex_dir in "${EXAMPLES[@]}"; do
     # without this the example links against whatever navette pkg its .venv was
     # last synced with — making the gate track .venv freshness, not example
     # correctness (it can false-pass on a stale-but-matching pkg and false-fail
-    # on a stale-but-diverged one). boucle is git-pinned (immutable rev) and
+    # on a stale-but-diverged one). bouclette is git-pinned (immutable rev) and
     # never goes stale; only the editable navette path-dep needs the reinstall.
     if LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
        uv sync --project "$ex_dir" --reinstall-package navette \

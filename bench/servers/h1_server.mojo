@@ -7,7 +7,7 @@
 #   BENCH_H1_ROLE      — log prefix tag (default "h1", set to "h1tls" by
 #                        the launcher for the TLS sidecar worker)
 #
-# Uses boucle's WatchLoop with per-connection RecvFuture/SendFuture handles
+# Uses bouclette's WatchLoop with per-connection RecvFuture/SendFuture handles
 # plus H1HandlerServer[BenchHandler]. Each connection owns Optional recv and
 # send futures; after each loop.step() the server polls every connection's
 # futures for completed results.
@@ -36,9 +36,9 @@ from bench.lib.handler import (
 )
 from interop.file_io import getenv_opt, read_file
 
-from boucle import WatchLoop, RecvFuture, SendFuture, AcceptFuture, Socket
-from boucle.net.addr import SocketAddrV4
-from boucle.net.options import Backlog
+from bouclette import WatchLoop, RecvFuture, SendFuture, AcceptFuture, Socket
+from bouclette.net.addr import SocketAddrV4
+from bouclette.net.options import Backlog
 
 # ---------------------------------------------------------------------------
 # Constants

@@ -27,8 +27,8 @@ critical path and must surface errors.
 
 from std.collections.optional import Optional
 
-from boucle.net.addr import SocketAddrV4, SocketAddrV6
-from boucle.net.ip import IpAddrV4
+from bouclette.net.addr import SocketAddrV4, SocketAddrV6
+from bouclette.net.ip import IpAddrV4
 
 from navette.net.resolver import ResolvedAddr, resolve_host
 from navette.runtime.socket_helpers import udp_connect, tcp_connect

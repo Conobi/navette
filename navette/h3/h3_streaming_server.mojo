@@ -1,13 +1,13 @@
 # src/h3/h3_streaming_server.mojo
 #
 # HTTP/3 server-side adapter for STREAMING handlers. Each stream gets a
-# 64 KiB stackful coroutine (boucle.coroutine) so the handler can suspend
+# 64 KiB stackful coroutine (bouclette.coroutine) so the handler can suspend
 # across upstream I/O boundaries (LLM token emission, SSE, gRPC server-
 # streaming, reverse proxy, file upload). Companion to
 # `src/h3/h3_sync_server.mojo` — that's the default tier; this is opt-in.
 #
 # R8' compile-time budget: size_of[H3StreamingCtx]() < 96 KiB.
-# R1' grep gate: this file IS allowed to import boucle.coroutine.
+# R1' grep gate: this file IS allowed to import bouclette.coroutine.
 #
 # Backpressure note: write_chunk calls H3Connection.send_data
 # directly and returns. H3 does not surface FC backpressure to the caller;
@@ -17,7 +17,7 @@
 # send buffers (bounded by the QUIC stream window). Production rate
 # limiting is the handler's responsibility, not the streaming-server's.
 #
-# API note: boucle's coroutine handle is `Coroutine[State]`, parametric on a
+# API note: bouclette's coroutine handle is `Coroutine[State]`, parametric on a
 # typed state value that both the caller and the body can reach. This adapter
 # instantiates it with `State = Pointer[H3StreamingCtx, MutUntrackedOrigin]`,
 # so a body declared as `CoroutineBody[H3StreamingState]`, i.e.
@@ -40,7 +40,7 @@
 # HANDLER CONTRACT: a body must never suspend unconditionally. `cancel()`
 # resumes the body in a loop until it returns, so a body that suspends
 # without ever checking `yld.is_cancelled()` (or `ctx.cancelled`) makes
-# connection teardown spin — boucle's 1000-iteration debug_assert catches
+# connection teardown spin — bouclette's 1000-iteration debug_assert catches
 # that in a checked build, but a release build would livelock. The
 # next_chunk / write_chunk helpers below poll both flags, so handlers built
 # from them are safe by construction; handlers that call `yld.suspend()`
@@ -52,7 +52,7 @@ from std.collections import Span
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 from std.sys.info import size_of
 
-from boucle.coroutine import (
+from bouclette.coroutine import (
     Coroutine,
     CoroutineBody,
     StackPool,
@@ -194,7 +194,7 @@ struct H3StreamingCtx(Movable):
 # Per-stream memory budget (R8' in the sprint roadmap)
 # ---------------------------------------------------------------------------
 #
-# The 64 KiB stack (boucle.coroutine default) is mmap'd by the StackPool and
+# The 64 KiB stack (bouclette.coroutine default) is mmap'd by the StackPool and
 # reached through coro_addr; it is not counted toward H3StreamingCtx's
 # direct size. The struct itself holds: Request + RecvBody + ResponseWriter +
 # Capabilities + stream_id + extra_data + coro_addr + 3 bools + body_frame_ring +

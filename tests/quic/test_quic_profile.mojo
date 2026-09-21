@@ -269,7 +269,7 @@ def test_report_text_canned() raises:
     assert_true("=== navette QUIC accept-loop profile ===" in s, "header present")
     assert_true("=== end ===" in s, "footer present")
     assert_true("On_flush events:" in s, "on_flush events line")
-    assert_true("Idle (boucle wait):" in s, "idle line")
+    assert_true("Idle (bouclette wait):" in s, "idle line")
     assert_true("Busy (in loop):" in s, "busy line")
     assert_true("Datagrams batched per flush" in s, "fan-out header")
     assert_true("size=1" in s, "size=1 label")
@@ -879,16 +879,16 @@ def test_alloc_tls_handle_us_dispatch() raises:
 
 def test_q7_gauge_sampling() raises:
     var p = AcceptProfile()
-    assert_true(len(p.active_boucle_count_samples) == 0, "samples start empty")
+    assert_true(len(p.active_bouclette_count_samples) == 0, "samples start empty")
     assert_true(len(p.in_flight_handshake_count_samples) == 0, "in_flight start empty")
     p.active_drive_count = UInt32(2)
     p.tick_profile_gauges(UInt64(0))
     p.tick_profile_gauges(UInt64(50_000))
     p.tick_profile_gauges(UInt64(150_000))
-    assert_true(len(p.active_boucle_count_samples) == 2, "cadence gate yields 2 samples")
+    assert_true(len(p.active_bouclette_count_samples) == 2, "cadence gate yields 2 samples")
     assert_true(len(p.in_flight_handshake_count_samples) == 2, "in_flight mirrors cadence")
-    assert_true(p.active_boucle_count_samples[0] == UInt32(2), "first sample = 2")
-    assert_true(p.active_boucle_count_samples[1] == UInt32(2), "third sample = 2")
+    assert_true(p.active_bouclette_count_samples[0] == UInt32(2), "first sample = 2")
+    assert_true(p.active_bouclette_count_samples[1] == UInt32(2), "third sample = 2")
     print("PASS: test_q7_gauge_sampling")
 
 

@@ -36,7 +36,7 @@ from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
 from navette.tls import TlsBackend
 from navette.tls.config import QuicServerConfig
-from boucle import WatchLoop
+from bouclette import WatchLoop
 
 
 struct StaticHandler(StreamHandler):

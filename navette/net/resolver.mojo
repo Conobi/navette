@@ -27,8 +27,8 @@ from navette.util.owned_alloc import Owned
 from std.collections.dict import Dict
 from std.collections.optional import Optional
 
-from boucle.net.addr import SocketAddrV4, SocketAddrV6
-from boucle.net.ip import IpAddrV4
+from bouclette.net.addr import SocketAddrV4, SocketAddrV6
+from bouclette.net.ip import IpAddrV4
 
 from navette.util.null_ptr import null_ptr
 

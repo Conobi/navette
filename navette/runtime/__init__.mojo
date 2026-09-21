@@ -4,8 +4,8 @@ Thin wrappers over the Linux socket syscalls the example servers use to
 create listeners and client connections (`tcp_listener`, `udp_listener`,
 `tcp_connect`, `udp_connect`, `tcp_v4_nonblocking`).
 
-The event loop itself is boucle's `WatchLoop` (or the lower-level
-`boucle.proactor.CompletionLoop`), which the H1/H2/H3 server runtimes drive
+The event loop itself is bouclette's `WatchLoop` (or the lower-level
+`bouclette.proactor.CompletionLoop`), which the H1/H2/H3 server runtimes drive
 directly.
 """
 

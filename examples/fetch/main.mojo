@@ -62,7 +62,7 @@ from std.os.env import getenv
 from std.os import makedirs
 from std.pathlib import Path
 
-from boucle.handle import OwnedHandle
+from bouclette.handle import OwnedHandle
 
 from navette.tls import TlsBackend, TlsClientConfig, TlsConnection
 from navette.tls.config import QuicClientConfig

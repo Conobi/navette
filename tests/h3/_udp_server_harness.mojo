@@ -20,7 +20,7 @@ from std.ffi import external_call
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
-from boucle import WatchLoop, Socket, SocketAddrV6
+from bouclette import WatchLoop, Socket, SocketAddrV6
 
 from navette.h3.connection import H3Connection
 from navette.h3.h3_handler_server import H3HandlerServer

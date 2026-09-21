@@ -5,7 +5,7 @@ description = "Pure-Mojo networking stack: QUIC, HTTP/3, HTTP/2, HTTP/1.1"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
-    "boucle @ git+https://github.com/Conobi/boucle",
+    "bouclette @ git+https://github.com/Conobi/bouclette",
     "mojox>=0.5",
     "mojo-compiler==1.0.0",
     "mojo-compiler-mojo-libs==1.0.0",
@@ -36,10 +36,10 @@ requires = [
     "mojo-compiler-mojo-libs==1.0.0",
     # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
     # which resolves cross-package imports). PEP 517 build envs are isolated from
-    # the project's runtime deps, so boucle is pinned here too.
+    # the project's runtime deps, so bouclette is pinned here too.
     # [tool.uv.sources] pins the exact git rev so PEP 517 build envs fetch the
-    # same boucle as runtime; the bare PEP 508 `boucle` falls back gracefully.
-    "boucle @ git+https://github.com/Conobi/boucle",
+    # same bouclette as runtime; the bare PEP 508 `bouclette` falls back gracefully.
+    "bouclette @ git+https://github.com/Conobi/bouclette",
 ]
 build-backend = "mojox_build"
 
@@ -53,7 +53,7 @@ test-roots = ["tests", "conformance/tests"]
 # before the source file, which is where `mojo run` still honours them.
 flags = ["-I", "conformance", "-I", "examples/reverse_proxy"]
 # mojox-build>=0.2.1 auto-injects -I<site-packages>/mojo_packages so
-# uv-installed deps (boucle) resolve without manual flags.
+# uv-installed deps (bouclette) resolve without manual flags.
 
 # Sdist hygiene. mojox-build's default walker prunes a fixed top-level set
 # (dist, build, .venv, …) but does NOT honour .gitignore, so anything the
@@ -138,4 +138,7 @@ pythonpath = ["."]
 [tool.uv]
 # mojo-compiler-mojo-libs still ships as a pre-release; allow uv to select it.
 prerelease = "allow"
+
+[tool.uv.sources]
+bouclette = { git = "https://github.com/Conobi/bouclette", rev = "ce958d6" }
 

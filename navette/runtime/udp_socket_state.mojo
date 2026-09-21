@@ -9,7 +9,7 @@ Capabilities degrade gracefully: unsupported features are silently
 disabled rather than raising.
 """
 
-from boucle.net.socket import Socket
+from bouclette.net.socket import Socket
 
 
 # Linux UDP_MAX_SEGMENTS (include/uapi/linux/udp.h).

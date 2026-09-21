@@ -2,7 +2,7 @@
 #
 # HTTP/3 QUIC benchmark server for HttpArena on port 8443 (UDP).
 #
-# Uses boucle's WatchLoop with multishot recvmsg via DatagramStream
+# Uses bouclette's WatchLoop with multishot recvmsg via DatagramStream
 # backed by a BufferPool, fire-and-forget sendmsg via WatchLoop.send_msg,
 # and one TimerFuture armed to the earliest connection deadline (1 ms
 # floor, 1000 ms ceiling). The event loop is:
@@ -41,7 +41,7 @@ from interop.udp import monotonic_us
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us as profile_monotonic_us
 from navette.util.null_ptr import null_ptr
 
-from boucle import (
+from bouclette import (
     WatchLoop,
     TimerFuture,
     BufferPool,
@@ -62,7 +62,7 @@ comptime PBUF_COUNT: Int = 1024
 comptime PBUF_SIZE: Int = 1600
 
 # Peer address capacity used by the delivery header decoder. Must
-# match boucle's _NAME_CAPACITY (sizeof(sockaddr_in6) = 28 on x86_64).
+# match bouclette's _NAME_CAPACITY (sizeof(sockaddr_in6) = 28 on x86_64).
 comptime _RECV_NAME_CAPACITY: Int = 28
 
 # Control capacity — zero for bench (no ECN/GRO needed).

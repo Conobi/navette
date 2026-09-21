@@ -3,7 +3,7 @@
 #
 # The examples are separate uv projects so each can be built standalone, which
 # means their pins can rot independently -- and they did: they sat on a b2
-# compiler, a mojox 0.3/0.4 floor and a boucle rev from before that package was
+# compiler, a mojox 0.3/0.4 floor and a bouclette rev from before that package was
 # reorganised, while the parent had moved on.
 #
 # This gate DERIVES the expected values from the parent pyproject.toml rather
@@ -20,9 +20,9 @@ cd "$REPO_ROOT"
 
 PARENT=pyproject.toml
 want_compiler=$(grep -m1 -Eo 'mojo-compiler==[0-9][^"]*' "$PARENT")
-want_boucle=$(grep -m1 -Eo 'Conobi/boucle#[0-9a-f]{40}' uv.lock | cut -d'#' -f2)
+want_bouclette=$(grep -m1 -Eo 'Conobi/bouclette#[0-9a-f]{40}' uv.lock | cut -d'#' -f2)
 
-if [ -z "$want_compiler" ] || [ -z "$want_boucle" ]; then
+if [ -z "$want_compiler" ] || [ -z "$want_bouclette" ]; then
   echo "check_examples_pins: FAIL — cannot read parent pins from $PARENT / uv.lock" >&2
   exit 2
 fi
@@ -35,8 +35,8 @@ for pp in examples/*/pyproject.toml; do
     echo "check_examples_pins: FAIL — $pp does not pin $want_compiler" >&2
     fail=1
   fi
-  if ! grep -qF "$want_boucle" "$pp"; then
-    echo "check_examples_pins: FAIL — $pp does not pin boucle $want_boucle" >&2
+  if ! grep -qF "$want_bouclette" "$pp"; then
+    echo "check_examples_pins: FAIL — $pp does not pin bouclette $want_bouclette" >&2
     fail=1
   fi
   # mojox-build reads its manifest from tool.mojox; tool.mojox-build is a dead

@@ -348,7 +348,7 @@ struct AcceptProfile(Copyable, Movable):
     # Gauge / sampling fields.
     var last_gauge_sample_us: UInt64
     var active_drive_count: UInt32
-    var active_boucle_count_samples: List[UInt32]
+    var active_bouclette_count_samples: List[UInt32]
     var in_flight_handshake_count_samples: List[UInt32]
     # Histogram buckets (List[UInt64]).
     var pkts_per_flush_buckets: List[UInt64]
@@ -379,7 +379,7 @@ struct AcceptProfile(Copyable, Movable):
         self.counters = InlineArray[UInt64, N_COUNTERS](fill=UInt64(0))
         self.last_gauge_sample_us = UInt64(0)
         self.active_drive_count = UInt32(0)
-        self.active_boucle_count_samples = List[UInt32]()
+        self.active_bouclette_count_samples = List[UInt32]()
         self.in_flight_handshake_count_samples = List[UInt32]()
         self.hs_latency_us = List[UInt64]()
         self.pkts_per_flush_buckets = _init_hist(8)
@@ -610,8 +610,8 @@ struct AcceptProfile(Copyable, Movable):
             self.last_gauge_sample_us = UInt64(1)
         else:
             self.last_gauge_sample_us = now_us
-        if len(self.active_boucle_count_samples) < 600:
-            self.active_boucle_count_samples.append(self.active_drive_count)
+        if len(self.active_bouclette_count_samples) < 600:
+            self.active_bouclette_count_samples.append(self.active_drive_count)
         if len(self.in_flight_handshake_count_samples) < 600:
             self.in_flight_handshake_count_samples.append(self.active_drive_count)
 
@@ -640,7 +640,7 @@ struct AcceptProfile(Copyable, Movable):
         var s = String("=== navette QUIC accept-loop profile ===\n")
         s += "Run wall-clock:           " + _fmt_duration_us(run_us) + "\n"
         s += "On_flush events:          " + _fmt_count(flush_n) + "\n"
-        s += "  Idle (boucle wait):     " + _fmt_duration_us(idle) + "  " + _fmt_pct(idle, idle + busy) + "\n"
+        s += "  Idle (bouclette wait):     " + _fmt_duration_us(idle) + "  " + _fmt_pct(idle, idle + busy) + "\n"
         s += "  Busy (in loop):         " + _fmt_duration_us(busy) + "  " + _fmt_pct(busy, idle + busy) + "\n\n"
         s += "Datagrams batched per flush (approx. CQE multishot batching):\n"
         s += _text_8bucket(self.pkts_per_flush_buckets, flush_n)
@@ -742,7 +742,7 @@ struct AcceptProfile(Copyable, Movable):
         # Gauge sampling.
         s += "Q7 gauge sampling (100ms cadence, capped 600 entries):\n"
         s += "  active_drive_count.live:                " + _fmt_count(UInt64(self.active_drive_count)) + "\n"
-        s += "  active_boucle_count_samples.len:        " + _fmt_count(UInt64(len(self.active_boucle_count_samples))) + "\n"
+        s += "  active_bouclette_count_samples.len:        " + _fmt_count(UInt64(len(self.active_bouclette_count_samples))) + "\n"
         s += "  in_flight_handshake_count_samples.len:  " + _fmt_count(UInt64(len(self.in_flight_handshake_count_samples))) + "\n\n"
         s += "Q7 batch-size histograms (8-bucket _pkts_per_flush_bucket dispatch):\n"
         s += "  sendmsg:\n" + _text_8bucket_indent4(self.sendmsg_batch_size_buckets)
@@ -924,7 +924,7 @@ struct AcceptProfile(Copyable, Movable):
         s += '    "sum_legs_us": ' + String(sum_legs_us) + ',\n'
         s += '    "unaccounted_pct": ' + String(unacct_drain_pct) + '\n  },\n'
         # Gauge samples.
-        s += '  "active_boucle_count_samples": ' + _json_arr32(self.active_boucle_count_samples) + ",\n"
+        s += '  "active_bouclette_count_samples": ' + _json_arr32(self.active_bouclette_count_samples) + ",\n"
         s += '  "in_flight_handshake_count_samples": ' + _json_arr32(self.in_flight_handshake_count_samples) + ",\n"
         s += _json_dict8("sendmsg_batch_size_buckets", self.sendmsg_batch_size_buckets) + ",\n"
         s += _json_dict8("recvmsg_batch_size_buckets", self.recvmsg_batch_size_buckets) + ",\n"

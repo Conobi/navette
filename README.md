@@ -22,7 +22,7 @@ Most networking stacks start at HTTP/1.1 and bolt on newer protocols as they age
 
 - **HTTP/3 first.** Designed against H3 semantics. H2 and H1 are projections, not vice versa.
 - **One client, three protocols.** ALPN picks the wire; you write the request once. H3 only on Alt-Svc — never speculative.
-- **Sans-I/O everywhere.** Zero I/O imports in `navette/`. Bring your own loop; we ship `boucle` (io_uring) for the examples.
+- **Sans-I/O everywhere.** Zero I/O imports in `navette/`. Bring your own loop; we ship `bouclette` (io_uring) for the examples.
 - **One native dep: rustls.** No OpenSSL, no BoringSSL. A thin C-FFI shim is the only non-Mojo code on the protocol path.
 - **Compression is the OS's problem.** Gzip and brotli go through the system `zlib` + `libbrotlidec`. A CVE is a package update, not our release.
 - **Strict by default.** 24 named leniency flags for H1 — every relaxation is opt-in, every shape is documented.
@@ -51,7 +51,7 @@ Navette is a Mojo library. You build against it with [`mojox`](https://pypi.org/
 ```bash
 # clone Navette + sibling deps
 git clone https://github.com/Conobi/navette.git
-git clone https://github.com/Conobi/boucle.git   # io_uring I/O backend
+git clone https://github.com/Conobi/bouclette.git # io_uring I/O backend
 
 cd navette
 ./scripts/gen_test_certs.sh   # one-time: self-signed certs for the examples

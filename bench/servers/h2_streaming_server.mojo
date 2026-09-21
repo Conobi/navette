@@ -26,12 +26,12 @@ from navette.h2.h2_streaming_server import H2StreamingServer
 
 from bench.lib.streaming_handler import llm_stream_h2_handler
 
-from boucle import WatchLoop
-from boucle.watch import RecvFuture, SendFuture, AcceptFuture
-from boucle.handle import OwnedHandle
-from boucle.net.socket import Socket
-from boucle.net.addr import SocketAddrV4
-from boucle.net.options import Backlog
+from bouclette import WatchLoop
+from bouclette.watch import RecvFuture, SendFuture, AcceptFuture
+from bouclette.handle import OwnedHandle
+from bouclette.net.socket import Socket
+from bouclette.net.addr import SocketAddrV4
+from bouclette.net.options import Backlog
 
 from navette.util.null_ptr import null_ptr
 

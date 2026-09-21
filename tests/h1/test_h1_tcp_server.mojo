@@ -15,7 +15,7 @@ No TLS setup needed — H1TcpServer is plaintext-only.
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
-from boucle import WatchLoop
+from bouclette import WatchLoop
 
 from navette.h1.h1_tcp_server import H1TcpServer
 from navette.h1.config import ParseConfig

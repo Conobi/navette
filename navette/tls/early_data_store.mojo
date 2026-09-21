@@ -222,7 +222,7 @@ trait EarlyDataStore(Movable):
     """Anti-replay store for 0-RTT acceptance.
 
     Implementations MUST be safe for single-thread cooperative-yield
-    access (boucle.coroutine). They MUST NOT block, MUST NOT perform
+    access (bouclette.coroutine). They MUST NOT block, MUST NOT perform
     I/O on the hot path, and MUST be amortised O(1) in per-call
     wall-clock cost under steady-state arrival.
 

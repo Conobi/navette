@@ -25,7 +25,7 @@ Expected: `HTTP/2 200` with `Hello, H2!\\n` body.
 """
 
 from navette.h2.h2_tcp_server import H2TcpServer
-from boucle.watch import WatchLoop
+from bouclette.watch import WatchLoop
 from navette.http.handler import (
     StreamHandler,
     Request,

@@ -92,7 +92,7 @@ def get_symbol_sizes(binary_path: str) -> dict[str, int]:
 
 def shorten_symbol(sym: str) -> str:
     """Shorten a mangled Mojo/C++ symbol to a readable name."""
-    if sym.startswith("navette::") or sym.startswith("boucle::"):
+    if sym.startswith("navette::") or sym.startswith("bouclette::"):
         segs = sym.split("::")
         paren = next((i for i, s in enumerate(segs) if "(" in s), len(segs))
         segs = segs[:paren]

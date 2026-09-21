@@ -6,9 +6,9 @@ requires-python = ">=3.11"
 prerelease-mode = "allow"
 
 [[package]]
-name = "boucle"
+name = "bouclette"
 version = "0.1.0"
-source = { git = "https://github.com/Conobi/boucle#4195dc7a640608551803d5bb423b248a7963d73d" }
+source = { git = "https://github.com/Conobi/bouclette?rev=ce958d6#ce958d68e144e9cccf360d14a06d619527a33f1c" }
 dependencies = [
     { name = "mojo-compiler" },
     { name = "mojo-compiler-mojo-libs" },
@@ -123,7 +123,7 @@ name = "navette"
 version = "0.1.0"
 source = { editable = "../../" }
 dependencies = [
-    { name = "boucle" },
+    { name = "bouclette" },
     { name = "mojo-compiler" },
     { name = "mojo-compiler-mojo-libs" },
     { name = "mojox" },
@@ -131,7 +131,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boucle", git = "https://github.com/Conobi/boucle" },
+    { name = "bouclette", git = "https://github.com/Conobi/bouclette?rev=ce958d6" },
     { name = "mojo-compiler", specifier = "==1.0.0" },
     { name = "mojo-compiler-mojo-libs", specifier = "==1.0.0" },
     { name = "mojox", specifier = ">=0.5" },
@@ -156,7 +156,7 @@ name = "navette-example-hello-h2-server"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
-    { name = "boucle" },
+    { name = "bouclette" },
     { name = "mojo-compiler" },
     { name = "mojox" },
     { name = "navette" },
@@ -169,7 +169,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boucle", git = "https://github.com/Conobi/boucle?rev=4195dc7a640608551803d5bb423b248a7963d73d" },
+    { name = "bouclette", git = "https://github.com/Conobi/bouclette?rev=ce958d6" },
     { name = "mojo-compiler", specifier = "==1.0.0" },
     { name = "mojox", specifier = ">=0.5" },
     { name = "navette", editable = "../../" },

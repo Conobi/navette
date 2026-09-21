@@ -18,16 +18,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MARCH="${MARCH:-x86-64-v3+pclmul+aes}"
 
 # Sibling repos — current (1.0.0) checkouts
-BOUCLE_NEW="${BOUCLE_DIR:-$(cd "$REPO_ROOT/../boucle" && pwd)}"
+BOUCLETTE_NEW="${BOUCLETTE_DIR:-$(cd "$REPO_ROOT/../bouclette" && pwd)}"
 JSONETTE_NEW="${JSONETTE_DIR:-$(cd "$REPO_ROOT/../jsonette" && pwd)}"
 
 # Old (b2) worktrees — created by setup
 NAVETTE_OLD="$REPO_ROOT/.worktrees/bench-old"
-BOUCLE_OLD="${BOUCLE_OLD_DIR:-$(cd "$REPO_ROOT/../boucle/.worktrees/bench-old" && pwd)}"
+BOUCLETTE_OLD="${BOUCLETTE_OLD_DIR:-$(cd "$REPO_ROOT/../bouclette/.worktrees/bench-old" && pwd)}"
 JSONETTE_OLD="${JSONETTE_OLD_DIR:-$(cd "$REPO_ROOT/../jsonette/.worktrees/bench-old" && pwd)}"
 
 # Export a git-tracked-only tree to a temp dir (avoids sending .cache, .venv,
-# .git, etc. to the Docker daemon — boucle's checkout alone is 16 GB with
+# .git, etc. to the Docker daemon — bouclette's checkout alone is 16 GB with
 # its .cache dir).
 export_clean() {
     local src="$1" dest="$2"
@@ -36,13 +36,13 @@ export_clean() {
 }
 
 build_image() {
-    local tag="$1" navette_src="$2" boucle_src="$3" jsonette_src="$4" march="$5"
+    local tag="$1" navette_src="$2" bouclette_src="$3" jsonette_src="$4" march="$5"
     echo ""
     echo "================================================================"
     echo "  Building $tag  (march=$march)"
-    echo "  navette:  $navette_src"
-    echo "  boucle:   $boucle_src"
-    echo "  jsonette: $jsonette_src"
+    echo "  navette:    $navette_src"
+    echo "  bouclette:  $bouclette_src"
+    echo "  jsonette:   $jsonette_src"
     echo "================================================================"
     echo ""
 
@@ -52,8 +52,8 @@ build_image() {
     trap cleanup EXIT
 
     # Export clean trees for sibling repos
-    echo "[build] Exporting clean boucle tree..."
-    export_clean "$boucle_src" "$tmpdir/boucle"
+    echo "[build] Exporting clean bouclette tree..."
+    export_clean "$bouclette_src" "$tmpdir/bouclette"
     echo "[build] Exporting clean jsonette tree..."
     export_clean "$jsonette_src" "$tmpdir/jsonette"
     echo "[build] Exporting clean navette tree..."
@@ -65,7 +65,7 @@ build_image() {
 
     docker build \
         -t "$tag" \
-        --build-context "boucle=$tmpdir/boucle" \
+        --build-context "bouclette=$tmpdir/bouclette" \
         --build-context "jsonette=$tmpdir/jsonette" \
         -f "$tmpdir/Dockerfile" \
         "$tmpdir/navette"
@@ -83,10 +83,10 @@ case "$target" in
             echo "Run: git worktree add .worktrees/bench-old origin/main --detach"
             exit 1
         fi
-        build_image "navette-bench:old" "$NAVETTE_OLD" "$BOUCLE_OLD" "$JSONETTE_OLD" "$MARCH"
+        build_image "navette-bench:old" "$NAVETTE_OLD" "$BOUCLETTE_OLD" "$JSONETTE_OLD" "$MARCH"
         ;;
     new)
-        build_image "navette-bench:new" "$REPO_ROOT" "$BOUCLE_NEW" "$JSONETTE_NEW" "$MARCH"
+        build_image "navette-bench:new" "$REPO_ROOT" "$BOUCLETTE_NEW" "$JSONETTE_NEW" "$MARCH"
         ;;
     both)
         if [ ! -d "$NAVETTE_OLD" ]; then
@@ -94,8 +94,8 @@ case "$target" in
             echo "Run: git worktree add .worktrees/bench-old origin/main --detach"
             exit 1
         fi
-        build_image "navette-bench:old" "$NAVETTE_OLD" "$BOUCLE_OLD" "$JSONETTE_OLD" "$MARCH"
-        build_image "navette-bench:new" "$REPO_ROOT" "$BOUCLE_NEW" "$JSONETTE_NEW" "$MARCH"
+        build_image "navette-bench:old" "$NAVETTE_OLD" "$BOUCLETTE_OLD" "$JSONETTE_OLD" "$MARCH"
+        build_image "navette-bench:new" "$REPO_ROOT" "$BOUCLETTE_NEW" "$JSONETTE_NEW" "$MARCH"
         ;;
     *)
         echo "usage: $0 [old|new|both]"

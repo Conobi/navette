@@ -22,7 +22,7 @@ from std.collections.dict import Dict
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
-from boucle import (
+from bouclette import (
     WatchLoop,
     TimerFuture,
     BufferPool,
@@ -33,7 +33,7 @@ from boucle import (
     SocketAddrV4,
     SocketAddrV6,
 )
-from boucle.handle import OwnedHandle
+from bouclette.handle import OwnedHandle
 
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig

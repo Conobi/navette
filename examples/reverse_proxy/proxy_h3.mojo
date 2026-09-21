@@ -80,8 +80,8 @@ from navette.tls import (
 from navette.h3.h3_udp_server import H3UdpServer
 from navette.runtime.socket_helpers import tcp_v4_nonblocking
 
-from boucle.handle import OwnedHandle
-from boucle.net.addr import SocketAddrV4, SocketAddrStorV4
+from bouclette.handle import OwnedHandle
+from bouclette.net.addr import SocketAddrV4, SocketAddrStorV4
 
 from proxy_common import (
     ConnSendState,

@@ -27,7 +27,7 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.h1.config import ParseConfig
 from navette.h1.h1_tcp_server import H1TcpServer
-from boucle import WatchLoop
+from bouclette import WatchLoop
 from navette.http.handler import (
     StreamHandler,
     Request,

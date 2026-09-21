@@ -102,10 +102,10 @@ Transitive (resolved by uv, not directly imported): `attrs`, `certifi`, `cffi`, 
 
 | Sibling       | Source                                            | Purpose                                                  | Consumers in navette                                                                                                |
 |---------------|---------------------------------------------------|----------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
-| **boucle**    | `$HOME/Projets/perso/boucle` (publishable via mojox-build, 2026-05-13) | io_uring loop, raw fd handles, stackful coroutines, Linux syscall raw types. | `src/io/{io_uring,io_uring_udp,udp_io,tcp_socket,udp_socket}.mojo`, `src/h{2,3}/*streaming_server.mojo`, `src/tls/lib.mojo`. |
+| **bouclette** | `$HOME/Projets/perso/bouclette` (publishable via mojox-build, 2026-05-13) | io_uring loop, raw fd handles, stackful coroutines, Linux syscall raw types. | `src/io/{io_uring,io_uring_udp,udp_io,tcp_socket,udp_socket}.mojo`, `src/h{2,3}/*streaming_server.mojo`, `src/tls/lib.mojo`. |
 | **jsonette** | `$HOME/Projets/perso/jsonette` — **bench-only**, NOT a navette runtime dep | jsonette bindings.                                       | `bench/handler.mojo` only. Consumed by `bench/build.sh` via `docker build --build-context jsonette=…`; does NOT flow through `pyproject.toml`. |
 
-Resolution: **boucle** is a navette runtime dep — declared in `pyproject.toml` (project + build-system + tool.uv.sources) and resolved by PEP 517 / `uv`. **jsonette** is only used by the HttpArena bench harness, so it lives outside the wheel/sdist boundary: the bench Dockerfile mounts a sibling checkout via `--build-context`. Removed from `pyproject.toml` on 2026-05-19 to slim the PEP 517 build env (one fewer private-SSH-only clone).
+Resolution: **bouclette** is a navette runtime dep — declared in `pyproject.toml` (project + build-system + tool.uv.sources) and resolved by PEP 517 / `uv`. **jsonette** is only used by the HttpArena bench harness, so it lives outside the wheel/sdist boundary: the bench Dockerfile mounts a sibling checkout via `--build-context`. Removed from `pyproject.toml` on 2026-05-19 to slim the PEP 517 build env (one fewer private-SSH-only clone).
 
 ---
 
@@ -145,7 +145,7 @@ Schema source of truth (in progress): `crates/librustls-mojo/symbols.toml` (scaf
 
 ## 4. C / system shared libraries
 
-All loaded via `external_call[...]` from Mojo or transitively through boucle:
+All loaded via `external_call[...]` from Mojo or transitively through bouclette:
 
 | Library          | Symbols                                                                  | Callsites                                                                  |
 |------------------|--------------------------------------------------------------------------|----------------------------------------------------------------------------|
@@ -153,7 +153,7 @@ All loaded via `external_call[...]` from Mojo or transitively through boucle:
 | **libresolv/NSS** | `getaddrinfo`, `freeaddrinfo`                                            | `src/io/resolver.mojo`                                                      |
 | **librt / vDSO** | `clock_gettime(CLOCK_MONOTONIC)`                                          | `src/io/resolver.mojo`, `src/quic/profile.mojo`                             |
 | **kernel random** | `getrandom`                                                              | `src/quic/{connection,retry,cid}.mojo`                                      |
-| **liburing**     | (via boucle's raw syscall bindings)                                       | `src/io/{io_uring,io_uring_udp,udp_io}.mojo` — delegates to boucle           |
+| **liburing**     | (via bouclette's raw syscall bindings)                                    | `src/io/{io_uring,io_uring_udp,udp_io}.mojo` — delegates to bouclette        |
 | **librustls_mojo.so** | ~57 `rlsm_*` symbols                                                | `src/tls/lib.mojo`, `src/http/decode.mojo`                                  |
 | **libpython**    | Mojo `std.python` runtime                                                 | Tests/conformance only                                                      |
 | **libssl3 / libcrypto3** | (bench runtime image only, h2load w/ quictls)                    | Not linked by navette runtime — only by `bench/Dockerfile.h2load-h3`       |
@@ -214,7 +214,7 @@ Vector directories under `conformance/vectors/`: `rfc7541` (HPACK), `rfc9000` (Q
 
 | Risk                                                                       | Blast radius                       | Mitigation                                       |
 |----------------------------------------------------------------------------|------------------------------------|--------------------------------------------------|
-| **boucle bug / unavailability**                                           | Entire I/O layer; both servers     | Now publishable (mojox-build). Pin in pyproject once published. |
+| **bouclette bug / unavailability**                                        | Entire I/O layer; both servers     | Now publishable (mojox-build). Pin in pyproject once published. |
 | **librustls-mojo / rustls breaking change**                                | All TLS / QUIC                     | Rust toolchain pinned; FFI codegen in progress (§2.3). |
 | **CPython 3.x minor bump**                                                | Test/conformance suite             | Full ABI, no Limited API. `oracle_env_check.py` catches lock drift; `requires-python>=3.11`. |
 | **Mojo compiler 0.26.x → 0.27.x**                                         | Compiles everywhere                | Pinned to `==0.26.2.0` in pyproject; bumps are intentional PRs. |
@@ -222,7 +222,7 @@ Vector directories under `conformance/vectors/`: `rfc7541` (HPACK), `rfc9000` (Q
 | **TQUIC repo deletion**                                                   | Perf comparator only               | Mirror plan in §4.1.                             |
 | **liburing version drift**                                                | io_uring backend stability         | Audit found no in-tree version pin — siblings install via apt. Add explicit pin if a future Dockerfile begins vendoring. |
 | **rustls `--features insecure` accidentally shipped**                     | Dev escape hatch in release binary | `scripts/build_rustls.sh release` + post-build `nm` check; `scripts/check_integrations.sh` WARNs on stray insecure symbol. |
-| **Sibling repo (boucle) without pyproject `[build-system]`** | `uv add` against it fails       | Fixed 2026-05-13 — boucle has `[build-system]` + `[tool.mojox-build]`. (jsonette same fix at the time but removed from pyproject.toml 2026-05-19 — bench-only, doesn't go through PEP 517.) |
+| **Sibling repo (bouclette) without pyproject `[build-system]`** | `uv add` against it fails    | Fixed 2026-05-13 — bouclette has `[build-system]` + `[tool.mojox-build]`. (jsonette same fix at the time but removed from pyproject.toml 2026-05-19 — bench-only, doesn't go through PEP 517.) |
 | **Mojo flat-layout setuptools-discovery footgun**                          | Library posture upgrade blocked    | Documented (§1.3 plan); requires `src/navette/` reshuffle. |
 
 ---

@@ -178,8 +178,8 @@ def _free_stream(ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]):
 # initialises the block in place via `init_pointee_move`; on `release`,
 # the caller destroys the pointee then hands the bare memory back here.
 #
-# Why this exists: the pre-Path-A per-connection coroutine pool (boucle's
-# stackful tier, today `boucle.coroutine.StackPool`) implicitly warmed the
+# Why this exists: the pre-Path-A per-connection coroutine pool (bouclette's
+# stackful tier, today `bouclette.coroutine.StackPool`) implicitly warmed the
 # per-connection cache lines because it recycled 64 KiB stack frames at the
 # same address across requests. Path A's sync
 # handler killed that locality (every `_heap_alloc[CoroStreamCtx]` is

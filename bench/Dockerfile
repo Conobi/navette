@@ -3,7 +3,7 @@
 #
 # Build:
 #   docker build -t navette-bench:latest \
-#       --build-context boucle=../boucle \
+#       --build-context bouclette=../bouclette \
 #       --build-context jsonette=../jsonette \
 #       -f bench/Dockerfile .
 
@@ -38,7 +38,7 @@ WORKDIR /app
 # bench binaries are produced by `mojox build` with explicit `-I` paths
 # (see the per-server build steps further down). All we need from the
 # Python side is the mojox CLI + the Mojo compiler. Skipping the
-# project's [build-system] avoids dragging boucle's git+ssh source
+# project's [build-system] avoids dragging bouclette's git+ssh source
 # into the build env, which would require an SSH client + deploy key
 # the bench image deliberately does not carry.
 RUN cat > pyproject.toml <<'EOF'
@@ -59,16 +59,16 @@ package = false
 EOF
 RUN uv sync
 
-# Copy boucle source (from --build-context boucle=../boucle) and
+# Copy bouclette source (from --build-context bouclette=../bouclette) and
 # jsonette (from --build-context jsonette=../jsonette).
-# `mojox build` consumes them via -I /boucle / -I /jsonette; neither
+# `mojox build` consumes them via -I /bouclettette / -I /jsonette; neither
 # is installed as a Python package.
-COPY --from=boucle . /boucle
+COPY --from=bouclette . /bouclette
 COPY --from=jsonette . /jsonette
 
 # Copy the rest of the source tree, then re-stamp the stub pyproject
 # so the venv mojox we installed earlier isn't disturbed by uv
-# re-resolving the project's git+ssh boucle dep when the canonical
+# re-resolving the project's git+ssh bouclette dep when the canonical
 # pyproject.toml lands on top. The COPY . . above clobbers it; the
 # re-stamp keeps the venv untouched for the mojox builds below.
 COPY . .
@@ -95,10 +95,10 @@ RUN mkdir -p lib && cp crates/librustls-mojo/target/release/liblibrustls_mojo.so
 # mojox 0.5+ is config-driven (no positional-file CLI), so we call the
 # compiler through the venv's `mojo` binary and bypass `uv run` so uv
 # doesn't try to re-resolve the (now-stubbed) project.
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /boucle -I /jsonette bench/servers/h1_server.mojo -o /bench-h1
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /boucle -I /jsonette bench/servers/h2_server.mojo -o /bench-h2
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /boucle -I /jsonette bench/servers/h3_server.mojo -o /bench-h3
-RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /boucle bench/launcher.mojo -o /bench-launcher
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /bouclette -I /jsonette bench/servers/h1_server.mojo -o /bench-h1
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /bouclette -I /jsonette bench/servers/h2_server.mojo -o /bench-h2
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /bouclette -I /jsonette bench/servers/h3_server.mojo -o /bench-h3
+RUN LD_LIBRARY_PATH=lib /app/.venv/bin/mojo build --march=x86-64-v3+pclmul+aes -I . -I /bouclette bench/launcher.mojo -o /bench-launcher
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime

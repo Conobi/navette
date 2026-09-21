@@ -8,7 +8,7 @@
 # No TLS/QUIC needed — tests drive the H2 framing layer directly.
 #
 # Run with:
-#   uv run mojo run -I . -I conformance -I "$HOME/Projets/perso/boucle" \
+#   uv run mojo run -I . -I conformance -I "$HOME/Projets/perso/bouclette" \
 #       tests/test_h2_streaming_server.mojo
 
 from std.memory import Pointer
