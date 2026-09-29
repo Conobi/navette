@@ -12,6 +12,7 @@ from navette.quic.stream import (
     RecvState,
     Stream,
 )
+from navette.quic.packet_builder import emit_stream_frames, SentStreamFrame
 
 
 # ── Setup helpers ──────────────────────────────────────────────────────────────
@@ -491,6 +492,7 @@ def main() raises:
     test_sendable_deque_add_dedup()
     test_sendable_deque_remove_lazy()
     test_mark_control_lists()
+    test_lost_data_after_fin_is_retransmitted()
 
     print("All test_quic_stream_map tests passed.")
 
@@ -558,3 +560,52 @@ def test_mark_control_lists() raises:
     assert_equal_int(len(sm.control_stop_sending), 1, "mark control: stop_sending len=1")
     assert_equal_int(sm.control_stop_sending[0], 12, "mark control: stop_sending[0]=12")
     print("  test_mark_control_lists: PASS")
+
+
+def test_lost_data_after_fin_is_retransmitted() raises:
+    """A stream whose FIN was framed (DATA_SENT) still retransmits lost data.
+
+    Mirrors `QuicConnection._on_app_pkt_lost`: `on_loss` rewinds the send
+    cursor and re-queues the stream. If emission skipped DATA_SENT streams
+    the lost bytes would never be resent and, with nothing ack-eliciting
+    left in flight, no PTO would re-arm: the peer idles out.
+    """
+    var sm = make_stream_map(True)
+    setup_peer_limits(sm)
+    var sid = Int(sm.open_stream(True))
+    var p = sm.stream_ptr(sid)
+    var body = List[Byte](length=3000, fill=Byte(0x41))
+    p[].send_buf.value().write(Span(body), True)
+    sm.add_sendable(sid)
+
+    var records = List[SentStreamFrame]()
+    var payload = List[Byte]()
+    var used = 0
+    emit_stream_frames(sm, records, payload, 100_000, used)
+    for _ in range(4):
+        if sid not in sm.sendable_set:
+            break
+        emit_stream_frames(sm, records, payload, 100_000, used)
+    assert_true(
+        p[].send_state.value() == SendState.DATA_SENT,
+        "lost after fin: FIN framed -> DATA_SENT",
+    )
+    assert_true(len(records) >= 2, "lost after fin: body split over frames")
+    var lost_off = records[0].offset
+    var lost_len = records[0].length
+
+    # Declare the first frame lost, exactly as _on_app_pkt_lost does.
+    p[].send_buf.value().on_loss(lost_off, lost_len)
+    assert_true(p[].send_buf.value().has_pending(), "lost after fin: pending")
+    sm.add_sendable(sid)
+
+    var retx = List[SentStreamFrame]()
+    var retx_payload = List[Byte]()
+    var retx_used = 0
+    emit_stream_frames(sm, retx, retx_payload, 100_000, retx_used)
+    assert_true(len(retx) >= 1, "lost after fin: lost bytes re-emitted")
+    assert_equal_int(
+        Int(retx[0].offset), Int(lost_off), "lost after fin: retx offset"
+    )
+    _ = p[].id
+    print("  test_lost_data_after_fin_is_retransmitted: PASS")

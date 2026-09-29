@@ -434,7 +434,10 @@ def emit_stream_frames(
             stream_map.remove_sendable(sid)
             continue
         var ss = p[].send_state.value()
-        if ss != SendState.READY and ss != SendState.SEND:
+        # DATA_SENT stays sendable: once the FIN is framed, lost bytes
+        # re-queued by on_loss are only ever resent from here.
+        if (ss != SendState.READY and ss != SendState.SEND
+                and ss != SendState.DATA_SENT):
             stream_map.remove_sendable(sid)
             continue
         var stream_avail = p[].fc_send.value().available()
