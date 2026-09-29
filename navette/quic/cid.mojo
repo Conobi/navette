@@ -55,13 +55,6 @@ struct CidEntry(Copyable, Movable):
         self.state = copy.state
         self.advertised = copy.advertised
 
-    def __init__(out self, *, deinit move: Self):
-        self.cid = move.cid^
-        self.sequence = move.sequence
-        self.reset_token = move.reset_token^
-        self.state = move.state
-        self.advertised = move.advertised
-
 
 # ── CidManager ────────────────────────────────────────────────────────────────
 
@@ -109,8 +102,7 @@ struct CidManager(Movable):
         var rbuf = _cid_alloc[UInt8](32)
         _ = external_call["getrandom", Int](rbuf, UInt64(32), UInt32(0))
         self.server_secret = List[Byte](capacity=32)
-        for i in range(32):
-            self.server_secret.append(rbuf[unsafe_offset=i])
+        self.server_secret.extend(Span(unsafe_ptr=rbuf, length=32))
         rbuf.unsafe_free()
 
         # Build initial local CID entry (seq=0, Active) with a reset token.
@@ -130,8 +122,7 @@ struct CidManager(Movable):
 
         # Build initial remote CID entry (seq=0, Active, empty token).
         var empty_token = List[Byte](capacity=16)
-        for _ in range(16):
-            empty_token.append(Byte(0))
+        empty_token.resize(16, Byte(0))
         var remote_entry = CidEntry(
             initial_remote_cid, UInt64(0), empty_token, CID_ACTIVE
         )
@@ -146,20 +137,6 @@ struct CidManager(Movable):
         self.retire_queue_cap = Int(peer_active_limit * UInt64(8))
         self.highest_retire_prior_to = UInt64(0)
 
-    def __init__(out self, *, deinit move: Self):
-        self.local_cids = move.local_cids^
-        self.local_next_seq = move.local_next_seq
-        self.local_retire_prior_to = move.local_retire_prior_to
-        self.remote_cids = move.remote_cids^
-        self.remote_active_cid_seq = move.remote_active_cid_seq
-        self.local_active_limit = move.local_active_limit
-        self.peer_active_limit = move.peer_active_limit
-        self.retire_queue = move.retire_queue^
-        self.retire_queue_cap = move.retire_queue_cap
-        self.highest_retire_prior_to = move.highest_retire_prior_to
-        self._lib = move._lib^
-        self.server_secret = move.server_secret^
-
     # ── CID generation ────────────────────────────────────────────────────────
 
     def generate_cid(mut self) raises -> List[Byte]:
@@ -167,8 +144,7 @@ struct CidManager(Movable):
         var buf = _cid_alloc[UInt8](8)
         _ = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
         var cid = List[Byte](capacity=8)
-        for i in range(8):
-            cid.append(buf[unsafe_offset=i])
+        cid.extend(Span(unsafe_ptr=buf, length=8))
         buf.unsafe_free()
         return cid^
 
@@ -389,8 +365,7 @@ def _hmac_sha256_truncate16(
 
     # Truncate to first 16 bytes for the reset token.
     var token = List[Byte](capacity=16)
-    for i in range(16):
-        token.append(out_ptr[unsafe_offset=i])
+    token.extend(Span(unsafe_ptr=out_ptr, length=16))
 
     key_ptr.unsafe_free()
     msg_ptr.unsafe_free()

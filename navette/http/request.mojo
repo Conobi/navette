@@ -39,11 +39,6 @@ struct RequestBody(Movable):
         self._bytes = _bytes^
         self._stream = _stream^
 
-    def __init__(out self, *, deinit move: Self):
-        self._tag = move._tag
-        self._bytes = move._bytes^
-        self._stream = move._stream^
-
     @staticmethod
     def buffered(var bytes: List[Byte]) -> Self:
         return Self(_tag=_REQ_BODY_BUFFERED, _bytes=bytes^, _stream=Optional[DetachedBody]())

@@ -13,131 +13,34 @@ struct StaticTable(Copyable, Movable):
     var _index: StaticTableIndex
 
     def __init__(out self):
-        self._entries = List[Tuple[String, String]]()
-        # Index 0 is unused (1-based indexing); store a dummy entry.
-        self._entries.append((String(""), String("")))
-        #  1
-        self._entries.append((String(":authority"), String("")))
-        #  2
-        self._entries.append((String(":method"), String("GET")))
-        #  3
-        self._entries.append((String(":method"), String("POST")))
-        #  4
-        self._entries.append((String(":path"), String("/")))
-        #  5
-        self._entries.append((String(":path"), String("/index.html")))
-        #  6
-        self._entries.append((String(":scheme"), String("http")))
-        #  7
-        self._entries.append((String(":scheme"), String("https")))
-        #  8
-        self._entries.append((String(":status"), String("200")))
-        #  9
-        self._entries.append((String(":status"), String("204")))
-        # 10
-        self._entries.append((String(":status"), String("206")))
-        # 11
-        self._entries.append((String(":status"), String("304")))
-        # 12
-        self._entries.append((String(":status"), String("400")))
-        # 13
-        self._entries.append((String(":status"), String("404")))
-        # 14
-        self._entries.append((String(":status"), String("500")))
-        # 15
-        self._entries.append((String("accept-charset"), String("")))
-        # 16
-        self._entries.append((String("accept-encoding"), String("gzip, deflate")))
-        # 17
-        self._entries.append((String("accept-language"), String("")))
-        # 18
-        self._entries.append((String("accept-ranges"), String("")))
-        # 19
-        self._entries.append((String("accept"), String("")))
-        # 20
-        self._entries.append((String("access-control-allow-origin"), String("")))
-        # 21
-        self._entries.append((String("age"), String("")))
-        # 22
-        self._entries.append((String("allow"), String("")))
-        # 23
-        self._entries.append((String("authorization"), String("")))
-        # 24
-        self._entries.append((String("cache-control"), String("")))
-        # 25
-        self._entries.append((String("content-disposition"), String("")))
-        # 26
-        self._entries.append((String("content-encoding"), String("")))
-        # 27
-        self._entries.append((String("content-language"), String("")))
-        # 28
-        self._entries.append((String("content-length"), String("")))
-        # 29
-        self._entries.append((String("content-location"), String("")))
-        # 30
-        self._entries.append((String("content-range"), String("")))
-        # 31
-        self._entries.append((String("content-type"), String("")))
-        # 32
-        self._entries.append((String("cookie"), String("")))
-        # 33
-        self._entries.append((String("date"), String("")))
-        # 34
-        self._entries.append((String("etag"), String("")))
-        # 35
-        self._entries.append((String("expect"), String("")))
-        # 36
-        self._entries.append((String("expires"), String("")))
-        # 37
-        self._entries.append((String("from"), String("")))
-        # 38
-        self._entries.append((String("host"), String("")))
-        # 39
-        self._entries.append((String("if-match"), String("")))
-        # 40
-        self._entries.append((String("if-modified-since"), String("")))
-        # 41
-        self._entries.append((String("if-none-match"), String("")))
-        # 42
-        self._entries.append((String("if-range"), String("")))
-        # 43
-        self._entries.append((String("if-unmodified-since"), String("")))
-        # 44
-        self._entries.append((String("last-modified"), String("")))
-        # 45
-        self._entries.append((String("link"), String("")))
-        # 46
-        self._entries.append((String("location"), String("")))
-        # 47
-        self._entries.append((String("max-forwards"), String("")))
-        # 48
-        self._entries.append((String("proxy-authenticate"), String("")))
-        # 49
-        self._entries.append((String("proxy-authorization"), String("")))
-        # 50
-        self._entries.append((String("range"), String("")))
-        # 51
-        self._entries.append((String("referer"), String("")))
-        # 52
-        self._entries.append((String("refresh"), String("")))
-        # 53
-        self._entries.append((String("retry-after"), String("")))
-        # 54
-        self._entries.append((String("server"), String("")))
-        # 55
-        self._entries.append((String("set-cookie"), String("")))
-        # 56
-        self._entries.append((String("strict-transport-security"), String("")))
-        # 57
-        self._entries.append((String("transfer-encoding"), String("")))
-        # 58
-        self._entries.append((String("user-agent"), String("")))
-        # 59
-        self._entries.append((String("vary"), String("")))
-        # 60
-        self._entries.append((String("via"), String("")))
-        # 61
-        self._entries.append((String("www-authenticate"), String("")))
+        # RFC 7541 Appendix A — 61 entries as interleaved (name, value) literals.
+        # Index 0 is unused (1-based indexing); a dummy ("","") entry leads.
+        var d: List[String] = [
+            "", "",  ":authority", "",  ":method", "GET",  ":method", "POST",
+            ":path", "/",  ":path", "/index.html",  ":scheme", "http",
+            ":scheme", "https",  ":status", "200",  ":status", "204",
+            ":status", "206",  ":status", "304",  ":status", "400",
+            ":status", "404",  ":status", "500",  "accept-charset", "",
+            "accept-encoding", "gzip, deflate",  "accept-language", "",
+            "accept-ranges", "",  "accept", "",
+            "access-control-allow-origin", "",  "age", "",  "allow", "",
+            "authorization", "",  "cache-control", "",  "content-disposition", "",
+            "content-encoding", "",  "content-language", "",  "content-length", "",
+            "content-location", "",  "content-range", "",  "content-type", "",
+            "cookie", "",  "date", "",  "etag", "",  "expect", "",
+            "expires", "",  "from", "",  "host", "",  "if-match", "",
+            "if-modified-since", "",  "if-none-match", "",  "if-range", "",
+            "if-unmodified-since", "",  "last-modified", "",  "link", "",
+            "location", "",  "max-forwards", "",  "proxy-authenticate", "",
+            "proxy-authorization", "",  "range", "",  "referer", "",
+            "refresh", "",  "retry-after", "",  "server", "",
+            "set-cookie", "",  "strict-transport-security", "",
+            "transfer-encoding", "",  "user-agent", "",  "vary", "",
+            "via", "",  "www-authenticate", "",
+        ]
+        self._entries = List[Tuple[String, String]](capacity=62)
+        for i in range(62):
+            self._entries.append((d[i * 2], d[i * 2 + 1]))
         self._index = StaticTableIndex(self._entries, start_index=1)
 
     def lookup(self, index: Int) -> Tuple[String, String]:
@@ -184,14 +87,6 @@ struct DynamicTable(Movable):
         self._next_seq = 0
         self._exact_index = Dict[String, Int]()
         self._name_index = Dict[String, Int]()
-
-    def __init__(out self, *, deinit move: Self):
-        self.entries = move.entries^
-        self.max_size = move.max_size
-        self.current_size = move.current_size
-        self._next_seq = move._next_seq
-        self._exact_index = move._exact_index^
-        self._name_index = move._name_index^
 
     def _exact_key(self, name: String, value: String) -> String:
         """Build composite key for exact-match index."""

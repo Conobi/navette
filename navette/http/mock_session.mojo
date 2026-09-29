@@ -33,10 +33,6 @@ struct MockServer[H: StreamHandler](Movable):
         self.handler = handler^
         self.caps = Capabilities.for_h1()
 
-    def __init__(out self, *, deinit move: Self):
-        self.handler = move.handler^
-        self.caps = move.caps^
-
     def dispatch(mut self, var req: Request) raises -> Response:
         var body = RecvBody()
         body._set_end()  # mock has no streaming inbound bodies in v1
@@ -70,11 +66,6 @@ struct MockSession[H: StreamHandler](Session):
         self._server = server^
         self._next_id = UInt64(0)
         self._pending = Optional[Request]()
-
-    def __init__(out self, *, deinit move: Self):
-        self._server = move._server^
-        self._next_id = move._next_id
-        self._pending = move._pending^
 
     def submit(mut self, var req: Request) raises -> RequestHandle:
         self._next_id += UInt64(1)

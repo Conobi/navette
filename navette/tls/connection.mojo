@@ -72,14 +72,6 @@ struct TlsConnection(Movable):
 
     # -- Move / Destroy --------------------------------------------------------
 
-    def __init__(out self, *, deinit move: Self):
-        self._lib = move._lib^
-        self._handle = move._handle
-        self._ciphertext_out = move._ciphertext_out^
-        self._ct_drain_buf = move._ct_drain_buf
-        self._pt_drain_buf = move._pt_drain_buf
-        self._handshake_complete = move._handshake_complete
-
     def __deinit__(deinit self):
         """Free the rustls connection handle and the two drain buffers.
 

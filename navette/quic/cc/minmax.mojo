@@ -17,10 +17,6 @@ struct MinMaxSample(Copyable, Movable):
         self.t = copy.t
         self.v = copy.v
 
-    def __init__(out self, *, deinit move: Self):
-        self.t = move.t
-        self.v = move.v
-
 
 struct MinMax(Copyable, Movable):
     """Windowed minimum filter over a rolling time window.
@@ -46,12 +42,6 @@ struct MinMax(Copyable, Movable):
         self.s0 = MinMaxSample(copy=copy.s0)
         self.s1 = MinMaxSample(copy=copy.s1)
         self.s2 = MinMaxSample(copy=copy.s2)
-
-    def __init__(out self, *, deinit move: Self):
-        self.window_us = move.window_us
-        self.s0 = move.s0^
-        self.s1 = move.s1^
-        self.s2 = move.s2^
 
     def running_min(mut self, win: UInt64, t: UInt64, meas: UInt64) -> UInt64:
         """Update filter with measurement `meas` at time `t`. Returns current minimum.

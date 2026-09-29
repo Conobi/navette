@@ -1,14 +1,29 @@
 # src/h3/qpack.mojo
-# QPACK codec: static table, Huffman, encoder, decoder
-# RFC 9204 (QPACK), RFC 7541 Appendix B (Huffman table)
+# QPACK codec: static table, encoder, decoder
+# RFC 9204 (QPACK). Huffman table from navette.codec.huffman (RFC 7541 Appendix B).
 
 
 from std.collections import Span
-from std.memory.alloc import unsafe_alloc, unsafe_free
+from std.memory.alloc import unsafe_alloc
 from navette.util.byte_string import bytes_to_string
 from navette.util.null_ptr import null_ptr
 from navette.http.header_table_index import StaticTableIndex
 from navette.quic.codec import hpack_encode_int_at
+from navette.codec.huffman import (
+    HuffmanEntry,
+    HuffTrieNode,
+    HuffFastEntry,
+    build_huffman_table,
+    build_huffman_trie_from,
+    build_huffman_fast,
+    hpack_encode_string_into,
+    huffman_encode_into as _codec_huffman_encode_into,
+    huffman_encoded_len as _codec_huffman_encoded_len,
+    huffman_decode_with_tables as _codec_huffman_decode_with_tables,
+    huffman_decode as _codec_huffman_decode,
+    HUFFMAN_EOS_CODE,
+    HUFFMAN_EOS_BITS,
+)
 
 struct QpackStaticEntry(Copyable, Movable):
     var name: String
@@ -41,107 +56,60 @@ comptime QPACK_STATIC_TABLE_SIZE: Int = 99
 
 
 def _qpack_static_table() -> List[QpackStaticEntry]:
-    var t = List[QpackStaticEntry]()
-    # RFC 9204 Appendix A — complete table, indices 0–98
-    t.append(QpackStaticEntry(":authority", ""))               # 0
-    t.append(QpackStaticEntry(":path", "/"))                   # 1
-    t.append(QpackStaticEntry("age", "0"))                     # 2
-    t.append(QpackStaticEntry("content-disposition", ""))      # 3
-    t.append(QpackStaticEntry("content-length", "0"))          # 4
-    t.append(QpackStaticEntry("cookie", ""))                   # 5
-    t.append(QpackStaticEntry("date", ""))                     # 6
-    t.append(QpackStaticEntry("etag", ""))                     # 7
-    t.append(QpackStaticEntry("if-modified-since", ""))        # 8
-    t.append(QpackStaticEntry("if-none-match", ""))            # 9
-    t.append(QpackStaticEntry("last-modified", ""))            # 10
-    t.append(QpackStaticEntry("link", ""))                     # 11
-    t.append(QpackStaticEntry("location", ""))                 # 12
-    t.append(QpackStaticEntry("referer", ""))                  # 13
-    t.append(QpackStaticEntry("set-cookie", ""))               # 14
-    t.append(QpackStaticEntry(":method", "CONNECT"))           # 15
-    t.append(QpackStaticEntry(":method", "DELETE"))            # 16
-    t.append(QpackStaticEntry(":method", "GET"))               # 17
-    t.append(QpackStaticEntry(":method", "HEAD"))              # 18
-    t.append(QpackStaticEntry(":method", "OPTIONS"))           # 19
-    t.append(QpackStaticEntry(":method", "POST"))              # 20
-    t.append(QpackStaticEntry(":method", "PUT"))               # 21
-    t.append(QpackStaticEntry(":scheme", "http"))              # 22
-    t.append(QpackStaticEntry(":scheme", "https"))             # 23
-    t.append(QpackStaticEntry(":status", "103"))               # 24
-    t.append(QpackStaticEntry(":status", "200"))               # 25
-    t.append(QpackStaticEntry(":status", "304"))               # 26
-    t.append(QpackStaticEntry(":status", "404"))               # 27
-    t.append(QpackStaticEntry(":status", "503"))               # 28
-    t.append(QpackStaticEntry("accept", "*/*"))                # 29
-    t.append(QpackStaticEntry("accept", "application/dns-message"))  # 30
-    t.append(QpackStaticEntry("accept-encoding", "gzip, deflate, br"))  # 31
-    t.append(QpackStaticEntry("accept-ranges", "bytes"))       # 32
-    t.append(QpackStaticEntry("access-control-allow-headers", "cache-control"))  # 33
-    t.append(QpackStaticEntry("access-control-allow-headers", "content-type"))   # 34
-    t.append(QpackStaticEntry("access-control-allow-origin", "*"))               # 35
-    t.append(QpackStaticEntry("cache-control", "max-age=0"))                     # 36
-    t.append(QpackStaticEntry("cache-control", "max-age=2592000"))               # 37
-    t.append(QpackStaticEntry("cache-control", "max-age=604800"))                # 38
-    t.append(QpackStaticEntry("cache-control", "no-cache"))                      # 39
-    t.append(QpackStaticEntry("cache-control", "no-store"))                      # 40
-    t.append(QpackStaticEntry("cache-control", "public, max-age=31536000"))      # 41
-    t.append(QpackStaticEntry("content-encoding", "br"))                         # 42
-    t.append(QpackStaticEntry("content-encoding", "gzip"))                       # 43
-    t.append(QpackStaticEntry("content-type", "application/dns-message"))        # 44
-    t.append(QpackStaticEntry("content-type", "application/javascript"))         # 45
-    t.append(QpackStaticEntry("content-type", "application/json"))               # 46
-    t.append(QpackStaticEntry("content-type", "application/x-www-form-urlencoded"))  # 47
-    t.append(QpackStaticEntry("content-type", "image/gif"))                      # 48
-    t.append(QpackStaticEntry("content-type", "image/jpeg"))                     # 49
-    t.append(QpackStaticEntry("content-type", "image/png"))                      # 50
-    t.append(QpackStaticEntry("content-type", "text/css"))                       # 51
-    t.append(QpackStaticEntry("content-type", "text/html; charset=utf-8"))       # 52
-    t.append(QpackStaticEntry("content-type", "text/plain"))                     # 53
-    t.append(QpackStaticEntry("content-type", "text/plain;charset=utf-8"))       # 54
-    t.append(QpackStaticEntry("range", "bytes=0-"))                              # 55
-    t.append(QpackStaticEntry("strict-transport-security", "max-age=31536000"))  # 56
-    t.append(QpackStaticEntry("strict-transport-security", "max-age=31536000; includesubdomains"))         # 57
-    t.append(QpackStaticEntry("strict-transport-security", "max-age=31536000; includesubdomains; preload")) # 58
-    t.append(QpackStaticEntry("vary", "accept-encoding"))                        # 59
-    t.append(QpackStaticEntry("vary", "origin"))                                 # 60
-    t.append(QpackStaticEntry("x-content-type-options", "nosniff"))              # 61
-    t.append(QpackStaticEntry("x-xss-protection", "1; mode=block"))              # 62
-    t.append(QpackStaticEntry(":status", "100"))                                 # 63
-    t.append(QpackStaticEntry(":status", "204"))                                 # 64
-    t.append(QpackStaticEntry(":status", "206"))                                 # 65
-    t.append(QpackStaticEntry(":status", "302"))                                 # 66
-    t.append(QpackStaticEntry(":status", "400"))                                 # 67
-    t.append(QpackStaticEntry(":status", "403"))                                 # 68
-    t.append(QpackStaticEntry(":status", "421"))                                 # 69
-    t.append(QpackStaticEntry(":status", "425"))                                 # 70
-    t.append(QpackStaticEntry(":status", "500"))                                 # 71
-    t.append(QpackStaticEntry("accept-language", ""))                            # 72
-    t.append(QpackStaticEntry("access-control-allow-credentials", "FALSE"))      # 73
-    t.append(QpackStaticEntry("access-control-allow-credentials", "TRUE"))       # 74
-    t.append(QpackStaticEntry("access-control-allow-headers", "*"))              # 75
-    t.append(QpackStaticEntry("access-control-allow-methods", "get"))            # 76
-    t.append(QpackStaticEntry("access-control-allow-methods", "get, post, options"))  # 77
-    t.append(QpackStaticEntry("access-control-allow-methods", "options"))        # 78
-    t.append(QpackStaticEntry("access-control-expose-headers", "content-length"))  # 79
-    t.append(QpackStaticEntry("access-control-request-headers", "content-type")) # 80
-    t.append(QpackStaticEntry("access-control-request-method", "get"))           # 81
-    t.append(QpackStaticEntry("access-control-request-method", "post"))          # 82
-    t.append(QpackStaticEntry("alt-svc", "clear"))                               # 83
-    t.append(QpackStaticEntry("authorization", ""))                              # 84
-    t.append(QpackStaticEntry("content-security-policy", "script-src 'none'; object-src 'none'; base-uri 'none'"))  # 85
-    t.append(QpackStaticEntry("early-data", "1"))                                # 86
-    t.append(QpackStaticEntry("expect-ct", ""))                                  # 87
-    t.append(QpackStaticEntry("forwarded", ""))                                  # 88
-    t.append(QpackStaticEntry("if-range", ""))                                   # 89
-    t.append(QpackStaticEntry("origin", ""))                                     # 90
-    t.append(QpackStaticEntry("purpose", "prefetch"))                            # 91
-    t.append(QpackStaticEntry("server", ""))                                     # 92
-    t.append(QpackStaticEntry("timing-allow-origin", "*"))                       # 93
-    t.append(QpackStaticEntry("upgrade-insecure-requests", "1"))                 # 94
-    t.append(QpackStaticEntry("user-agent", ""))                                 # 95
-    t.append(QpackStaticEntry("x-forwarded-for", ""))                            # 96
-    t.append(QpackStaticEntry("x-frame-options", "deny"))                        # 97
-    t.append(QpackStaticEntry("x-frame-options", "sameorigin"))                  # 98
+    # RFC 9204 Appendix A — 99 entries as interleaved (name, value) literals.
+    var d: List[String] = [
+        ":authority", "",  ":path", "/",  "age", "0",  "content-disposition", "",
+        "content-length", "0",  "cookie", "",  "date", "",  "etag", "",
+        "if-modified-since", "",  "if-none-match", "",  "last-modified", "",  "link", "",
+        "location", "",  "referer", "",  "set-cookie", "",  ":method", "CONNECT",
+        ":method", "DELETE",  ":method", "GET",  ":method", "HEAD",  ":method", "OPTIONS",
+        ":method", "POST",  ":method", "PUT",  ":scheme", "http",  ":scheme", "https",
+        ":status", "103",  ":status", "200",  ":status", "304",  ":status", "404",
+        ":status", "503",  "accept", "*/*",  "accept", "application/dns-message",
+        "accept-encoding", "gzip, deflate, br",  "accept-ranges", "bytes",
+        "access-control-allow-headers", "cache-control",
+        "access-control-allow-headers", "content-type",
+        "access-control-allow-origin", "*",
+        "cache-control", "max-age=0",  "cache-control", "max-age=2592000",
+        "cache-control", "max-age=604800",  "cache-control", "no-cache",
+        "cache-control", "no-store",  "cache-control", "public, max-age=31536000",
+        "content-encoding", "br",  "content-encoding", "gzip",
+        "content-type", "application/dns-message",  "content-type", "application/javascript",
+        "content-type", "application/json",
+        "content-type", "application/x-www-form-urlencoded",
+        "content-type", "image/gif",  "content-type", "image/jpeg",
+        "content-type", "image/png",  "content-type", "text/css",
+        "content-type", "text/html; charset=utf-8",  "content-type", "text/plain",
+        "content-type", "text/plain;charset=utf-8",  "range", "bytes=0-",
+        "strict-transport-security", "max-age=31536000",
+        "strict-transport-security", "max-age=31536000; includesubdomains",
+        "strict-transport-security", "max-age=31536000; includesubdomains; preload",
+        "vary", "accept-encoding",  "vary", "origin",
+        "x-content-type-options", "nosniff",  "x-xss-protection", "1; mode=block",
+        ":status", "100",  ":status", "204",  ":status", "206",  ":status", "302",
+        ":status", "400",  ":status", "403",  ":status", "421",  ":status", "425",
+        ":status", "500",  "accept-language", "",
+        "access-control-allow-credentials", "FALSE",
+        "access-control-allow-credentials", "TRUE",
+        "access-control-allow-headers", "*",
+        "access-control-allow-methods", "get",
+        "access-control-allow-methods", "get, post, options",
+        "access-control-allow-methods", "options",
+        "access-control-expose-headers", "content-length",
+        "access-control-request-headers", "content-type",
+        "access-control-request-method", "get",
+        "access-control-request-method", "post",
+        "alt-svc", "clear",  "authorization", "",
+        "content-security-policy", "script-src 'none'; object-src 'none'; base-uri 'none'",
+        "early-data", "1",  "expect-ct", "",  "forwarded", "",  "if-range", "",
+        "origin", "",  "purpose", "prefetch",  "server", "",
+        "timing-allow-origin", "*",  "upgrade-insecure-requests", "1",
+        "user-agent", "",  "x-forwarded-for", "",
+        "x-frame-options", "deny",  "x-frame-options", "sameorigin",
+    ]
+    var t = List[QpackStaticEntry](capacity=99)
+    for i in range(99):
+        t.append(QpackStaticEntry(d[i * 2], d[i * 2 + 1]))
     return t^
 
 
@@ -172,581 +140,25 @@ def qpack_static_find_name(name: String) -> Optional[Int]:
 
 
 # ---------------------------------------------------------------------------
-# Huffman encode/decode — RFC 7541 Appendix B
+# Huffman encode/decode — delegated to navette.codec.huffman
 # ---------------------------------------------------------------------------
-
-struct HuffmanEntry(Copyable, Movable):
-    var code: UInt32
-    var nbits: UInt8
-
-    def __init__(out self, code: UInt32, nbits: UInt8):
-        self.code = code
-        self.nbits = nbits
-
-    def __init__(out self, *, copy_from: Self):
-        self.code = copy_from.code
-        self.nbits = copy_from.nbits
-
-
-def _huffman_encode_table() -> List[HuffmanEntry]:
-    """256-entry Huffman encode table from RFC 7541 Appendix B."""
-    var t = List[HuffmanEntry]()
-    t.append(HuffmanEntry(0x1ff8, 13))       # 0
-    t.append(HuffmanEntry(0x7fffd8, 23))     # 1
-    t.append(HuffmanEntry(0xfffffe2, 28))    # 2
-    t.append(HuffmanEntry(0xfffffe3, 28))    # 3
-    t.append(HuffmanEntry(0xfffffe4, 28))    # 4
-    t.append(HuffmanEntry(0xfffffe5, 28))    # 5
-    t.append(HuffmanEntry(0xfffffe6, 28))    # 6
-    t.append(HuffmanEntry(0xfffffe7, 28))    # 7
-    t.append(HuffmanEntry(0xfffffe8, 28))    # 8
-    t.append(HuffmanEntry(0xffffea, 24))     # 9
-    t.append(HuffmanEntry(0x3ffffffc, 30))   # 10
-    t.append(HuffmanEntry(0xfffffe9, 28))    # 11
-    t.append(HuffmanEntry(0xfffffea, 28))    # 12
-    t.append(HuffmanEntry(0x3ffffffd, 30))   # 13
-    t.append(HuffmanEntry(0xfffffeb, 28))    # 14
-    t.append(HuffmanEntry(0xfffffec, 28))    # 15
-    t.append(HuffmanEntry(0xfffffed, 28))    # 16
-    t.append(HuffmanEntry(0xfffffee, 28))    # 17
-    t.append(HuffmanEntry(0xfffffef, 28))    # 18
-    t.append(HuffmanEntry(0xffffff0, 28))    # 19
-    t.append(HuffmanEntry(0xffffff1, 28))    # 20
-    t.append(HuffmanEntry(0xffffff2, 28))    # 21
-    t.append(HuffmanEntry(0x3ffffffe, 30))   # 22
-    t.append(HuffmanEntry(0xffffff3, 28))    # 23
-    t.append(HuffmanEntry(0xffffff4, 28))    # 24
-    t.append(HuffmanEntry(0xffffff5, 28))    # 25
-    t.append(HuffmanEntry(0xffffff6, 28))    # 26
-    t.append(HuffmanEntry(0xffffff7, 28))    # 27
-    t.append(HuffmanEntry(0xffffff8, 28))    # 28
-    t.append(HuffmanEntry(0xffffff9, 28))    # 29
-    t.append(HuffmanEntry(0xffffffa, 28))    # 30
-    t.append(HuffmanEntry(0xffffffb, 28))    # 31
-    t.append(HuffmanEntry(0x14, 6))          # 32 ' '
-    t.append(HuffmanEntry(0x3f8, 10))        # 33 '!'
-    t.append(HuffmanEntry(0x3f9, 10))        # 34 '"'
-    t.append(HuffmanEntry(0xffa, 12))        # 35 '#'
-    t.append(HuffmanEntry(0x1ff9, 13))       # 36 '$'
-    t.append(HuffmanEntry(0x15, 6))          # 37 '%'
-    t.append(HuffmanEntry(0xf8, 8))          # 38 '&'
-    t.append(HuffmanEntry(0x7fa, 11))        # 39 "'"
-    t.append(HuffmanEntry(0x3fa, 10))        # 40 '('
-    t.append(HuffmanEntry(0x3fb, 10))        # 41 ')'
-    t.append(HuffmanEntry(0xf9, 8))          # 42 '*'
-    t.append(HuffmanEntry(0x7fb, 11))        # 43 '+'
-    t.append(HuffmanEntry(0xfa, 8))          # 44 ','
-    t.append(HuffmanEntry(0x16, 6))          # 45 '-'
-    t.append(HuffmanEntry(0x17, 6))          # 46 '.'
-    t.append(HuffmanEntry(0x18, 6))          # 47 '/'
-    t.append(HuffmanEntry(0x0, 5))           # 48 '0'
-    t.append(HuffmanEntry(0x1, 5))           # 49 '1'
-    t.append(HuffmanEntry(0x2, 5))           # 50 '2'
-    t.append(HuffmanEntry(0x19, 6))          # 51 '3'
-    t.append(HuffmanEntry(0x1a, 6))          # 52 '4'
-    t.append(HuffmanEntry(0x1b, 6))          # 53 '5'
-    t.append(HuffmanEntry(0x1c, 6))          # 54 '6'
-    t.append(HuffmanEntry(0x1d, 6))          # 55 '7'
-    t.append(HuffmanEntry(0x1e, 6))          # 56 '8'
-    t.append(HuffmanEntry(0x1f, 6))          # 57 '9'
-    t.append(HuffmanEntry(0x5c, 7))          # 58 ':'
-    t.append(HuffmanEntry(0xfb, 8))          # 59 ';'
-    t.append(HuffmanEntry(0x7ffc, 15))       # 60 '<'
-    t.append(HuffmanEntry(0x20, 6))          # 61 '='
-    t.append(HuffmanEntry(0xffb, 12))        # 62 '>'
-    t.append(HuffmanEntry(0x3fc, 10))        # 63 '?'
-    t.append(HuffmanEntry(0x1ffa, 13))       # 64 '@'
-    t.append(HuffmanEntry(0x21, 6))          # 65 'A'
-    t.append(HuffmanEntry(0x5d, 7))          # 66 'B'
-    t.append(HuffmanEntry(0x5e, 7))          # 67 'C'
-    t.append(HuffmanEntry(0x5f, 7))          # 68 'D'
-    t.append(HuffmanEntry(0x60, 7))          # 69 'E'
-    t.append(HuffmanEntry(0x61, 7))          # 70 'F'
-    t.append(HuffmanEntry(0x62, 7))          # 71 'G'
-    t.append(HuffmanEntry(0x63, 7))          # 72 'H'
-    t.append(HuffmanEntry(0x64, 7))          # 73 'I'
-    t.append(HuffmanEntry(0x65, 7))          # 74 'J'
-    t.append(HuffmanEntry(0x66, 7))          # 75 'K'
-    t.append(HuffmanEntry(0x67, 7))          # 76 'L'
-    t.append(HuffmanEntry(0x68, 7))          # 77 'M'
-    t.append(HuffmanEntry(0x69, 7))          # 78 'N'
-    t.append(HuffmanEntry(0x6a, 7))          # 79 'O'
-    t.append(HuffmanEntry(0x6b, 7))          # 80 'P'
-    t.append(HuffmanEntry(0x6c, 7))          # 81 'Q'
-    t.append(HuffmanEntry(0x6d, 7))          # 82 'R'
-    t.append(HuffmanEntry(0x6e, 7))          # 83 'S'
-    t.append(HuffmanEntry(0x6f, 7))          # 84 'T'
-    t.append(HuffmanEntry(0x70, 7))          # 85 'U'
-    t.append(HuffmanEntry(0x71, 7))          # 86 'V'
-    t.append(HuffmanEntry(0x72, 7))          # 87 'W'
-    t.append(HuffmanEntry(0xfc, 8))          # 88 'X'
-    t.append(HuffmanEntry(0x73, 7))          # 89 'Y'
-    t.append(HuffmanEntry(0xfd, 8))          # 90 'Z'
-    t.append(HuffmanEntry(0x1ffb, 13))       # 91 '['
-    t.append(HuffmanEntry(0x7fff0, 19))      # 92 '\'
-    t.append(HuffmanEntry(0x1ffc, 13))       # 93 ']'
-    t.append(HuffmanEntry(0x3ffc, 14))       # 94 '^'
-    t.append(HuffmanEntry(0x22, 6))          # 95 '_'
-    t.append(HuffmanEntry(0x7ffd, 15))       # 96 '`'
-    t.append(HuffmanEntry(0x3, 5))           # 97 'a'
-    t.append(HuffmanEntry(0x23, 6))          # 98 'b'
-    t.append(HuffmanEntry(0x4, 5))           # 99 'c'
-    t.append(HuffmanEntry(0x24, 6))          # 100 'd'
-    t.append(HuffmanEntry(0x5, 5))           # 101 'e'
-    t.append(HuffmanEntry(0x25, 6))          # 102 'f'
-    t.append(HuffmanEntry(0x26, 6))          # 103 'g'
-    t.append(HuffmanEntry(0x27, 6))          # 104 'h'
-    t.append(HuffmanEntry(0x6, 5))           # 105 'i'
-    t.append(HuffmanEntry(0x74, 7))          # 106 'j'
-    t.append(HuffmanEntry(0x75, 7))          # 107 'k'
-    t.append(HuffmanEntry(0x28, 6))          # 108 'l'
-    t.append(HuffmanEntry(0x29, 6))          # 109 'm'
-    t.append(HuffmanEntry(0x2a, 6))          # 110 'n'
-    t.append(HuffmanEntry(0x7, 5))           # 111 'o'
-    t.append(HuffmanEntry(0x2b, 6))          # 112 'p'
-    t.append(HuffmanEntry(0x76, 7))          # 113 'q'
-    t.append(HuffmanEntry(0x2c, 6))          # 114 'r'
-    t.append(HuffmanEntry(0x8, 5))           # 115 's'
-    t.append(HuffmanEntry(0x9, 5))           # 116 't'
-    t.append(HuffmanEntry(0x2d, 6))          # 117 'u'
-    t.append(HuffmanEntry(0x77, 7))          # 118 'v'
-    t.append(HuffmanEntry(0x78, 7))          # 119 'w'
-    t.append(HuffmanEntry(0x79, 7))          # 120 'x'
-    t.append(HuffmanEntry(0x7a, 7))          # 121 'y'
-    t.append(HuffmanEntry(0x7b, 7))          # 122 'z'
-    t.append(HuffmanEntry(0x7ffe, 15))       # 123 '{'
-    t.append(HuffmanEntry(0x7fc, 11))        # 124 '|'
-    t.append(HuffmanEntry(0x3ffd, 14))       # 125 '}'
-    t.append(HuffmanEntry(0x1ffd, 13))       # 126 '~'
-    t.append(HuffmanEntry(0xffffffc, 28))    # 127
-    t.append(HuffmanEntry(0xfffe6, 20))      # 128
-    t.append(HuffmanEntry(0x3fffd2, 22))     # 129
-    t.append(HuffmanEntry(0xfffe7, 20))      # 130
-    t.append(HuffmanEntry(0xfffe8, 20))      # 131
-    t.append(HuffmanEntry(0x3fffd3, 22))     # 132
-    t.append(HuffmanEntry(0x3fffd4, 22))     # 133
-    t.append(HuffmanEntry(0x3fffd5, 22))     # 134
-    t.append(HuffmanEntry(0x7fffd9, 23))     # 135
-    t.append(HuffmanEntry(0x3fffd6, 22))     # 136
-    t.append(HuffmanEntry(0x7fffda, 23))     # 137
-    t.append(HuffmanEntry(0x7fffdb, 23))     # 138
-    t.append(HuffmanEntry(0x7fffdc, 23))     # 139
-    t.append(HuffmanEntry(0x7fffdd, 23))     # 140
-    t.append(HuffmanEntry(0x7fffde, 23))     # 141
-    t.append(HuffmanEntry(0xffffeb, 24))     # 142
-    t.append(HuffmanEntry(0x7fffdf, 23))     # 143
-    t.append(HuffmanEntry(0xffffec, 24))     # 144
-    t.append(HuffmanEntry(0xffffed, 24))     # 145
-    t.append(HuffmanEntry(0x3fffd7, 22))     # 146
-    t.append(HuffmanEntry(0x7fffe0, 23))     # 147
-    t.append(HuffmanEntry(0xffffee, 24))     # 148
-    t.append(HuffmanEntry(0x7fffe1, 23))     # 149
-    t.append(HuffmanEntry(0x7fffe2, 23))     # 150
-    t.append(HuffmanEntry(0x7fffe3, 23))     # 151
-    t.append(HuffmanEntry(0x7fffe4, 23))     # 152
-    t.append(HuffmanEntry(0x1fffdc, 21))     # 153
-    t.append(HuffmanEntry(0x3fffd8, 22))     # 154
-    t.append(HuffmanEntry(0x7fffe5, 23))     # 155
-    t.append(HuffmanEntry(0x3fffd9, 22))     # 156
-    t.append(HuffmanEntry(0x7fffe6, 23))     # 157
-    t.append(HuffmanEntry(0x7fffe7, 23))     # 158
-    t.append(HuffmanEntry(0xffffef, 24))     # 159
-    t.append(HuffmanEntry(0x3fffda, 22))     # 160
-    t.append(HuffmanEntry(0x1fffdd, 21))     # 161
-    t.append(HuffmanEntry(0xfffe9, 20))      # 162
-    t.append(HuffmanEntry(0x3fffdb, 22))     # 163
-    t.append(HuffmanEntry(0x3fffdc, 22))     # 164
-    t.append(HuffmanEntry(0x7fffe8, 23))     # 165
-    t.append(HuffmanEntry(0x7fffe9, 23))     # 166
-    t.append(HuffmanEntry(0x1fffde, 21))     # 167
-    t.append(HuffmanEntry(0x7fffea, 23))     # 168
-    t.append(HuffmanEntry(0x3fffdd, 22))     # 169
-    t.append(HuffmanEntry(0x3fffde, 22))     # 170
-    t.append(HuffmanEntry(0xfffff0, 24))     # 171
-    t.append(HuffmanEntry(0x1fffdf, 21))     # 172
-    t.append(HuffmanEntry(0x3fffdf, 22))     # 173
-    t.append(HuffmanEntry(0x7fffeb, 23))     # 174
-    t.append(HuffmanEntry(0x7fffec, 23))     # 175
-    t.append(HuffmanEntry(0x1fffe0, 21))     # 176
-    t.append(HuffmanEntry(0x1fffe1, 21))     # 177
-    t.append(HuffmanEntry(0x3fffe0, 22))     # 178
-    t.append(HuffmanEntry(0x1fffe2, 21))     # 179
-    t.append(HuffmanEntry(0x7fffed, 23))     # 180
-    t.append(HuffmanEntry(0x3fffe1, 22))     # 181
-    t.append(HuffmanEntry(0x7fffee, 23))     # 182
-    t.append(HuffmanEntry(0x7fffef, 23))     # 183
-    t.append(HuffmanEntry(0xfffea, 20))      # 184
-    t.append(HuffmanEntry(0x3fffe2, 22))     # 185
-    t.append(HuffmanEntry(0x3fffe3, 22))     # 186
-    t.append(HuffmanEntry(0x3fffe4, 22))     # 187
-    t.append(HuffmanEntry(0x7ffff0, 23))     # 188
-    t.append(HuffmanEntry(0x3fffe5, 22))     # 189
-    t.append(HuffmanEntry(0x3fffe6, 22))     # 190
-    t.append(HuffmanEntry(0x7ffff1, 23))     # 191
-    t.append(HuffmanEntry(0x3ffffe0, 26))    # 192
-    t.append(HuffmanEntry(0x3ffffe1, 26))    # 193
-    t.append(HuffmanEntry(0xfffeb, 20))      # 194
-    t.append(HuffmanEntry(0x7fff1, 19))      # 195
-    t.append(HuffmanEntry(0x3fffe7, 22))     # 196
-    t.append(HuffmanEntry(0x7ffff2, 23))     # 197
-    t.append(HuffmanEntry(0x3fffe8, 22))     # 198
-    t.append(HuffmanEntry(0x1ffffec, 25))    # 199
-    t.append(HuffmanEntry(0x3ffffe2, 26))    # 200
-    t.append(HuffmanEntry(0x3ffffe3, 26))    # 201
-    t.append(HuffmanEntry(0x3ffffe4, 26))    # 202
-    t.append(HuffmanEntry(0x7ffffde, 27))    # 203
-    t.append(HuffmanEntry(0x7ffffdf, 27))    # 204
-    t.append(HuffmanEntry(0x3ffffe5, 26))    # 205
-    t.append(HuffmanEntry(0xfffff1, 24))     # 206
-    t.append(HuffmanEntry(0x1ffffed, 25))    # 207
-    t.append(HuffmanEntry(0x7fff2, 19))      # 208
-    t.append(HuffmanEntry(0x1fffe3, 21))     # 209
-    t.append(HuffmanEntry(0x3ffffe6, 26))    # 210
-    t.append(HuffmanEntry(0x7ffffe0, 27))    # 211
-    t.append(HuffmanEntry(0x7ffffe1, 27))    # 212
-    t.append(HuffmanEntry(0x3ffffe7, 26))    # 213
-    t.append(HuffmanEntry(0x7ffffe2, 27))    # 214
-    t.append(HuffmanEntry(0xfffff2, 24))     # 215
-    t.append(HuffmanEntry(0x1fffe4, 21))     # 216
-    t.append(HuffmanEntry(0x1fffe5, 21))     # 217
-    t.append(HuffmanEntry(0x3ffffe8, 26))    # 218
-    t.append(HuffmanEntry(0x3ffffe9, 26))    # 219
-    t.append(HuffmanEntry(0xffffffd, 28))    # 220
-    t.append(HuffmanEntry(0x7ffffe3, 27))    # 221
-    t.append(HuffmanEntry(0x7ffffe4, 27))    # 222
-    t.append(HuffmanEntry(0x7ffffe5, 27))    # 223
-    t.append(HuffmanEntry(0xfffec, 20))      # 224
-    t.append(HuffmanEntry(0xfffff3, 24))     # 225
-    t.append(HuffmanEntry(0xfffed, 20))      # 226
-    t.append(HuffmanEntry(0x1fffe6, 21))     # 227
-    t.append(HuffmanEntry(0x3fffe9, 22))     # 228
-    t.append(HuffmanEntry(0x1fffe7, 21))     # 229
-    t.append(HuffmanEntry(0x1fffe8, 21))     # 230
-    t.append(HuffmanEntry(0x7ffff3, 23))     # 231
-    t.append(HuffmanEntry(0x3fffea, 22))     # 232
-    t.append(HuffmanEntry(0x3fffeb, 22))     # 233
-    t.append(HuffmanEntry(0x1ffffee, 25))    # 234
-    t.append(HuffmanEntry(0x1ffffef, 25))    # 235
-    t.append(HuffmanEntry(0xfffff4, 24))     # 236
-    t.append(HuffmanEntry(0xfffff5, 24))     # 237
-    t.append(HuffmanEntry(0x3ffffea, 26))    # 238
-    t.append(HuffmanEntry(0x7ffff4, 23))     # 239
-    t.append(HuffmanEntry(0x3ffffeb, 26))    # 240
-    t.append(HuffmanEntry(0x7ffffe6, 27))    # 241
-    t.append(HuffmanEntry(0x3ffffec, 26))    # 242
-    t.append(HuffmanEntry(0x3ffffed, 26))    # 243
-    t.append(HuffmanEntry(0x7ffffe7, 27))    # 244
-    t.append(HuffmanEntry(0x7ffffe8, 27))    # 245
-    t.append(HuffmanEntry(0x7ffffe9, 27))    # 246
-    t.append(HuffmanEntry(0x7ffffea, 27))    # 247
-    t.append(HuffmanEntry(0x7ffffeb, 27))    # 248
-    t.append(HuffmanEntry(0xffffffe, 28))    # 249
-    t.append(HuffmanEntry(0x7ffffec, 27))    # 250
-    t.append(HuffmanEntry(0x7ffffed, 27))    # 251
-    t.append(HuffmanEntry(0x7ffffee, 27))    # 252
-    t.append(HuffmanEntry(0x7ffffef, 27))    # 253
-    t.append(HuffmanEntry(0x7fffff0, 27))    # 254
-    t.append(HuffmanEntry(0x3ffffee, 26))    # 255
-    return t^
-
-
-comptime HUFFMAN_EOS_CODE: UInt32 = 0x3fffffff
-comptime HUFFMAN_EOS_BITS: UInt8 = 30
-
-
-# ---------------------------------------------------------------------------
-# Huffman decode: flat trie + 8-bit root fast-path
-#
-# Reference: TQUIC `.research/tquic/src/h3/qpack/huffman.rs:90-141` (4-bit nibble
-# state machine). We use a derivative: per-call-built flat trie with a 256-entry
-# 8-bit root fast-path table. Same asymptotic cost (O(N)) as TQUIC's table; the
-# table is derived from the 257-entry encode table at call-time, eliminating
-# the typo risk of a hand-coded 4096-entry table.
-# ---------------------------------------------------------------------------
-
-
-struct _HuffTrieNode(Copyable, Movable):
-    """Flat-trie node. `symbol >= 0` marks a leaf (0-255 = byte, 256 = EOS).
-
-    Internal nodes have `symbol == -1` and at least one child index != -1.
-    Leaf nodes have both children == -1.
-    """
-    var left: Int    # child index for bit 0 (-1 = none / leaf)
-    var right: Int   # child index for bit 1 (-1 = none / leaf)
-    var symbol: Int  # -1 = internal, 0-255 = byte, 256 = EOS
-
-    def __init__(out self):
-        self.left = -1
-        self.right = -1
-        self.symbol = -1
-
-    def __init__(out self, *, copy_from: Self):
-        self.left = copy_from.left
-        self.right = copy_from.right
-        self.symbol = copy_from.symbol
-
-
-struct _HuffFast(Copyable, Movable):
-    """8-bit root fast-path entry.
-
-    `consumed` ∈ [1,8] = bits resolved by this entry (the symbol decoded with
-    that many bits of input from the top of the byte). `consumed == 0` means
-    "no symbol resolves within 8 bits from the root" → fall through to the
-    bit-by-bit trie walk.
-    """
-    var consumed: Int  # bits consumed (0 = miss, 1-8 = hit)
-    var symbol: Int    # decoded symbol (0-255), valid iff consumed > 0
-
-    def __init__(out self):
-        self.consumed = 0
-        self.symbol = 0
-
-    def __init__(out self, *, copy_from: Self):
-        self.consumed = copy_from.consumed
-        self.symbol = copy_from.symbol
-
-
-def _build_huffman_trie() raises -> List[_HuffTrieNode]:
-    """Build a flat decode trie from the RFC 7541 Appendix B encode table.
-
-    Includes EOS (symbol 256) as a leaf so that an explicit EOS in the input
-    stream is detected by the trie walk (per RFC 7541 §5.2).
-    """
-    var encode = _huffman_encode_table()
-    var trie = List[_HuffTrieNode]()
-    trie.append(_HuffTrieNode())  # root = index 0
-
-    # Leaves for symbols 0..255 (from the encode table).
-    for sym in range(256):
-        var entry = encode[sym].copy()
-        var code = entry.code
-        var nbits = Int(entry.nbits)
-        var node_idx = 0
-        for bit_pos in range(nbits - 1, -1, -1):
-            var bit = Int((code >> UInt32(bit_pos)) & UInt32(1))
-            if bit == 0:
-                if trie[node_idx].left == -1:
-                    trie[node_idx].left = len(trie)
-                    trie.append(_HuffTrieNode())
-                node_idx = trie[node_idx].left
-            else:
-                if trie[node_idx].right == -1:
-                    trie[node_idx].right = len(trie)
-                    trie.append(_HuffTrieNode())
-                node_idx = trie[node_idx].right
-        trie[node_idx].symbol = sym
-
-    # Add EOS leaf (symbol 256) at HUFFMAN_EOS_CODE / HUFFMAN_EOS_BITS.
-    var eos_code = HUFFMAN_EOS_CODE
-    var eos_nbits = Int(HUFFMAN_EOS_BITS)
-    var node_idx = 0
-    for bit_pos in range(eos_nbits - 1, -1, -1):
-        var bit = Int((eos_code >> UInt32(bit_pos)) & UInt32(1))
-        if bit == 0:
-            if trie[node_idx].left == -1:
-                trie[node_idx].left = len(trie)
-                trie.append(_HuffTrieNode())
-            node_idx = trie[node_idx].left
-        else:
-            if trie[node_idx].right == -1:
-                trie[node_idx].right = len(trie)
-                trie.append(_HuffTrieNode())
-            node_idx = trie[node_idx].right
-    trie[node_idx].symbol = 256
-
-    return trie^
-
-
-def _build_huffman_fast(trie: List[_HuffTrieNode]) -> List[_HuffFast]:
-    """Build a 256-entry root fast-path table.
-
-    For each possible top-byte b ∈ [0,256), walk the trie up to 8 bits from
-    the root (MSB-first). If a symbol leaf is reached at depth k ≤ 8, record
-    (consumed=k, symbol=sym). Otherwise record (consumed=0, symbol=0) — the
-    decoder falls back to bit-by-bit trie walking for that prefix.
-
-    Note: only ASCII bytes (and a few Latin-1) have codes ≤8 bits, but those
-    bytes dominate header content (paths, methods, mime types). This table
-    resolves them in O(1) per output byte.
-
-    EOS leaves (symbol 256) are NOT cached as fast-path hits — the decoder
-    must surface EOS-in-stream via the trie path so it can raise. (Per
-    RFC 7541 Appendix B, EOS is 30 bits, well beyond the 8-bit fast path.)
-    """
-    var fast = List[_HuffFast]()
-    for b in range(256):
-        var node_idx = 0
-        var entry = _HuffFast()
-        for bit_pos in range(7, -1, -1):
-            var bit = Int((b >> bit_pos) & 1)
-            if bit == 0:
-                node_idx = trie[node_idx].left
-            else:
-                node_idx = trie[node_idx].right
-            if node_idx < 0:
-                break
-            var sym = trie[node_idx].symbol
-            if sym >= 0:
-                if sym <= 255:
-                    entry.consumed = 8 - bit_pos
-                    entry.symbol = sym
-                # else (EOS): leave consumed=0, fall through to trie path
-                break
-        fast.append(entry.copy())
-    return fast^
 
 
 def huffman_encode(mut buf: List[Byte], s: String) raises:
     """Huffman-encode a string, appending directly to buf."""
-    var table = _huffman_encode_table()
-    _huffman_encode_into_with_table(buf, s, table)
-
-
-def _huffman_encode_into_with_table(mut buf: List[Byte], s: String, ref table: List[HuffmanEntry]) raises:
-    """Huffman-encode using a pre-built table."""
-    var acc: UInt64 = 0
-    var bits: Int = 0
-    var sbytes = s.as_bytes()
-
-    for ref byte in sbytes:
-        var sym = Int(byte)
-        if sym >= len(table):
-            raise "Huffman: symbol out of range: " + String(sym)
-        acc = (acc << UInt64(table[sym].nbits)) | UInt64(table[sym].code)
-        bits += Int(table[sym].nbits)
-        while bits >= 8:
-            bits -= 8
-            buf.append(UInt8((acc >> UInt64(bits)) & 0xFF))
-
-    if bits > 0:
-        var pad_bits_count = 8 - bits
-        var pad = UInt8(((UInt32(1) << UInt32(pad_bits_count)) - 1) & 0xFF)
-        var last_byte = UInt8((acc << UInt64(pad_bits_count)) & 0xFF) | pad
-        buf.append(last_byte)
+    var table = build_huffman_table()
+    _codec_huffman_encode_into(buf, s, table)
 
 
 def huffman_encoded_len(s: String) raises -> Int:
     """Return the byte length of the Huffman encoding without materializing it."""
-    var table = _huffman_encode_table()
-    return _huffman_encoded_len_with_table(s, table)
-
-
-def _huffman_encoded_len_with_table(s: String, ref table: List[HuffmanEntry]) raises -> Int:
-    """Compute Huffman byte length using a pre-built table."""
-    var total_bits: Int = 0
-    var sbytes = s.as_bytes()
-    for ref byte in sbytes:
-        var sym = Int(byte)
-        if sym >= len(table):
-            raise "Huffman: symbol out of range: " + String(sym)
-        total_bits += Int(table[sym].nbits)
-    return (total_bits + 7) // 8
-
-
-def _huffman_decode_with_tables(
-    ref data: List[Byte],
-    ref trie: List[_HuffTrieNode],
-    ref fast: List[_HuffFast],
-) raises -> String:
-    """Inner decode loop. Caller passes precomputed tables so they can be
-    amortized across multiple decode calls (e.g. all string literals in one
-    QPACK field section). See `huffman_decode` for the canonical entry point.
-    """
-    if len(data) == 0:
-        return String("")
-    var buf = List[Byte](capacity=len(data) * 2)
-
-    # 64-bit sliding accumulator; valid bits live in the LOW `acc_bits`
-    # positions of `acc`. We extract from the top via shift.
-    var acc: UInt64 = 0
-    var acc_bits: Int = 0
-    var pos: Int = 0
-    var data_len = len(data)
-    var node: Int = 0
-
-    # Padding-validity tracker: bits walked through the trie since we last
-    # left the root, and whether all of them were 1s. RFC 7541 §5.2: a valid
-    # trailing partial code has ≤7 bits, all 1s.
-    var bits_since_root: Int = 0
-    var all_ones_since_root: Bool = True
-
-    while True:
-        # Refill while there's room and input.
-        while acc_bits <= 56 and pos < data_len:
-            acc = (acc << 8) | UInt64(data[pos])
-            acc_bits += 8
-            pos += 1
-
-        # Tier 1: 8-bit root fast-path. Only valid at root with ≥8 bits.
-        if node == 0 and acc_bits >= 8:
-            var top8 = Int((acc >> UInt64(acc_bits - 8)) & UInt64(0xFF))
-            if fast[top8].consumed > 0:
-                buf.append(UInt8(fast[top8].symbol))
-                acc_bits -= fast[top8].consumed
-                bits_since_root = 0
-                all_ones_since_root = True
-                continue
-
-        # No bits left → we're done; validate end state.
-        if acc_bits == 0:
-            if node == 0:
-                return bytes_to_string(buf^)
-            # Mid-symbol: only acceptable if walked ≤7 all-1 bits since root.
-            if bits_since_root > 7:
-                raise "Huffman: truncated input (mid-symbol at EOF)"
-            if not all_ones_since_root:
-                raise "Huffman: invalid padding (not all-ones)"
-            return bytes_to_string(buf^)
-
-        # Tier 2: single bit-by-bit trie walk.
-        var bit = Int((acc >> UInt64(acc_bits - 1)) & UInt64(1))
-        acc_bits -= 1
-        bits_since_root += 1
-        if bit == 0:
-            all_ones_since_root = False
-            node = trie[node].left
-        else:
-            node = trie[node].right
-        if node < 0:
-            raise "Huffman: invalid code (no trie edge)"
-
-        var sym = trie[node].symbol
-        if sym >= 0:
-            if sym == 256:
-                # RFC 7541 §5.2: EOS in stream → decompression error.
-                raise "Huffman: explicit EOS in stream"
-            buf.append(UInt8(sym))
-            node = 0
-            bits_since_root = 0
-            all_ones_since_root = True
+    var table = build_huffman_table()
+    return _codec_huffman_encoded_len(s, table)
 
 
 def huffman_decode(data: List[Byte]) raises -> String:
-    """Huffman-decode bytes per RFC 7541 §5.2.
-
-    Algorithm:
-      Tier 1 — 256-entry root fast-path table; resolves any symbol whose
-               code length is ≤8 bits in a single lookup (covers most ASCII).
-      Tier 2 — bit-by-bit walk through a flat trie for codes ≥9 bits.
-
-    Inner-loop perf: O(N) per input byte, vs O(N × 30 × 257) for the prior
-    per-bit linear scan (flamegraph rank #9, 6.96% self-time).
-
-    Per-call construction (~13 µs for trie + fast table) dominates this
-    public entry point on small inputs. Hot QPACK paths should call
-    `_huffman_decode_with_tables` and amortize the build across multiple
-    decodes; see `QpackDecoder.decode` for the production caller.
-
-    Raises on:
-      - explicit EOS (symbol 256) appearing before end of stream,
-      - non-all-ones padding in the trailing partial byte,
-      - >7 bits of trailing padding.
-    """
-    if len(data) == 0:
-        return String("")
-    var trie = _build_huffman_trie()
-    var fast = _build_huffman_fast(trie)
-    return _huffman_decode_with_tables(data, trie, fast)
+    """Huffman-decode bytes per RFC 7541 §5.2."""
+    return _codec_huffman_decode(data)
 
 
 # ---------------------------------------------------------------------------
@@ -799,63 +211,13 @@ struct _StrDecodeResult(Copyable, Movable):
         self.new_offset = copy_from.new_offset
 
 
-def _qpack_encode_string(mut buf: List[Byte], s: String, use_huffman: Bool) raises:
-    """Encode a string literal (HPACK/QPACK), appending directly to buf."""
-    if use_huffman:
-        var huff_len = huffman_encoded_len(s)
-        var idx = len(buf)
-        buf.resize(idx + 6, Byte(0))
-        buf[idx] = UInt8(0x80)
-        var n = hpack_encode_int_at(buf, idx, huff_len, 7)
-        buf.resize(idx + n, Byte(0))
-        huffman_encode(buf, s)
-    else:
-        var raw = s.as_bytes()
-        var idx = len(buf)
-        buf.resize(idx + 6, Byte(0))
-        var n = hpack_encode_int_at(buf, idx, len(raw), 7)
-        buf.resize(idx + n, Byte(0))
-        buf.extend(Span(raw))
-
-
-def _qpack_decode_string(data: List[Byte], offset: Int) raises -> _StrDecodeResult:
-    """Decode a QPACK/HPACK string literal from data at offset.
-
-    Convenience wrapper that builds Huffman decode tables on every call.
-    Hot QPACK paths should use `_qpack_decode_string_with_tables` and amortize
-    the table build over a whole field section.
-    """
-    if offset >= len(data):
-        raise "QPACK: truncated string at offset " + String(offset)
-    var h_bit = (data[offset] & 0x80) != 0
-    var ir = qpack_decode_int(data, offset, 7)
-    var length = Int(ir.value)
-    var pos = ir.new_offset
-    if pos + length > len(data):
-        raise "QPACK: string data truncated"
-    var raw = List[Byte]()
-    for i in range(length):
-        raw.append(data[pos + i])
-    pos += length
-    if h_bit:
-        return _StrDecodeResult(huffman_decode(raw), pos)
-    else:
-        var s = bytes_to_string(raw^)
-        return _StrDecodeResult(s, pos)
-
-
 def _qpack_decode_string_with_tables(
     data: List[Byte],
     offset: Int,
-    trie: List[_HuffTrieNode],
-    fast: List[_HuffFast],
+    trie: List[HuffTrieNode],
+    fast: List[HuffFastEntry],
 ) raises -> _StrDecodeResult:
-    """Decode a QPACK string literal, reusing pre-built Huffman tables.
-
-    Used by `QpackDecoder.decode` to amortize the ~13 µs trie + fast-table
-    build across all string literals in one field section (typically 3-5
-    Huffman strings per request header block).
-    """
+    """Decode a QPACK string literal, reusing pre-built Huffman tables."""
     if offset >= len(data):
         raise "QPACK: truncated string at offset " + String(offset)
     var h_bit = (data[offset] & 0x80) != 0
@@ -866,12 +228,11 @@ def _qpack_decode_string_with_tables(
         raise "QPACK: string data truncated"
     var end = pos + length
     if h_bit:
-        # Pass slice to Huffman decoder to avoid copy.
         var slice = List[Byte](capacity=length)
         for i in range(pos, end):
             slice.append(data[i])
         pos = end
-        return _StrDecodeResult(_huffman_decode_with_tables(slice, trie, fast), pos)
+        return _StrDecodeResult(_codec_huffman_decode_with_tables(slice, trie, fast), pos)
     else:
         var raw = List[Byte](capacity=length)
         for i in range(pos, end):
@@ -895,19 +256,19 @@ struct QpackCodecTables(Movable):
 
     var static_table: List[QpackStaticEntry]
     var huff_encode: List[HuffmanEntry]
-    var huff_trie: List[_HuffTrieNode]
-    var huff_fast: List[_HuffFast]
+    var huff_trie: List[HuffTrieNode]
+    var huff_fast: List[HuffFastEntry]
     var static_index: StaticTableIndex
 
     def __init__(out self):
         self.static_table = _qpack_static_table()
-        self.huff_encode = _huffman_encode_table()
+        self.huff_encode = build_huffman_table()
         try:
-            self.huff_trie = _build_huffman_trie()
-            self.huff_fast = _build_huffman_fast(self.huff_trie)
+            self.huff_trie = build_huffman_trie_from(self.huff_encode)
+            self.huff_fast = build_huffman_fast(self.huff_trie)
         except:
-            self.huff_trie = List[_HuffTrieNode]()
-            self.huff_fast = List[_HuffFast]()
+            self.huff_trie = List[HuffTrieNode]()
+            self.huff_fast = List[HuffFastEntry]()
         var pairs = List[Tuple[String, String]]()
         for i in range(len(self.static_table)):
             pairs.append(Tuple(self.static_table[i].name, self.static_table[i].value))
@@ -989,13 +350,13 @@ struct QpackEncoder(Movable):
 
         # 3. Literal Without Name Reference (§4.5.6)
         if self.use_huffman:
-            var name_huff_len = _huffman_encoded_len_with_table(name, self._tables[].huff_encode)
+            var name_huff_len = _codec_huffman_encoded_len(name, self._tables[].huff_encode)
             var idx = len(buf)
             buf.resize(idx + 6, Byte(0))
             buf[idx] = UInt8(0x20 | 0x08)
             var n = hpack_encode_int_at(buf, idx, name_huff_len, 3)
             buf.resize(idx + n, Byte(0))
-            _huffman_encode_into_with_table(buf, name, self._tables[].huff_encode)
+            _codec_huffman_encode_into(buf, name, self._tables[].huff_encode)
         else:
             var name_span = name.as_bytes()
             var idx = len(buf)
@@ -1008,21 +369,7 @@ struct QpackEncoder(Movable):
 
     def _qpack_encode_string_into_cached(self, mut buf: List[Byte], s: String) raises:
         """Encode string using cached Huffman table."""
-        if self.use_huffman:
-            var huff_len = _huffman_encoded_len_with_table(s, self._tables[].huff_encode)
-            var idx = len(buf)
-            buf.resize(idx + 6, Byte(0))
-            buf[idx] = UInt8(0x80)
-            var n = hpack_encode_int_at(buf, idx, huff_len, 7)
-            buf.resize(idx + n, Byte(0))
-            _huffman_encode_into_with_table(buf, s, self._tables[].huff_encode)
-        else:
-            var raw = s.as_bytes()
-            var idx = len(buf)
-            buf.resize(idx + 6, Byte(0))
-            var n = hpack_encode_int_at(buf, idx, len(raw), 7)
-            buf.resize(idx + n, Byte(0))
-            buf.extend(Span(raw))
+        hpack_encode_string_into(buf, s, self.use_huffman, self._tables[].huff_encode)
 
 
 # ---------------------------------------------------------------------------
@@ -1072,7 +419,7 @@ struct QpackDecoder(Movable):
                 raw.append(data[i])
             pos = end
             return _StrDecodeResult(
-                _huffman_decode_with_tables(raw, self._tables[].huff_trie, self._tables[].huff_fast),
+                _codec_huffman_decode_with_tables(raw, self._tables[].huff_trie, self._tables[].huff_fast),
                 pos,
             )
         else:
@@ -1162,7 +509,7 @@ struct QpackDecoder(Movable):
                 pos += name_len
                 var field_name: String
                 if name_huffman:
-                    field_name = _huffman_decode_with_tables(name_raw, trie, fast)
+                    field_name = _codec_huffman_decode_with_tables(name_raw, trie, fast)
                 else:
                     field_name = bytes_to_string(name_raw^)
                 var vr = _qpack_decode_string_with_tables(data, pos, trie, fast)

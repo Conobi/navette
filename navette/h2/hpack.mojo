@@ -6,6 +6,7 @@
 from .header import Header
 from .hpack_integer import decode_integer
 from navette.quic.codec import hpack_encode_int_at
+from navette.codec.huffman import hpack_encode_string_into
 from .hpack_huffman import HuffmanCodec
 from .hpack_table import StaticTable, DynamicTable
 from navette.util.byte_string import bytes_to_string
@@ -37,12 +38,6 @@ struct HpackConfig(Copyable, Movable):
         self.max_integer_value = copy.max_integer_value
         self.use_huffman = copy.use_huffman
 
-    def __init__(out self, *, deinit move: Self):
-        self.max_header_table_size = move.max_header_table_size
-        self.max_header_list_size = move.max_header_list_size
-        self.max_integer_value = move.max_integer_value
-        self.use_huffman = move.use_huffman
-
 
 struct HpackEncoder(Movable):
     """HPACK header block encoder (RFC 7541 Section 6)."""
@@ -67,7 +62,7 @@ struct HpackEncoder(Movable):
         self.config = move.config^
         self._pending_table_size = move._pending_table_size
 
-    def encode(mut self, headers: List[Header]) -> List[Byte]:
+    def encode(mut self, headers: List[Header]) raises -> List[Byte]:
         """Encode headers into HPACK wire bytes. Updates dynamic table.
 
         Delegates to encode_into.
@@ -76,7 +71,7 @@ struct HpackEncoder(Movable):
         self.encode_into(wire, headers)
         return wire^
 
-    def encode_into(mut self, mut buf: List[Byte], headers: List[Header]):
+    def encode_into(mut self, mut buf: List[Byte], headers: List[Header]) raises:
         """Append HPACK-encoded headers directly to buf. Updates dynamic table."""
         # Emit pending table size update
         if self._pending_table_size >= 0:
@@ -135,7 +130,7 @@ struct HpackEncoder(Movable):
         name_idx: Int,
         name: String,
         value: String,
-    ):
+    ) raises:
         """Emit literal with incremental indexing: 01XXXXXX."""
         var idx = len(wire)
         wire.resize(idx + 6, Byte(0))
@@ -148,26 +143,9 @@ struct HpackEncoder(Movable):
 
         self._emit_string(wire, value)
 
-    def _emit_string(self, mut wire: List[Byte], s: String):
+    def _emit_string(self, mut wire: List[Byte], s: String) raises:
         """Emit HPACK string literal (with optional Huffman)."""
-        var s_bytes = s.as_bytes()
-        var raw = List[Byte](capacity=len(s_bytes))
-        raw.extend(s_bytes)
-
-        if self.config.use_huffman:
-            var encoded = self.huffman.encode(raw)
-            var idx = len(wire)
-            wire.resize(idx + 6, Byte(0))
-            wire[idx] = UInt8(0x80)
-            var n = hpack_encode_int_at(wire, idx, len(encoded), 7)
-            wire.resize(idx + n, Byte(0))
-            wire.extend(Span(encoded))
-        else:
-            var idx = len(wire)
-            wire.resize(idx + 6, Byte(0))
-            var n = hpack_encode_int_at(wire, idx, len(raw), 7)
-            wire.resize(idx + n, Byte(0))
-            wire.extend(Span(raw))
+        hpack_encode_string_into(wire, s, self.config.use_huffman, self.huffman.codes)
 
 
 struct HpackDecoder(Movable):

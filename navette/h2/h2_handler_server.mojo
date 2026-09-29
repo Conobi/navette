@@ -66,15 +66,6 @@ struct _StreamCtx(Movable):
         self.headers_sent = False
         self.unacked_bytes = 0
 
-    def __init__(out self, *, deinit move: Self):
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.detached = move.detached
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
-        self.unacked_bytes = move.unacked_bytes
-
 
 # ---------------------------------------------------------------------------
 # H2HandlerServer — server adapter
@@ -118,16 +109,9 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._peer_addr = peer_addr^
         self._flush_outbound()
 
-    def __init__(out self, *, deinit move: Self):
-        self._conn = move._conn^
-        self.handler = move.handler^
-        self._outbuf = move._outbuf^
-        self._streams = move._streams^
-        self._peer_addr = move._peer_addr^
-
     def __deinit__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             keys.append(key)
         for ref key in keys:
@@ -354,7 +338,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         connection.  For each open stream, send response headers if ready,
         then drain body frames (data, trailers, end)."""
         # Snapshot stream IDs to avoid mutating dict while iterating
-        var stream_ids = List[Int]()
+        var stream_ids = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             stream_ids.append(key)
         for ref sid_ref in stream_ids:

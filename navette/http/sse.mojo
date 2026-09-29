@@ -34,12 +34,6 @@ struct ServerSentEvent(Copyable, Movable):
         self.id = copy.id
         self.retry = copy.retry
 
-    def __init__(out self, *, deinit move: Self):
-        self.event = move.event^
-        self.data = move.data^
-        self.id = move.id^
-        self.retry = move.retry^
-
 
 from navette.http.body import BodyFrame
 from navette.http.handler import DetachedBody
@@ -64,11 +58,6 @@ struct EventStreamReader(Movable):
         self._body = body^
         self._buffer = List[Byte]()
         self._body_ended = False
-
-    def __init__(out self, *, deinit move: Self):
-        self._body = move._body^
-        self._buffer = move._buffer^
-        self._body_ended = move._body_ended
 
     def is_end(self) -> Bool:
         """True once the underlying body is terminated AND the parse buffer

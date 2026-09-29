@@ -81,11 +81,6 @@ struct ResolvedAddr(Copyable, Movable):
         self.v4 = v4
         self.v6 = v6
 
-    def __init__(out self, *, deinit move: Self):
-        self.family = move.family
-        self.v4 = move.v4
-        self.v6 = move.v6
-
     @staticmethod
     def from_v4(v4: SocketAddrV4) -> Self:
         return Self(
@@ -244,10 +239,6 @@ struct _CacheEntry(Copyable, Movable):
         self.addrs = addrs^
         self.expires_secs = expires_secs
 
-    def __init__(out self, *, deinit move: Self):
-        self.addrs = move.addrs^
-        self.expires_secs = move.expires_secs
-
 
 struct Resolver(Movable):
     """A name resolver with an optional TTL cache.
@@ -266,10 +257,6 @@ struct Resolver(Movable):
     def __init__(out self, ttl_secs: Int = 60):
         self.ttl_secs = ttl_secs
         self.cache = Dict[String, _CacheEntry]()
-
-    def __init__(out self, *, deinit move: Self):
-        self.ttl_secs = move.ttl_secs
-        self.cache = move.cache^
 
     def resolve(mut self, host: String, port: Int) raises -> List[ResolvedAddr]:
         """Resolve `host:port`, consulting + populating the TTL cache."""

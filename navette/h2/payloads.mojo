@@ -73,11 +73,6 @@ struct DataPayload(Movable):
         self.padding_length = 0
         self.error = String("")
 
-    def __init__(out self, *, deinit move: Self):
-        self.data = move.data^
-        self.padding_length = move.padding_length
-        self.error = move.error^
-
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
 
@@ -134,15 +129,6 @@ struct HeadersPayload(Movable):
         self.stream_dependency = 0
         self.weight = 0
         self.error = String("")
-
-    def __init__(out self, *, deinit move: Self):
-        self.headers_block = move.headers_block^
-        self.padding_length = move.padding_length
-        self.priority_present = move.priority_present
-        self.exclusive = move.exclusive
-        self.stream_dependency = move.stream_dependency
-        self.weight = move.weight
-        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -209,12 +195,6 @@ struct PriorityPayload(Movable):
         self.weight = 0
         self.error = String("")
 
-    def __init__(out self, *, deinit move: Self):
-        self.exclusive = move.exclusive
-        self.stream_dependency = move.stream_dependency
-        self.weight = move.weight
-        self.error = move.error^
-
     def ok(self) -> Bool:
         return not self.error
 
@@ -253,10 +233,6 @@ struct RstStreamPayload(Movable):
     def __init__(out self):
         self.error_code = 0
         self.error = String("")
-
-    def __init__(out self, *, deinit move: Self):
-        self.error_code = move.error_code
-        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -303,10 +279,6 @@ struct Setting(Copyable, Movable):
         self.id = copy.id
         self.value = copy.value
 
-    def __init__(out self, *, deinit move: Self):
-        self.id = move.id
-        self.value = move.value
-
 
 struct SettingsPayload(Movable):
     """Decoded SETTINGS frame payload (RFC 9113 Section 6.5)."""
@@ -319,11 +291,6 @@ struct SettingsPayload(Movable):
         self.settings = List[Setting]()
         self.ack = False
         self.error = String("")
-
-    def __init__(out self, *, deinit move: Self):
-        self.settings = move.settings^
-        self.ack = move.ack
-        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -379,12 +346,6 @@ struct PushPromisePayload(Movable):
         self.headers_block = List[Byte]()
         self.padding_length = 0
         self.error = String("")
-
-    def __init__(out self, *, deinit move: Self):
-        self.promised_stream_id = move.promised_stream_id
-        self.headers_block = move.headers_block^
-        self.padding_length = move.padding_length
-        self.error = move.error^
 
     def ok(self) -> Bool:
         return not self.error
@@ -448,11 +409,6 @@ struct PingPayload(Movable):
         self.ack = False
         self.error = String("")
 
-    def __init__(out self, *, deinit move: Self):
-        self.opaque_data = move.opaque_data^
-        self.ack = move.ack
-        self.error = move.error^
-
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
 
@@ -494,12 +450,6 @@ struct GoawayPayload(Movable):
         self.error_code = 0
         self.debug_data = List[Byte]()
         self.error = String("")
-
-    def __init__(out self, *, deinit move: Self):
-        self.last_stream_id = move.last_stream_id
-        self.error_code = move.error_code
-        self.debug_data = move.debug_data^
-        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
@@ -543,10 +493,6 @@ struct WindowUpdatePayload(Movable):
         self.window_increment = 0
         self.error = String("")
 
-    def __init__(out self, *, deinit move: Self):
-        self.window_increment = move.window_increment
-        self.error = move.error^
-
     def ok(self) -> Bool:
         return self.error.byte_length() == 0
 
@@ -583,10 +529,6 @@ struct ContinuationPayload(Movable):
     def __init__(out self):
         self.headers_block = List[Byte]()
         self.error = String("")
-
-    def __init__(out self, *, deinit move: Self):
-        self.headers_block = move.headers_block^
-        self.error = move.error^
 
     def ok(self) -> Bool:
         return self.error.byte_length() == 0

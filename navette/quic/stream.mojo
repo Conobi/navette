@@ -128,13 +128,6 @@ struct RecvBuf(Copyable, Movable):
         self.max_gaps = copy.max_gaps
         self.total_received = copy.total_received
 
-    def __init__(out self, *, deinit move: Self):
-        self.seg_offsets = move.seg_offsets^
-        self.seg_data = move.seg_data^
-        self.read_offset = move.read_offset
-        self.max_gaps = move.max_gaps
-        self.total_received = move.total_received
-
     def _seg_end(self, i: Int) -> UInt64:
         """Return the exclusive end offset of segment i."""
         return self.seg_offsets[i] + UInt64(len(self.seg_data[i]))
@@ -363,8 +356,7 @@ struct RecvBuf(Copyable, Movable):
 
         var merged_len = Int(merged_end - merged_start)
         var merged = List[Byte](capacity=merged_len)
-        for _ in range(merged_len):
-            merged.append(Byte(0))
+        merged.resize(merged_len, Byte(0))
 
         # Lay down new data as the base.
         var dst_base = Int(new_start - merged_start)
@@ -424,8 +416,7 @@ struct RecvBuf(Copyable, Movable):
         var n = Int(deliver_end - self.read_offset)
 
         result = List[Byte](capacity=n)
-        for i in range(skip, skip + n):
-            result.append(self.seg_data[0][i])
+        result.extend(Span(self.seg_data[0])[skip : skip + n])
 
         self.read_offset = deliver_end
 
@@ -498,16 +489,6 @@ struct SendBuf(Copyable, Movable):
         self.fin_offset = Optional[UInt64](copy=copy.fin_offset)
         self.fin_acked = copy.fin_acked
         self.read_cursor = copy.read_cursor
-
-    def __init__(out self, *, deinit move: Self):
-        self.data = move.data^
-        self.offset = move.offset
-        self.unsent_offset = move.unsent_offset
-        self.acked_offset = move.acked_offset
-        self.fin = move.fin
-        self.fin_offset = move.fin_offset^
-        self.fin_acked = move.fin_acked
-        self.read_cursor = move.read_cursor
 
     def write(mut self, new_data: Span[Byte, _], set_fin: Bool) raises:
         """Append data to the outgoing buffer and optionally set the FIN flag."""

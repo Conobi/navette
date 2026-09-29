@@ -84,14 +84,6 @@ struct PreferredAddress(Copyable, Movable):
         self.cid = copy.cid.copy()
         self.stateless_reset_token = copy.stateless_reset_token.copy()
 
-    def __init__(out self, *, deinit move: Self):
-        self.ipv4_address = move.ipv4_address^
-        self.ipv4_port = move.ipv4_port
-        self.ipv6_address = move.ipv6_address^
-        self.ipv6_port = move.ipv6_port
-        self.cid = move.cid^
-        self.stateless_reset_token = move.stateless_reset_token^
-
 
 # ── TransportParams ──────────────────────────────────────────────────
 
@@ -163,27 +155,6 @@ struct TransportParams(Copyable, Movable):
         self.retry_scid = copy.retry_scid.copy()
         self.max_datagram_frame_size = copy.max_datagram_frame_size
         self.unknown = copy.unknown.copy()
-
-    def __init__(out self, *, deinit move: Self):
-        self.original_dcid = move.original_dcid^
-        self.max_idle_timeout = move.max_idle_timeout
-        self.stateless_reset_token = move.stateless_reset_token^
-        self.max_udp_payload_size = move.max_udp_payload_size
-        self.initial_max_data = move.initial_max_data
-        self.initial_max_stream_data_bidi_local = move.initial_max_stream_data_bidi_local
-        self.initial_max_stream_data_bidi_remote = move.initial_max_stream_data_bidi_remote
-        self.initial_max_stream_data_uni = move.initial_max_stream_data_uni
-        self.initial_max_streams_bidi = move.initial_max_streams_bidi
-        self.initial_max_streams_uni = move.initial_max_streams_uni
-        self.ack_delay_exponent = move.ack_delay_exponent
-        self.max_ack_delay = move.max_ack_delay
-        self.disable_active_migration = move.disable_active_migration
-        self.preferred_address = move.preferred_address^
-        self.active_connection_id_limit = move.active_connection_id_limit
-        self.initial_scid = move.initial_scid^
-        self.retry_scid = move.retry_scid^
-        self.max_datagram_frame_size = move.max_datagram_frame_size
-        self.unknown = move.unknown^
 
 
 # ── Defaults ─────────────────────────────────────────────────────────

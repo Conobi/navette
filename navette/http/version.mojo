@@ -37,9 +37,6 @@ struct Version(Copyable, Movable, Writable):
     def __init__(out self, *, copy: Self):
         self._tag = copy._tag
 
-    def __init__(out self, *, deinit move: Self):
-        self._tag = move._tag
-
     def __eq__(self, rhs: Self) -> Bool:
         return self._tag == rhs._tag
 

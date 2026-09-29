@@ -20,10 +20,6 @@ struct Priority(Copyable, Movable):
         self.urgency = copy.urgency
         self.incremental = copy.incremental
 
-    def __init__(out self, *, deinit move: Self):
-        self.urgency = move.urgency
-        self.incremental = move.incremental
-
     @staticmethod
     def default() -> Self:
         """RFC 9218 §4.1 / §4.2 defaults: u=3, i=false."""

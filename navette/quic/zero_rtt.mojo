@@ -108,27 +108,27 @@ def drive_replay_check_for_test(
 
     if simulated_rc != Int32(0):
         zrtt.replay_decision = UInt8(2)
-        prof.record_replay_reject_no_authenticator()
+        prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
         return
 
     if simulated_raises:
         zrtt.replay_decision = UInt8(2)
-        prof.record_replay_reject_no_authenticator()
+        prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
         return
 
     if simulated_decision_kind == UInt8(0):
         # accept
         zrtt.replay_decision = UInt8(1)
-        prof.record_replay_accept()
+        prof.record_counter(CounterId.ZERO_RTT_REPLAY_ACCEPT)
     elif simulated_decision_kind == UInt8(1):
         # duplicate
         zrtt.replay_decision = UInt8(2)
-        prof.record_replay_reject_duplicate()
+        prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)
     elif simulated_decision_kind == UInt8(2):
         # per_key_quota
         zrtt.replay_decision = UInt8(2)
-        prof.record_replay_reject_per_key_quota()
+        prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)
     else:
         # global_ceiling (kind == 3)
         zrtt.replay_decision = UInt8(2)
-        prof.record_replay_reject_global_ceiling()
+        prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)

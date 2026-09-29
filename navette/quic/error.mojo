@@ -22,11 +22,6 @@ struct QuicTransportError(Copyable, Movable, Writable):
         self.frame_type = copy.frame_type
         self.reason = copy.reason
 
-    def __init__(out self, *, deinit move: Self):
-        self.code = move.code
-        self.frame_type = move.frame_type
-        self.reason = move.reason^
-
     def write_to[W: Writer](self, mut writer: W):
         writer.write("QuicTransportError(")
         writer.write(hex(Int(self.code)))

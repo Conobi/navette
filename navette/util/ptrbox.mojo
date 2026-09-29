@@ -30,9 +30,6 @@ struct PtrBox[T: AnyType](Copyable, Movable):
     def __init__(out self, *, copy: Self):
         self._ptr = copy._ptr
 
-    def __init__(out self, *, deinit move: Self):
-        self._ptr = move._ptr
-
     def ptr(self) -> Pointer[Self.T, MutUntrackedOrigin]:
         return self._ptr
 

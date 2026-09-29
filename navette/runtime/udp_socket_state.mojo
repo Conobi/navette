@@ -74,11 +74,6 @@ struct UdpSocketState(Movable):
             except:
                 pass
 
-    def __init__(out self, *, deinit move: Self):
-        self._coalesced_recv = move._coalesced_recv
-        self._max_segments = move._max_segments
-        self._mtu = move._mtu
-
     def max_send_segments(self) -> Int:
         """Maximum datagrams the kernel can segment from a single send.
 

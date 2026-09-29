@@ -40,6 +40,7 @@ from navette.tls.early_data_filter import (
     EarlyDataPredicateFn,
     IdempotentOnlyFilter,
 )
+from navette.util.ctx_pool import CtxPool
 from navette.util.ptrbox import PtrBox
 from navette.util.null_ptr import null_ptr
 
@@ -102,17 +103,6 @@ struct CoroStreamCtx(Movable):
         self.response_ended = False
         self.headers_sent = False
 
-    def __init__(out self, *, deinit move: Self):
-        self.request = move.request^
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.caps = move.caps^
-        self.stream_id = move.stream_id
-        self.extra_data = move.extra_data
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
-
 
 # ---------------------------------------------------------------------------
 # Per-stream memory budget (R8 in the sprint roadmap)
@@ -144,53 +134,6 @@ def _free_stream(ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]):
     ctx_ptr.unsafe_free()
 
 
-# ---------------------------------------------------------------------------
-# CoroStreamCtxPool — per-connection allocation pool
-# ---------------------------------------------------------------------------
-#
-# Recycles `CoroStreamCtx`-sized heap blocks across requests on the same
-# connection. Capacity 16 mirrors the prior H2 default and matches
-# typical h2load / h3load `-m 10` active-streams-per-connection.
-
-
-struct CoroStreamCtxPool(Movable):
-    """Free-list of typed `CoroStreamCtx`-sized heap blocks. Caller
-    owns initialisation/destruction of the pointee; the pool only
-    manages the underlying memory."""
-
-    var _free: List[Pointer[CoroStreamCtx, MutUntrackedOrigin]]
-    var _capacity: Int
-
-    def __init__(out self, *, capacity: Int = 16):
-        self._free = List[Pointer[CoroStreamCtx, MutUntrackedOrigin]]()
-        self._capacity = capacity
-
-    def __init__(out self, *, deinit move: Self):
-        self._free = move._free^
-        self._capacity = move._capacity
-
-    def __deinit__(deinit self):
-        for ref ptr in self._free:
-            ptr.unsafe_free()
-
-    def acquire(mut self) raises -> Pointer[CoroStreamCtx, MutUntrackedOrigin]:
-        """Take a free slot if one is available, else allocate fresh."""
-        if len(self._free) > 0:
-            return self._free.pop()
-        return _heap_alloc[CoroStreamCtx](1)
-
-    def release(
-        mut self, ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
-    ):
-        """Return a slot whose pointee has already been destroyed.
-        Beyond capacity → free; under capacity → keep for reuse."""
-        if len(self._free) < self._capacity:
-            self._free.append(ptr)
-        else:
-            ptr.unsafe_free()
-
-    def idle_count(self) -> Int:
-        return len(self._free)
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +159,7 @@ struct H3CoroServer(Movable):
     var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[List[Byte]]
     var _streams: Dict[Int, PtrBox[CoroStreamCtx]]
-    var _ctx_pool: CoroStreamCtxPool
+    var _ctx_pool: CtxPool[CoroStreamCtx]
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
     # the `QuicServerConfig` that birthed this connection. Populated
     # only when 0-RTT is enabled in the config; None for rejection-mode
@@ -260,25 +203,14 @@ struct H3CoroServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[List[Byte]]()
         self._streams = Dict[Int, PtrBox[CoroStreamCtx]]()
-        self._ctx_pool = CoroStreamCtxPool(capacity=16)
+        self._ctx_pool = CtxPool[CoroStreamCtx](capacity=16)
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
         self._pending_response_streams = List[Int]()
 
-    def __init__(out self, *, deinit move: Self):
-        self._h3 = move._h3^
-        self._body_fn = move._body_fn
-        self._extra_data = move._extra_data
-        self._outbuf = move._outbuf^
-        self._streams = move._streams^
-        self._ctx_pool = move._ctx_pool^
-        self._early_data_filter_ptr = move._early_data_filter_ptr
-        self._early_data_predicate_fn = move._early_data_predicate_fn
-        self._pending_response_streams = move._pending_response_streams^
-
     def __deinit__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             keys.append(key)
         for ref key in keys:
@@ -424,7 +356,6 @@ struct H3CoroServer(Movable):
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
-
         for ref field in ev.fields:
             var name = field.name
             var value = field.value
@@ -575,7 +506,7 @@ struct H3CoroServer(Movable):
         """GOAWAY_RECEIVED / CONNECTION_CLOSED: free all open streams.
         The handler has already returned synchronously, so there is nothing
         to wake up — just reclaim memory."""
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             keys.append(key)
         for ref sid in keys:

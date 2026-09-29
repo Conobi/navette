@@ -111,32 +111,6 @@ struct ParserStrictness(Copyable, Movable):
         self.allow_lenient_keep_alive = copy.allow_lenient_keep_alive
         self.allow_prefix_crlf = copy.allow_prefix_crlf
 
-    def __init__(out self, *, deinit move: Self):
-        self.allow_bare_lf = move.allow_bare_lf
-        self.allow_bare_cr_in_value = move.allow_bare_cr_in_value
-        self.allow_http_09 = move.allow_http_09
-        self.allow_nonstandard_version = move.allow_nonstandard_version
-        self.allow_multiple_spaces = move.allow_multiple_spaces
-        self.allow_obs_fold = move.allow_obs_fold
-        self.allow_space_before_colon = move.allow_space_before_colon
-        self.allow_header_value_ctl = move.allow_header_value_ctl
-        self.allow_target_ctl = move.allow_target_ctl
-        self.ignore_invalid_header_names = move.ignore_invalid_header_names
-        self.allow_non_chunked_te = move.allow_non_chunked_te
-        self.allow_chunk_extensions = move.allow_chunk_extensions
-        self.allow_cl_leading_zeros = move.allow_cl_leading_zeros
-        self.allow_duplicate_cl = move.allow_duplicate_cl
-        self.allow_missing_host_11 = move.allow_missing_host_11
-        self.allow_duplicate_host = move.allow_duplicate_host
-        self.allow_multiple_spaces_in_status_line = move.allow_multiple_spaces_in_status_line
-        self.allow_space_before_first_header = move.allow_space_before_first_header
-        self.allow_missing_crlf_after_chunk = move.allow_missing_crlf_after_chunk
-        self.allow_missing_reason_sp = move.allow_missing_reason_sp
-        self.allow_response_cl_te = move.allow_response_cl_te
-        self.allow_data_after_close = move.allow_data_after_close
-        self.allow_lenient_keep_alive = move.allow_lenient_keep_alive
-        self.allow_prefix_crlf = move.allow_prefix_crlf
-
     def copy(self) -> Self:
         return Self(copy=self)
 
@@ -230,15 +204,6 @@ struct ParseConfig(Copyable, Movable):
         self.max_headers_total = copy.max_headers_total
         self.max_chunk_size = copy.max_chunk_size
         self.max_body_size = copy.max_body_size
-
-    def __init__(out self, *, deinit move: Self):
-        self.strictness = move.strictness^
-        self.max_request_line = move.max_request_line
-        self.max_header_count = move.max_header_count
-        self.max_header_size = move.max_header_size
-        self.max_headers_total = move.max_headers_total
-        self.max_chunk_size = move.max_chunk_size
-        self.max_body_size = move.max_body_size
 
     def copy(self) -> Self:
         return Self(copy=self)

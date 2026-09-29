@@ -31,10 +31,6 @@ struct FilterStrategy(Movable):
         self.store = store^
         self.filter = filter^
 
-    def __init__(out self, *, deinit move: Self):
-        self.store = move.store^
-        self.filter = move.filter^
-
 
 struct PredicateStrategy(Movable):
     """Predicate: store + user-supplied predicate function."""
@@ -44,10 +40,6 @@ struct PredicateStrategy(Movable):
     def __init__(out self, var store: InMemoryEarlyDataStore, predicate_fn: EarlyDataPredicateFn):
         self.store = store^
         self.predicate_fn = predicate_fn
-
-    def __init__(out self, *, deinit move: Self):
-        self.store = move.store^
-        self.predicate_fn = move.predicate_fn
 
 
 struct TlsClientConfig(Movable):
@@ -74,10 +66,6 @@ struct TlsClientConfig(Movable):
             self._handle = rlib[].client_config_new()
         if self._handle < 0:
             raise "rlsm_client_config_new failed: " + rlib[].last_error()
-
-    def __init__(out self, *, deinit move: Self):
-        self._lib = move._lib^
-        self._handle = move._handle
 
     def __deinit__(deinit self):
         """Release the Rust-side config handle.
@@ -181,10 +169,6 @@ struct TlsServerConfig(Movable):
             self._handle = handle
             raise "rlsm_server_config_new failed: " + rlib[].last_error()
         self._handle = handle
-
-    def __init__(out self, *, deinit move: Self):
-        self._lib = move._lib^
-        self._handle = move._handle
 
     def __deinit__(deinit self):
         """Release the Rust-side config handle.
@@ -454,12 +438,6 @@ struct QuicServerConfig(Movable):
                 )
             )
 
-    def __init__(out self, *, deinit move: Self):
-        self._lib = move._lib^
-        self._handle = move._handle
-        self._max_early_data = move._max_early_data
-        self._early_data = move._early_data^
-
     def __deinit__(deinit self):
         """Release the Rust-side config handle."""
         if self._handle > 0:
@@ -604,10 +582,6 @@ struct QuicClientConfig(Movable):
         # Keep out_handle_buf alive across the post-FFI `[0]` read above.
         _ = out_handle_buf
         return QuicClientConfig(_lib=lib, _handle=handle)
-
-    def __init__(out self, *, deinit move: Self):
-        self._lib = move._lib^
-        self._handle = move._handle
 
     def __deinit__(deinit self):
         """Release the Rust-side config handle.

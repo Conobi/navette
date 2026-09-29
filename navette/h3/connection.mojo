@@ -112,16 +112,6 @@ struct H3Event(Copyable, Movable):
         self.reason = copy.reason
         self.last_stream_id = copy.last_stream_id
 
-    def __init__(out self, *, deinit move: Self):
-        self.kind = move.kind
-        self.stream_id = move.stream_id
-        self.fields = move.fields^
-        self.data = move.data^
-        self.fin = move.fin
-        self.error_code = move.error_code
-        self.reason = move.reason^
-        self.last_stream_id = move.last_stream_id
-
 
 # ---------------------------------------------------------------------------
 # _H3StreamBuf — per-stream byte accumulator (Copyable for Dict storage)
@@ -142,11 +132,6 @@ struct _H3StreamBuf(Copyable, Movable):
         self.buf = List[Byte](copy=copy.buf)
         self.type_byte = copy.type_byte.copy()
         self.is_uni = copy.is_uni
-
-    def __init__(out self, *, deinit move: Self):
-        self.buf = move.buf^
-        self.type_byte = move.type_byte^
-        self.is_uni = move.is_uni
 
 
 # ---------------------------------------------------------------------------
@@ -236,33 +221,6 @@ struct H3Connection(Movable):
         self.profile_ptr = None
         self._send_scratch = List[List[Byte]](capacity=1)
         self._wire_scratch = List[Byte](capacity=256)
-
-    def __init__(out self, *, deinit move: Self):
-        self._quic = move._quic^
-        self._is_server = move._is_server
-        self._stream_bufs = move._stream_bufs^
-        self._h3_events = move._h3_events^
-        self._local_ctrl_sid = move._local_ctrl_sid^
-        self._local_qenc_sid = move._local_qenc_sid^
-        self._local_qdec_sid = move._local_qdec_sid^
-        self._init_done = move._init_done
-        self._peer_ctrl_sid = move._peer_ctrl_sid^
-        self._peer_qenc_sid = move._peer_qenc_sid^
-        self._peer_qdec_sid = move._peer_qdec_sid^
-        self._peer_ctrl_first_frame_seen = move._peer_ctrl_first_frame_seen
-        self._peer_ctrl_settings = move._peer_ctrl_settings
-        self._goaway_sent = move._goaway_sent^
-        self._peer_goaway_sid = move._peer_goaway_sid^
-        self._enc = move._enc^
-        self._dec = move._dec^
-        self._request_headers_seen = move._request_headers_seen^
-        self._local_h3_datagram_enabled = move._local_h3_datagram_enabled
-        self._peer_h3_datagram_enabled = move._peer_h3_datagram_enabled
-        self.profile_ptr = move.profile_ptr
-        self._h3_events_head = move._h3_events_head
-        self.egress_capped = move.egress_capped
-        self._send_scratch = move._send_scratch^
-        self._wire_scratch = move._wire_scratch^
 
     @staticmethod
     def server(
@@ -519,7 +477,7 @@ struct H3Connection(Movable):
         mut self, stream_id: UInt64, fields: List[QpackHeaderField], fin: Bool
     ) raises:
         """QPACK-encode fields → HeadersFrame → send_stream_data."""
-        var encoded = List[Byte]()
+        var encoded = List[Byte](capacity=len(fields) * 32)
         self._enc.encode(encoded, fields)
         var hf = HeadersFrame(encoded^)
         self._wire_scratch.clear()
@@ -593,7 +551,7 @@ struct H3Connection(Movable):
         var prefix = w.finish()
         # Coalesce the quarter-id prefix and the application payload into
         # a single buffer so the QUIC layer sees one DATAGRAM frame.
-        var buf = List[Byte]()
+        var buf = List[Byte](capacity=len(prefix) + len(payload))
         for ref byte in prefix:
             buf.append(byte)
         for ref byte in payload:
@@ -634,9 +592,8 @@ struct H3Connection(Movable):
         if quarter_id > UInt64(0x3FFFFFFFFFFFFFFF):
             return
         var stream_id = quarter_id * UInt64(4)
-        var rest = List[Byte]()
-        for i in range(r.pos, len(payload)):
-            rest.append(payload[i])
+        var rest = List[Byte](capacity=len(payload) - r.pos)
+        rest.extend(Span(payload)[r.pos:])
         var h3ev = H3Event(H3Event.DATAGRAM_RECEIVED)
         h3ev.stream_id = stream_id
         h3ev.data = rest^
@@ -652,14 +609,11 @@ struct H3Connection(Movable):
         self._local_qdec_sid = Optional[UInt64](qdec_sid)
 
         # Write stream type varint to each (single byte: 0x00, 0x02, 0x03)
-        var ctrl_type = List[Byte]()
-        ctrl_type.append(UInt8(0x00))
+        var ctrl_type: List[Byte] = [UInt8(0x00)]
         self._quic.send_stream_data(ctrl_sid, Span(ctrl_type), False)
-        var qenc_type = List[Byte]()
-        qenc_type.append(UInt8(0x02))
+        var qenc_type: List[Byte] = [UInt8(0x02)]
         self._quic.send_stream_data(qenc_sid, Span(qenc_type), False)
-        var qdec_type = List[Byte]()
-        qdec_type.append(UInt8(0x03))
+        var qdec_type: List[Byte] = [UInt8(0x03)]
         self._quic.send_stream_data(qdec_sid, Span(qdec_type), False)
 
         # Send SETTINGS on control stream (RFC 9114 §7.2.4)

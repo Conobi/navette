@@ -17,6 +17,3 @@ struct Header(Copyable, Movable):
         self.name = copy.name
         self.value = copy.value
 
-    def __init__(out self, *, deinit move: Self):
-        self.name = move.name^
-        self.value = move.value^

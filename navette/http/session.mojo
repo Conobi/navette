@@ -34,13 +34,6 @@ struct RequestHandle(Movable):
         self._recv_body = Optional[RecvBody]()
         self._error = Optional[StreamError]()
 
-    def __init__(out self, *, deinit move: Self):
-        self._id = move._id
-        self._state = move._state
-        self._response = move._response^
-        self._recv_body = move._recv_body^
-        self._error = move._error^
-
     # --- Public API ---
 
     def id(self) -> UInt64:

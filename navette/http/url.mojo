@@ -18,12 +18,6 @@ struct ParsedUrl(Movable):
         self.port = port
         self.path = path
 
-    def __init__(out self, *, deinit move: Self):
-        self.scheme = move.scheme^
-        self.host = move.host^
-        self.port = move.port
-        self.path = move.path^
-
     def to_origin(self) -> Origin:
         return Origin(scheme=self.scheme, host=self.host, port=self.port)
 

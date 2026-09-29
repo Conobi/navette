@@ -123,7 +123,7 @@ def request_to_h2_headers(req: Request) raises -> List[Header]:
       - :authority from host header
     Skips host and x-h2-scheme from regular headers (already mapped).
     """
-    var result = List[Header]()
+    var result = List[Header](capacity=4 + len(req.headers))
 
     # :method
     result.append(Header(":method", String(req.method)))
@@ -206,7 +206,7 @@ def response_to_h2_headers(
 
     Builds :status pseudo-header followed by all regular headers.
     """
-    var result = List[Header]()
+    var result = List[Header](capacity=1 + len(headers))
 
     # :status
     result.append(Header(":status", String(status)))
@@ -230,7 +230,7 @@ def headers_from_h2(h2_headers: List[Header]) -> Headers:
 
 def headers_to_h2(headers: Headers) -> List[Header]:
     """Convert Headers to List[Header]."""
-    var result = List[Header]()
+    var result = List[Header](capacity=len(headers))
     for i in range(len(headers)):
         result.append(Header(headers.name_at(i), headers.value_at(i)))
     return result^

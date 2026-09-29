@@ -193,8 +193,7 @@ def _parse_ipv6_segments(s: String) -> Optional[List[UInt16]]:
     for ref seg in left:
         result.append(seg)
     var zeros = 8 - total
-    for _ in range(zeros):
-        result.append(UInt16(0))
+    result.resize(len(result) + zeros, UInt16(0))
     for ref seg in right:
         result.append(seg)
 

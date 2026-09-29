@@ -28,9 +28,6 @@ struct EncryptionLevel(ImplicitlyCopyable, Equatable):
     def __init__(out self, *, copy: Self):
         self._value = copy._value
 
-    def __init__(out self, *, deinit move: Self):
-        self._value = move._value
-
     def __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
@@ -83,10 +80,6 @@ struct AckRangeEntry(ImplicitlyCopyable):
         self.start = copy.start
         self.end = copy.end
 
-    def __init__(out self, *, deinit move: Self):
-        self.start = move.start
-        self.end = move.end
-
 
 # ── SentPacket ───────────────────────────────────────────────────────
 
@@ -127,15 +120,6 @@ struct SentPacket(Copyable, Movable):
         self.size = copy.size
         self.frames = List[Frame](copy=copy.frames)
         self.ecn_mark = copy.ecn_mark
-
-    def __init__(out self, *, deinit move: Self):
-        self.pn = move.pn
-        self.time_sent = move.time_sent
-        self.ack_eliciting = move.ack_eliciting
-        self.in_flight = move.in_flight
-        self.size = move.size
-        self.frames = move.frames^
-        self.ecn_mark = move.ecn_mark
 
 
 # ── PacketNumberSpace ────────────────────────────────────────────────
@@ -582,7 +566,7 @@ struct PacketNumberSpace(Copyable, Movable):
         sendable.
         """
         var result = List[SentPacket]()
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self.sent_packets))
         for key in self.sent_packets.keys():
             keys.append(key)
         for ref key in keys:

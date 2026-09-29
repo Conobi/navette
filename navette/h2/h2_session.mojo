@@ -63,15 +63,6 @@ struct _ClientCtx(Movable):
         self.errored = False
         self.error_code = UInt32(0)
 
-    def __init__(out self, *, deinit move: Self):
-        self.handle_id = move.handle_id
-        self.status_code = move.status_code
-        self.headers = move.headers^
-        self.body_data = move.body_data^
-        self.complete = move.complete
-        self.errored = move.errored
-        self.error_code = move.error_code
-
 
 # ---------------------------------------------------------------------------
 # H2Session — client session adapter
@@ -113,13 +104,6 @@ struct H2Session(Session):
         self._stream_ctxs = Dict[Int, PtrBox[_ClientCtx]]()
         self._handle_to_stream = Dict[Int, Int]()
         self._flush_outbound()
-
-    def __init__(out self, *, deinit move: Self):
-        self._conn = move._conn^
-        self._outbuf = move._outbuf^
-        self._next_handle_id = move._next_handle_id
-        self._stream_ctxs = move._stream_ctxs^
-        self._handle_to_stream = move._handle_to_stream^
 
     def __deinit__(deinit self):
         """Free all heap-allocated client stream contexts."""
@@ -258,7 +242,6 @@ struct H2Session(Session):
         remaining heap-allocated stream contexts."""
         if not self._conn.is_closed():
             self._conn.send_goaway(UInt32(0), UInt32(H2_NO_ERROR))
-        # Free all heap-allocated contexts
         var keys = List[Int]()
         for key in self._stream_ctxs.keys():
             keys.append(key)

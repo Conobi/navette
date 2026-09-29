@@ -52,15 +52,6 @@ struct H1Session(Session):
         self._inflight_method = Optional[Method]()
         self._streaming = False
 
-    def __init__(out self, *, deinit move: Self):
-        self._conn = move._conn^
-        self._outbuf = move._outbuf^
-        self._next_id = move._next_id
-        self._pending_handle_id = move._pending_handle_id
-        self._has_inflight = move._has_inflight
-        self._inflight_method = move._inflight_method^
-        self._streaming = move._streaming
-
     # --- Session trait API ---
 
     def submit(mut self, var req: Request) raises -> RequestHandle:

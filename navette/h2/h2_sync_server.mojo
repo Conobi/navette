@@ -46,6 +46,7 @@ from .pseudo_headers import (
     headers_from_h2,
     headers_to_h2,
 )
+from navette.util.ctx_pool import CtxPool
 from navette.util.ptrbox import PtrBox
 from navette.util.null_ptr import null_ptr
 
@@ -117,18 +118,6 @@ struct CoroStreamCtx(Movable):
         self.headers_sent = False
         self.unacked_bytes = 0
 
-    def __init__(out self, *, deinit move: Self):
-        self.request = move.request^
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.caps = move.caps^
-        self.stream_id = move.stream_id
-        self.extra_data = move.extra_data
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
-        self.unacked_bytes = move.unacked_bytes
-
 
 # ---------------------------------------------------------------------------
 # Per-stream memory budget (R8 in the sprint roadmap)
@@ -189,48 +178,6 @@ def _free_stream(ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]):
 # Capacity 16 mirrors that pool's default capacity and matches
 # typical h2load `-m 10` active-streams-per-connection.
 
-struct CoroStreamCtxPool(Movable):
-    """Free-list of typed `CoroStreamCtx`-sized heap blocks. Caller
-    owns initialisation/destruction of the pointee; the pool only
-    manages the underlying memory."""
-
-    # Holds bare (typed, uninitialised) memory blocks — pointee has been
-    # destroyed before re-entry, so this is *not* a list of live PtrBox.
-    var _free: List[Pointer[CoroStreamCtx, MutUntrackedOrigin]]
-    var _capacity: Int
-
-    def __init__(out self, *, capacity: Int = 16):
-        self._free = List[Pointer[CoroStreamCtx, MutUntrackedOrigin]]()
-        self._capacity = capacity
-
-    def __init__(out self, *, deinit move: Self):
-        self._free = move._free^
-        self._capacity = move._capacity
-
-    def __deinit__(deinit self):
-        for ref ptr in self._free:
-            ptr.unsafe_free()
-
-    def acquire(mut self) raises -> Pointer[CoroStreamCtx, MutUntrackedOrigin]:
-        """Take a free slot if one is available, else allocate fresh."""
-        if len(self._free) > 0:
-            return self._free.pop()
-        return _heap_alloc[CoroStreamCtx](1)
-
-    def release(
-        mut self, ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
-    ):
-        """Return a slot whose pointee has already been destroyed.
-        Beyond capacity → free; under capacity → keep for reuse."""
-        if len(self._free) < self._capacity:
-            self._free.append(ptr)
-        else:
-            ptr.unsafe_free()
-
-    def idle_count(self) -> Int:
-        return len(self._free)
-
-
 # ---------------------------------------------------------------------------
 # H2CoroServer — server adapter using a per-stream state machine
 # ---------------------------------------------------------------------------
@@ -248,7 +195,7 @@ struct H2CoroServer(Movable):
     var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[Byte]
     var _streams: Dict[Int, PtrBox[CoroStreamCtx]]
-    var _ctx_pool: CoroStreamCtxPool
+    var _ctx_pool: CtxPool[CoroStreamCtx]
 
     # --- Constructors -------------------------------------------------------
 
@@ -271,7 +218,7 @@ struct H2CoroServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[CoroStreamCtx]]()
-        self._ctx_pool = CoroStreamCtxPool(capacity=16)
+        self._ctx_pool = CtxPool[CoroStreamCtx](capacity=16)
         self._flush_outbound()
 
     def __init__(
@@ -291,20 +238,12 @@ struct H2CoroServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[CoroStreamCtx]]()
-        self._ctx_pool = CoroStreamCtxPool(capacity=16)
+        self._ctx_pool = CtxPool[CoroStreamCtx](capacity=16)
         self._flush_outbound()
-
-    def __init__(out self, *, deinit move: Self):
-        self._conn = move._conn^
-        self._body_fn = move._body_fn
-        self._extra_data = move._extra_data
-        self._outbuf = move._outbuf^
-        self._streams = move._streams^
-        self._ctx_pool = move._ctx_pool^
 
     def __deinit__(deinit self):
         """Destroy and free all heap-allocated stream contexts."""
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             keys.append(key)
         for ref key in keys:
@@ -514,7 +453,7 @@ struct H2CoroServer(Movable):
         """Handle GOAWAY_RECEIVED / CONNECTION_TERMINATED: free all
         streams.  The handler has already returned, so there's nothing
         to wake up — just reclaim memory."""
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             keys.append(key)
         for ref key in keys:
@@ -531,7 +470,7 @@ struct H2CoroServer(Movable):
         """Drain pending response data from stream contexts into the H2
         connection.  Uses take_pointee/init_pointee_move to safely
         interleave ctx access with self._conn mutations."""
-        var stream_ids = List[Int]()
+        var stream_ids = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             stream_ids.append(key)
         for ref sid_ref in stream_ids:

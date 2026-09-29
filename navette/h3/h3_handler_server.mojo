@@ -106,14 +106,6 @@ struct _H3StreamCtx(Movable):
         self.response_ended = False
         self.headers_sent = False
 
-    def __init__(out self, *, deinit move: Self):
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.detached = move.detached
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
-
 
 # ---------------------------------------------------------------------------
 # H3HandlerServer
@@ -176,17 +168,8 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self._early_data_predicate_fn = predicate_fn
         self._raise_on_next_drain = False
 
-    def __init__(out self, *, deinit move: Self):
-        self._h3 = move._h3^
-        self.handler = move.handler^
-        self._streams = move._streams^
-        self.profile_ptr = move.profile_ptr
-        self._early_data_filter_ptr = move._early_data_filter_ptr
-        self._early_data_predicate_fn = move._early_data_predicate_fn
-        self._raise_on_next_drain = move._raise_on_next_drain
-
     def __deinit__(deinit self):
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             keys.append(key)
         for ref key in keys:
@@ -323,7 +306,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
-
         for ref field in ev.fields:
             var name = field.name
             var value = field.value
@@ -483,7 +465,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var _ct_start = UInt64(0)
         comptime if PROFILE_ACCEPT:
             _ct_start = rdtsc()
-        var sids = List[Int]()
+        var sids = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             sids.append(key)
         for ref sid in sids:

@@ -48,7 +48,6 @@ After construction, the caller must:
 from std.collections import Optional
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
-from std.ffi import external_call
 
 from bouclette import (
     WatchLoop,
@@ -64,88 +63,8 @@ from bouclette.net import Shutdown
 from navette.http.handler import StreamHandler
 from navette.h1.handler_server import H1HandlerServer
 from navette.h1.config import ParseConfig
-from navette.util.owned_alloc import Owned
+from navette.net.peer_addr import peer_addr_from_fd
 from navette.util.null_ptr import null_ptr
-
-
-# ── Peer address extraction ─────────────────────────────────────────────────
-
-
-def _peer_addr_from_fd(fd: Int32) -> String:
-    """Extract the peer IP address from a connected socket fd via getpeername(2).
-
-    Handles IPv4, IPv6, and IPv4-mapped IPv6 (::ffff:a.b.c.d) addresses.
-    Returns the IP as a string (e.g. "192.168.1.1" or "fe80:0:0:0:0:0:0:1").
-    Returns "" on failure.
-    """
-    # sockaddr_storage is 128 bytes on Linux, enough for any address family.
-    var addr_buf = Owned[UInt8](128)
-    var addr = addr_buf.ptr()
-    for i in range(128):
-        addr[unsafe_offset=i] = UInt8(0)
-
-    # addrlen is an in/out parameter for getpeername(2).
-    var len_buf = Owned[Int32](1)
-    var len_ptr = len_buf.ptr()
-    len_ptr[unsafe_offset=0] = Int32(128)
-
-    var rc = external_call["getpeername", Int32](fd, addr, len_ptr)
-    if rc < 0:
-        return String("")
-
-    var family = Int(addr[unsafe_offset=0])  # sa_family low byte (LE u16)
-
-    if family == 2:  # AF_INET
-        # sockaddr_in layout: family(2) port(2 BE) addr(4) zero(8)
-        return (
-            String(Int(addr[unsafe_offset=4])) + "." + String(Int(addr[unsafe_offset=5])) + "."
-            + String(Int(addr[unsafe_offset=6])) + "." + String(Int(addr[unsafe_offset=7]))
-        )
-
-    if family == 10:  # AF_INET6
-        # sockaddr_in6 layout: family(2) port(2 BE) flowinfo(4) addr(16) scope_id(4)
-        # Check for IPv4-mapped address (::ffff:a.b.c.d) — bytes 8..17 = 0,
-        # bytes 18..19 = 0xFF, bytes 20..23 = IPv4 octets.
-        var is_v4_mapped = True
-        for i in range(10):
-            if addr[unsafe_offset=8 + i] != UInt8(0):
-                is_v4_mapped = False
-                break
-        if is_v4_mapped and addr[unsafe_offset=18] == UInt8(0xFF) and addr[unsafe_offset=19] == UInt8(0xFF):
-            return (
-                String(Int(addr[unsafe_offset=20])) + "." + String(Int(addr[unsafe_offset=21])) + "."
-                + String(Int(addr[unsafe_offset=22])) + "." + String(Int(addr[unsafe_offset=23]))
-            )
-
-        # Full IPv6 — format as 8 colon-separated hex segments (no :: compression).
-        var result = String("")
-        for i in range(8):
-            if i > 0:
-                result += ":"
-            var hi = Int(addr[unsafe_offset=8 + 2 * i])
-            var lo = Int(addr[unsafe_offset=8 + 2 * i + 1])
-            var seg = (hi << 8) | lo
-            # Format segment as lowercase hex (1-4 digits, no leading zeros).
-            if seg == 0:
-                result += "0"
-            else:
-                var hex_buf = List[Byte]()
-                var v = seg
-                while v > 0:
-                    var nyb = v & 0xF
-                    if nyb < 10:
-                        hex_buf.append(UInt8(nyb + 48))
-                    else:
-                        hex_buf.append(UInt8(nyb - 10 + 97))
-                    v >>= 4
-                # Reverse into result (hex_buf is LSB-first).
-                var j = len(hex_buf) - 1
-                while j >= 0:
-                    result += chr(Int(hex_buf[j]))
-                    j -= 1
-        return result^
-
-    return String("")
 
 
 # ── Constants ──────────────────────────────────────────────────────────────
@@ -201,16 +120,6 @@ struct H1TcpConn[H: StreamHandler](Movable):
         self._recv_future = Optional[RecvFuture](None)
         self._send_future = Optional[SendFuture](None)
         self._loop_ptr = loop_ptr
-
-    def __init__(out self, *, deinit move: Self):
-        self.socket = move.socket^
-        self.http = move.http^
-        self.send_buf = move.send_buf^
-        self.send_pending = move.send_pending^
-        self._closing = move._closing
-        self._recv_future = move._recv_future^
-        self._send_future = move._send_future^
-        self._loop_ptr = move._loop_ptr
 
     def is_drained(self) -> Bool:
         """Check if the connection is closed and has no I/O in flight.
@@ -471,15 +380,6 @@ struct H1TcpServer[H: StreamHandler](Movable):
         self._loop_ptr = null_ptr[WatchLoop, MutUntrackedOrigin]()
         self._needs_accept_rearm = False
 
-    def __init__(out self, *, deinit move: Self):
-        self.listen_socket = move.listen_socket^
-        self.connections = move.connections^
-        self.make_handler = move.make_handler
-        self.parse_config = move.parse_config^
-        self._accept_future = move._accept_future^
-        self._loop_ptr = move._loop_ptr
-        self._needs_accept_rearm = move._needs_accept_rearm
-
     def __deinit__(deinit self):
         """Free all heap-allocated connections on server teardown."""
         for ref conn_ptr in self.connections:
@@ -592,7 +492,7 @@ struct H1TcpServer[H: StreamHandler](Movable):
         Args:
             socket: The accepted TCP socket (moved in).
         """
-        var peer_addr = _peer_addr_from_fd(socket.raw())
+        var peer_addr = peer_addr_from_fd(socket.raw())
 
         var handler = self.make_handler()
         var http = H1HandlerServer[Self.H](

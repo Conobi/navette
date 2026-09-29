@@ -59,12 +59,6 @@ struct HttpsRecord(Copyable, Movable):
         self.target = copy.target.copy()
         self.priority = copy.priority
 
-    def __init__(out self, *, deinit move: Self):
-        self.alpns = move.alpns^
-        self.ttl = move.ttl
-        self.target = move.target^
-        self.priority = move.priority
-
 
 struct _Answer(Copyable, Movable):
     """A classified datagram: a kind tag + an optional parsed record."""
@@ -79,10 +73,6 @@ struct _Answer(Copyable, Movable):
     def __init__(out self, *, copy: Self):
         self.kind = copy.kind
         self.record = copy.record.copy()
-
-    def __init__(out self, *, deinit move: Self):
-        self.kind = move.kind
-        self.record = move.record^
 
 
 def _parse_alpn(m: List[Byte], start: Int, end: Int) raises -> List[String]:

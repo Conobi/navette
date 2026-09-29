@@ -91,14 +91,6 @@ struct H2FrameConfig(Copyable, Movable):
         self.max_settings_per_frame = copy.max_settings_per_frame
         self.max_header_block_size = copy.max_header_block_size
 
-    def __init__(out self, *, deinit move: Self):
-        self.allow_oversized_frame = move.allow_oversized_frame
-        self.allow_nonzero_padding = move.allow_nonzero_padding
-        self.allow_settings_flood = move.allow_settings_flood
-        self.max_frame_size = move.max_frame_size
-        self.max_settings_per_frame = move.max_settings_per_frame
-        self.max_header_block_size = move.max_header_block_size
-
 
 def h2_strict_config() -> H2FrameConfig:
     """Strict RFC 9113 compliance — all checks enabled."""
@@ -170,16 +162,6 @@ struct Frame(Copyable, Movable):
         self.error = copy.error
         self.error_code = copy.error_code
         self.error_scope = copy.error_scope
-
-    def __init__(out self, *, deinit move: Self):
-        self.length = move.length
-        self.frame_type = move.frame_type
-        self.flags = move.flags
-        self.stream_id = move.stream_id
-        self.payload = move.payload^
-        self.error = move.error^
-        self.error_code = move.error_code
-        self.error_scope = move.error_scope
 
     def ok(self) -> Bool:
         """Returns True if the frame decoded without error."""

@@ -46,9 +46,6 @@ struct PacketType(ImplicitlyCopyable, Equatable):
     def __init__(out self, *, copy: Self):
         self._value = copy._value
 
-    def __init__(out self, *, deinit move: Self):
-        self._value = move._value
-
     def __eq__(self, other: Self) -> Bool:
         return self._value == other._value
 
@@ -139,20 +136,6 @@ struct PacketHeader(Copyable, Movable):
         self.supported_versions = InlineArray[UInt32, MAX_SUPPORTED_VERSIONS](copy=copy.supported_versions)
         self.versions_len = copy.versions_len
         self.retry_integrity_tag = InlineArray[UInt8, RETRY_INTEGRITY_TAG_LEN](copy=copy.retry_integrity_tag)
-
-    def __init__(out self, *, deinit move: Self):
-        self.is_long_header = move.is_long_header
-        self.packet_type = move.packet_type
-        self.version = move.version
-        self.dcid = move.dcid^
-        self.scid = move.scid^
-        self.token = move.token^
-        self.token_len = move.token_len
-        self.payload_length = move.payload_length
-        self.pn_offset = move.pn_offset
-        self.supported_versions = move.supported_versions^
-        self.versions_len = move.versions_len
-        self.retry_integrity_tag = move.retry_integrity_tag^
 
     def token_span(self) -> Span[Byte, origin_of(self.token)]:
         """Borrow the active token bytes (length `token_len`, not the full backing capacity)."""
@@ -358,38 +341,10 @@ def parse_packet_header[
 
 
 def serialize_long_header(header: PacketHeader, mut writer: ByteWriter) raises:
-    # Build first byte: form bit (0x80) | fixed bit (0x40) | type bits | reserved.
-    var first_byte = UInt8(0xC0)  # long header + fixed bit
-
-    if header.packet_type == PacketType.initial():
-        first_byte = first_byte | UInt8(0x00)
-    elif header.packet_type == PacketType.zero_rtt():
-        first_byte = first_byte | UInt8(0x10)
-    elif header.packet_type == PacketType.handshake():
-        first_byte = first_byte | UInt8(0x20)
-    elif header.packet_type == PacketType.retry():
-        first_byte = first_byte | UInt8(0x30)
-
-    writer.write_u8(first_byte)
-    writer.write_u32_be(header.version)
-
-    # DCID.
-    writer.write_u8(UInt8(len(header.dcid)))
-    writer.write_bytes(header.dcid.as_span())
-
-    # SCID.
-    writer.write_u8(UInt8(len(header.scid)))
-    writer.write_bytes(header.scid.as_span())
-
-    if header.packet_type == PacketType.initial():
-        # Token length + token.
-        varint_encode(writer, UInt64(header.token_len))
-        if Int(header.token_len) > 0:
-            writer.write_bytes(header.token_span())
-
-    if header.packet_type != PacketType.retry():
-        # Payload length.
-        varint_encode(writer, header.payload_length)
+    """Serialize a long header via ByteWriter (delegates to _into variant)."""
+    var buf = List[Byte]()
+    serialize_long_header_into(header, buf)
+    writer.write_bytes(Span(buf))
 
 
 def serialize_short_header(dcid: Span[Byte, _], mut writer: ByteWriter):

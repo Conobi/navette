@@ -56,11 +56,6 @@ struct PathKey(Copyable, Movable):
         self.addr = InlineArray[UInt8, 16](copy=copy.addr)
         self.port = copy.port
 
-    def __init__(out self, *, deinit move: Self):
-        self.family = move.family
-        self.addr = move.addr^
-        self.port = move.port
-
     def __eq__(self, other: Self) -> Bool:
         """Byte-exact equality across family, addr, port."""
         if self.family != other.family or self.port != other.port:
@@ -220,8 +215,7 @@ struct PathValidator(Movable):
         var buf = _pv_alloc[UInt8](PATH_TOKEN_LEN)
         _ = external_call["getrandom", Int](buf, UInt64(PATH_TOKEN_LEN), UInt32(0))
         var token = List[Byte](capacity=PATH_TOKEN_LEN)
-        for i in range(PATH_TOKEN_LEN):
-            token.append(buf[unsafe_offset=i])
+        token.extend(Span(unsafe_ptr=buf, length=PATH_TOKEN_LEN))
         buf.unsafe_free()
         var token_copy = List[Byte](copy=token)
         var chal = PathChallenge(token_copy^, target^, now_ns)

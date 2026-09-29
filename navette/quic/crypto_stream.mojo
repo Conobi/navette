@@ -24,10 +24,6 @@ struct CryptoFragment(Copyable, Movable):
         self.offset = copy.offset
         self.data = List[Byte](copy=copy.data)
 
-    def __init__(out self, *, deinit move: Self):
-        self.offset = move.offset
-        self.data = move.data^
-
 
 struct CryptoStream(Copyable, Movable):
     """Reassembles inbound CRYPTO data and stages outbound CRYPTO data.
@@ -70,15 +66,6 @@ struct CryptoStream(Copyable, Movable):
         self.send_buf = List[Byte](copy=copy.send_buf)
         self.sent_cursor = copy.sent_cursor
 
-    def __init__(out self, *, deinit move: Self):
-        self.recv_offset = move.recv_offset
-        self.recv_buf = move.recv_buf^
-        self.pending_fragments = move.pending_fragments^
-        self.pending_fragments_len = move.pending_fragments_len
-        self.send_offset = move.send_offset
-        self.send_buf = move.send_buf^
-        self.sent_cursor = move.sent_cursor
-
     def receive(mut self, offset: UInt64, data: Span[Byte, _]) raises:
         """Reassemble incoming CRYPTO frame data at the given offset."""
         var data_len = UInt64(len(data))
@@ -99,8 +86,7 @@ struct CryptoStream(Copyable, Movable):
         # Contiguous or overlapping with recv_buf.
         if offset <= buf_end:
             var skip = Int(buf_end - offset)
-            for j in range(skip, len(data)):
-                self.recv_buf.append(data[j])
+            self.recv_buf.extend(Span(data)[skip:])
             # After extending recv_buf, try to merge pending fragments.
             self._merge_pending()
             return
@@ -109,8 +95,7 @@ struct CryptoStream(Copyable, Movable):
         if self.pending_fragments_len >= MAX_PENDING_FRAGMENTS:
             raise "CRYPTO pending fragment buffer full"
         var frag_data = List[Byte](capacity=len(data))
-        for ref byte in data:
-            frag_data.append(byte)
+        frag_data.extend(Span(data))
         self.pending_fragments[self.pending_fragments_len] = CryptoFragment(offset, frag_data^)
         self.pending_fragments_len += 1
         self._merge_pending()
@@ -127,8 +112,7 @@ struct CryptoStream(Copyable, Movable):
                     )
                     if frag_end > buf_end:
                         var skip = Int(buf_end - self.pending_fragments[i].offset)
-                        for j in range(skip, len(self.pending_fragments[i].data)):
-                            self.recv_buf.append(self.pending_fragments[i].data[j])
+                        self.recv_buf.extend(Span(self.pending_fragments[i].data)[skip:])
                     # Remove this fragment in place: shift subsequent entries left, shrink length.
                     for k in range(i, self.pending_fragments_len - 1):
                         self.pending_fragments[k] = CryptoFragment(copy=self.pending_fragments[k + 1])

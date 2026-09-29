@@ -136,10 +136,8 @@ def generate_retry_token(
     var ct_len = Int(out_len_ptr[unsafe_offset=0])
 
     # Append token: nonce (12) || ciphertext+tag
-    for i in range(12):
-        buf.append(nonce_ptr[unsafe_offset=i])
-    for i in range(ct_len):
-        buf.append(out_ptr[unsafe_offset=i])
+    buf.extend(Span(unsafe_ptr=nonce_ptr, length=12))
+    buf.extend(Span(unsafe_ptr=out_ptr, length=ct_len))
 
     # Keep the post-FFI-read buffers alive through their last reads above.
     _ = nonce_buf
@@ -250,8 +248,7 @@ def validate_retry_token(
         raise "token expired"
 
     # Append orig_dcid only after every check above has passed.
-    for i in range(dcid_len):
-        buf.append(out_ptr[unsafe_offset=1 + i])
+    buf.extend(Span(unsafe_ptr=out_ptr.unsafe_offset(1), length=dcid_len))
 
     # Keep the post-FFI-read output buffers alive through their last reads above.
     _ = out_buf
@@ -346,8 +343,7 @@ def compute_retry_integrity_tag(
     if tag_len != 16:
         raise "expected 16-byte tag, got " + String(tag_len)
 
-    for i in range(16):
-        buf.append(out_ptr[unsafe_offset=i])
+    buf.extend(Span(unsafe_ptr=out_ptr, length=16))
 
     # Keep the post-FFI-read output buffers alive through their last reads above.
     _ = out_buf

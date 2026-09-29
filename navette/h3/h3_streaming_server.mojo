@@ -83,6 +83,7 @@ from navette.tls.early_data_filter import (
     EarlyDataPredicateFn,
     IdempotentOnlyFilter,
 )
+from navette.util.ctx_pool import CtxPool
 from navette.util.ptrbox import PtrBox
 from navette.util.null_ptr import null_ptr
 
@@ -92,7 +93,7 @@ from navette.util.null_ptr import null_ptr
 # ---------------------------------------------------------------------------
 #
 # The coroutine's typed state IS the per-stream ctx pointer. The ctx itself
-# stays owned by the adapter (`_streams` + `H3StreamingCtxPool`) because
+# stays owned by the adapter (`_streams` + `CtxPool`) because
 # non-coroutine code must reach it while the body is suspended AND after the
 # body has returned — `_drain_responses` flushes the frames buffered by
 # `finish()` on a later event-loop pass, which is strictly after the coroutine
@@ -170,20 +171,6 @@ struct H3StreamingCtx(Movable):
         self.body_frame_ring = List[BodyFrame]()
         self.cancelled = False
         self.coro_addr = PtrBox[H3StreamingCoro].null()
-
-    def __init__(out self, *, deinit move: Self):
-        self.request = move.request^
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.caps = move.caps^
-        self.stream_id = move.stream_id
-        self.extra_data = move.extra_data
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
-        self.body_frame_ring = move.body_frame_ring^
-        self.cancelled = move.cancelled
-        self.coro_addr = move.coro_addr^
 
     def coro_ptr(self) -> Pointer[H3StreamingCoro, MutUntrackedOrigin]:
         """Typed pointer into the coro's heap slot (null if none)."""
@@ -371,53 +358,6 @@ def _free_streaming_stream(ctx_ptr: Pointer[mut=True, T=H3StreamingCtx, origin=_
     ctx_ptr.unsafe_free()
 
 
-# ---------------------------------------------------------------------------
-# H3StreamingCtxPool — per-connection allocation pool
-# ---------------------------------------------------------------------------
-#
-# Recycles H3StreamingCtx-sized heap blocks across requests on the same
-# connection. Capacity 4 (smaller than sync's 16; streaming ctxs are larger
-# and long-lived across many event-loop passes).
-
-
-struct H3StreamingCtxPool(Movable):
-    """Free-list of typed H3StreamingCtx-sized heap blocks. Caller
-    owns initialisation/destruction of the pointee; the pool only
-    manages the underlying memory."""
-
-    var _free: List[Pointer[H3StreamingCtx, MutUntrackedOrigin]]
-    var _capacity: Int
-
-    def __init__(out self, *, capacity: Int = 4):
-        self._free = List[Pointer[H3StreamingCtx, MutUntrackedOrigin]]()
-        self._capacity = capacity
-
-    def __init__(out self, *, deinit move: Self):
-        self._free = move._free^
-        self._capacity = move._capacity
-
-    def __deinit__(deinit self):
-        for ref ptr in self._free:
-            ptr.unsafe_free()
-
-    def acquire(mut self) raises -> Pointer[H3StreamingCtx, MutUntrackedOrigin]:
-        """Take a free slot if one is available, else allocate fresh."""
-        if len(self._free) > 0:
-            return self._free.pop()
-        return _heap_alloc[H3StreamingCtx](1)
-
-    def release(
-        mut self, ptr: Pointer[H3StreamingCtx, MutUntrackedOrigin]
-    ):
-        """Return a slot whose pointee has already been destroyed.
-        Beyond capacity → free; under capacity → keep for reuse."""
-        if len(self._free) < self._capacity:
-            self._free.append(ptr)
-        else:
-            ptr.unsafe_free()
-
-    def idle_count(self) -> Int:
-        return len(self._free)
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +389,7 @@ struct H3StreamingServer(Movable):
     var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[List[Byte]]
     var _streams: Dict[Int, PtrBox[H3StreamingCtx]]
-    var _ctx_pool: H3StreamingCtxPool
+    var _ctx_pool: CtxPool[H3StreamingCtx]
     var _coro_pool: StackPool
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
     # the `QuicServerConfig` that birthed this connection. Populated
@@ -490,7 +430,7 @@ struct H3StreamingServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[List[Byte]]()
         self._streams = Dict[Int, PtrBox[H3StreamingCtx]]()
-        self._ctx_pool = H3StreamingCtxPool(capacity=4)
+        self._ctx_pool = CtxPool[H3StreamingCtx](capacity=4)
         self._coro_pool = StackPool(capacity=4)
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
@@ -503,7 +443,7 @@ struct H3StreamingServer(Movable):
         connection torn down mid-request would drop SUSPENDED coroutines and
         leak their stacks.
         """
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             keys.append(key)
         for ref key in keys:
@@ -672,7 +612,6 @@ struct H3StreamingServer(Movable):
         var path_str = String("/")
         var authority_str = String("")
         var user_headers = Headers()
-
         for ref field in ev.fields:
             var name = field.name
             var value = field.value
@@ -862,7 +801,7 @@ struct H3StreamingServer(Movable):
             ev: The GOAWAY / CONNECTION_CLOSED event (unused; the whole
                 connection is going away).
         """
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             keys.append(key)
         for ref sid in keys:
@@ -884,7 +823,7 @@ struct H3StreamingServer(Movable):
         write_chunk (buffered into resp_writer) across several suspends.
         This drain sends them in order with fin=False; when response_ended
         is set (by finish()), the next drain sends the terminal FIN."""
-        var stream_ids = List[Int]()
+        var stream_ids = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             stream_ids.append(key)
         for ref sid in stream_ids:

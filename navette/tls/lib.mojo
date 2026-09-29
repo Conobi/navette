@@ -236,10 +236,6 @@ struct RustlsLibrary(Movable):
         self._handle = OwnedDLHandle(path)
         self._hot = _HotFns(self._handle)
 
-    def __init__(out self, *, deinit move: Self):
-        self._handle = move._handle^
-        self._hot = move._hot^
-
     # -- Error retrieval -------------------------------------------------------
 
     def last_error(self) raises -> String:
@@ -976,10 +972,6 @@ struct _SharedLibraryInner(Movable):
         self.lib = lib^
         self.refcount = 1
 
-    def __init__(out self, *, deinit move: Self):
-        self.lib = move.lib^
-        self.refcount = move.refcount
-
 
 struct SharedLibrary(Copyable, Movable):
     """Ref-counted handle to a RustlsLibrary.
@@ -1001,9 +993,6 @@ struct SharedLibrary(Copyable, Movable):
     def __init__(out self, *, copy: Self):
         copy._ptr[].refcount += 1
         self._ptr = copy._ptr
-
-    def __init__(out self, *, deinit move: Self):
-        self._ptr = move._ptr
 
     def __deinit__(deinit self):
         self._ptr[].refcount -= 1
@@ -1040,9 +1029,6 @@ struct TlsBackend(Copyable, Movable):
 
     def __init__(out self, *, copy: Self):
         self._lib = SharedLibrary(copy=copy._lib)
-
-    def __init__(out self, *, deinit move: Self):
-        self._lib = move._lib^
 
     def shared(self) -> SharedLibrary:
         return SharedLibrary(copy=self._lib)

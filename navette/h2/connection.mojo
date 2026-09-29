@@ -120,15 +120,6 @@ struct H2Config(Copyable, Movable):
         self.header_table_size = copy.header_table_size
         self.enable_connect_protocol = copy.enable_connect_protocol
 
-    def __init__(out self, *, deinit move: Self):
-        self.client_side = move.client_side
-        self.initial_window_size = move.initial_window_size
-        self.max_concurrent_streams = move.max_concurrent_streams
-        self.max_frame_size = move.max_frame_size
-        self.max_header_list_size = move.max_header_list_size
-        self.header_table_size = move.header_table_size
-        self.enable_connect_protocol = move.enable_connect_protocol
-
 
 # ---------------------------------------------------------------------------
 # H2Settings — protocol-facing negotiated settings
@@ -176,15 +167,6 @@ struct H2Settings(Copyable, Movable):
         self.max_frame_size = copy.max_frame_size
         self.max_header_list_size = copy.max_header_list_size
         self.enable_connect_protocol = copy.enable_connect_protocol
-
-    def __init__(out self, *, deinit move: Self):
-        self.header_table_size = move.header_table_size
-        self.enable_push = move.enable_push
-        self.max_concurrent_streams = move.max_concurrent_streams
-        self.initial_window_size = move.initial_window_size
-        self.max_frame_size = move.max_frame_size
-        self.max_header_list_size = move.max_header_list_size
-        self.enable_connect_protocol = move.enable_connect_protocol
 
 
 # ---------------------------------------------------------------------------
@@ -243,18 +225,6 @@ struct H2Event(Copyable, Movable):
         self.window_increment = copy.window_increment
         self.flow_controlled_length = copy.flow_controlled_length
         self.message = copy.message
-
-    def __init__(out self, *, deinit move: Self):
-        self.kind = move.kind
-        self.stream_id = move.stream_id
-        self.headers = move.headers^
-        self.data = move.data^
-        self.error_code = move.error_code
-        self.stream_ended = move.stream_ended
-        self.last_stream_id = move.last_stream_id
-        self.window_increment = move.window_increment
-        self.flow_controlled_length = move.flow_controlled_length
-        self.message = move.message^
 
     @staticmethod
     def settings_acknowledged() -> Self:
@@ -386,12 +356,10 @@ comptime H2_CLIENT_MAGIC_LEN = 24
 
 def _client_magic() -> List[Byte]:
     """'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n' — 24 bytes."""
-    var m = List[Byte]()
     var s = String("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
-    var b = s.as_bytes()
-    for i in range(s.byte_length()):
-        m.append(b[i])
-    return m^
+    var out = List[Byte](capacity=24)
+    out.extend(s.as_bytes())
+    return out^
 
 
 # ---------------------------------------------------------------------------
@@ -427,16 +395,6 @@ struct StreamState(Copyable, Movable):
         self.headers_end_stream = copy.headers_end_stream
         self.data_received = copy.data_received
 
-    def __init__(out self, *, deinit move: Self):
-        self.lifecycle = move.lifecycle
-        self.send_window = move.send_window
-        self.recv_window = move.recv_window
-        self.recv_window_consumed = move.recv_window_consumed
-        self.expects_continuation = move.expects_continuation
-        self.header_block_buffer = move.header_block_buffer^
-        self.headers_end_stream = move.headers_end_stream
-        self.data_received = move.data_received
-
 
 # ---------------------------------------------------------------------------
 # PendingDataChunk — DATA bytes that didn't fit in the window when
@@ -453,10 +411,6 @@ struct PendingDataChunk(Copyable, Movable):
     def __init__(out self, *, copy: Self):
         self.data = copy.data.copy()
         self.end_stream = copy.end_stream
-
-    def __init__(out self, *, deinit move: Self):
-        self.data = move.data^
-        self.end_stream = move.end_stream
 
 
 # ---------------------------------------------------------------------------
@@ -543,29 +497,6 @@ struct H2Connection(Movable):
         self._client_magic_validated = client_side
         self._closed_stream_count = 0
         self._pending_data = Dict[Int, List[PendingDataChunk]]()
-
-    def __init__(out self, *, deinit move: Self):
-        self._config = move._config^
-        self._state = move._state
-        self._client_side = move._client_side
-        self._local_settings = move._local_settings^
-        self._remote_settings = move._remote_settings^
-        self._settings_acked = move._settings_acked
-        self._inbuf = move._inbuf^
-        self._outbuf = move._outbuf^
-        self._streams = move._streams^
-        self._next_stream_id = move._next_stream_id
-        self._last_recv_stream_id = move._last_recv_stream_id
-        self._active_stream_count = move._active_stream_count
-        self._send_window = move._send_window
-        self._recv_window = move._recv_window
-        self._recv_window_consumed = move._recv_window_consumed
-        self._hpack_encoder = move._hpack_encoder^
-        self._hpack_decoder = move._hpack_decoder^
-        self._expecting_continuation_for = move._expecting_continuation_for
-        self._client_magic_validated = move._client_magic_validated
-        self._closed_stream_count = move._closed_stream_count
-        self._pending_data = move._pending_data^
 
     def initiate_connection(mut self) raises:
         """Send connection preface. Must be called before any other operation."""
@@ -789,7 +720,7 @@ struct H2Connection(Movable):
 
     def _adjust_stream_send_windows(mut self, delta: Int):
         """Adjust send window of all open/half-closed streams by delta."""
-        var stream_ids = List[Int]()
+        var stream_ids = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             stream_ids.append(key)
         for ref sid in stream_ids:
@@ -877,7 +808,7 @@ struct H2Connection(Movable):
             self._queue_frame(hdr_frame)
         else:
             # Split: HEADERS (first chunk) + CONTINUATION frames
-            var first_chunk = List[Byte]()
+            var first_chunk = List[Byte](capacity=max_size)
             for i in range(max_size):
                 first_chunk.append(block[i])
             var flags = 0
@@ -890,7 +821,7 @@ struct H2Connection(Movable):
                 var end = offset + max_size
                 if end > len(block):
                     end = len(block)
-                var chunk = List[Byte]()
+                var chunk = List[Byte](capacity=end - offset)
                 for i in range(offset, end):
                     chunk.append(block[i])
                 var cont_flags = 0
@@ -950,7 +881,7 @@ struct H2Connection(Movable):
         if sid in self._pending_data:
             var qsize = len(self._pending_data[sid])
             if qsize > 0:
-                var copy_buf = List[Byte]()
+                var copy_buf = List[Byte](capacity=total)
                 for i in range(total):
                     copy_buf.append(data[i])
                 var pc = PendingDataChunk(copy_buf^, end_stream)
@@ -973,7 +904,7 @@ struct H2Connection(Movable):
                 var end = offset + max_size
                 if end > sendable:
                     end = sendable
-                var chunk_bytes = List[Byte]()
+                var chunk_bytes = List[Byte](capacity=end - offset)
                 for i in range(offset, end):
                     chunk_bytes.append(data[i])
                 var is_last = (end >= sendable)
@@ -985,7 +916,7 @@ struct H2Connection(Movable):
             stream.send_window -= sendable
 
         if sendable < total:
-            var remainder = List[Byte]()
+            var remainder = List[Byte](capacity=total - sendable)
             for i in range(sendable, total):
                 remainder.append(data[i])
             var pchunk = PendingDataChunk(remainder^, end_stream)
@@ -1007,7 +938,7 @@ struct H2Connection(Movable):
         window grew (or INITIAL_WINDOW_SIZE changed), so walk every
         stream with pending bytes; otherwise drain just that stream."""
         if hint_stream_id == 0:
-            var sids = List[Int]()
+            var sids = List[Int](capacity=len(self._pending_data))
             for key in self._pending_data.keys():
                 sids.append(key)
             for ref sid in sids:

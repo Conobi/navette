@@ -25,11 +25,6 @@ struct Origin(Copyable, Movable, KeyElement):
         self.host = copy.host.copy()
         self.port = copy.port
 
-    def __init__(out self, *, deinit move: Self):
-        self.scheme = move.scheme^
-        self.host = move.host^
-        self.port = move.port
-
     def __hash__(self) -> UInt64:
         return hash(self.scheme) ^ hash(self.host) ^ UInt64(self.port)
 
@@ -74,13 +69,6 @@ struct AltSvcEntry(Copyable, Movable):
         self.port = copy.port
         self.max_age_secs = copy.max_age_secs
         self.persist = copy.persist
-
-    def __init__(out self, *, deinit move: Self):
-        self.protocol = move.protocol^
-        self.host = move.host^
-        self.port = move.port
-        self.max_age_secs = move.max_age_secs
-        self.persist = move.persist
 
 
 # ---------------------------------------------------------------------------
@@ -288,10 +276,6 @@ struct AltSvcCache(Movable):
     def __init__(out self):
         self._entries = Dict[Origin, List[AltSvcEntry]]()
         self._received_at = Dict[Origin, UInt]()
-
-    def __init__(out self, *, deinit move: Self):
-        self._entries = move._entries^
-        self._received_at = move._received_at^
 
     def insert(
         mut self,

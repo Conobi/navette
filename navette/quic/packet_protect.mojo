@@ -67,10 +67,6 @@ struct PacketProtect(Movable):
         self.keys.append(Int32(-1))
         self._lib = SharedLibrary(copy=lib)
 
-    def __init__(out self, *, deinit move: Self):
-        self.keys = move.keys^
-        self._lib = move._lib^
-
     def __deinit__(deinit self):
         """Free every installed keys handle.
 
@@ -332,8 +328,7 @@ struct PacketProtect(Movable):
             packet_buf.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin(),
             len(packet_buf),
         )
-        for i in range(plaintext_len):
-            buf.append(packet_buf[header_len + i])
+        buf.extend(Span(packet_buf)[header_len : header_len + plaintext_len])
 
     # -- AEAD encrypt ----------------------------------------------------------
 
@@ -414,8 +409,7 @@ struct PacketProtect(Movable):
         )
 
         # Append ciphertext (without header) to buf.
-        for i in range(ct_len):
-            buf.append(scratch[unsafe_offset=header_len + i])
+        buf.extend(Span(unsafe_ptr=scratch.unsafe_offset(header_len), length=ct_len))
 
         # Keep scratch_owned alive through the post-FFI read above.
         _ = scratch_owned

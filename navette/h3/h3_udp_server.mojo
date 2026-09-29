@@ -383,15 +383,6 @@ struct PendingDatagram(Copyable, Movable):
         self.ecn_mark = copy.ecn_mark
         self.dgram_idx = copy.dgram_idx
 
-    def __init__(out self, *, deinit move: Self):
-        self.payload_ptr = move.payload_ptr
-        self.payload_len = move.payload_len
-        self.name_ptr = move.name_ptr
-        self.name_len = move.name_len
-        self.dcid = move.dcid^
-        self.ecn_mark = move.ecn_mark
-        self.dgram_idx = move.dgram_idx
-
 
 # ── Egress packet (queued for flush submission) ─────────────────────────────
 
@@ -429,12 +420,6 @@ struct EgressPacket(Movable):
         self.conn_idx = conn_idx
         self.ecn_mark = ecn_mark
 
-    def __init__(out self, *, deinit move: Self):
-        self.data = move.data^
-        self.addr = move.addr^
-        self.conn_idx = move.conn_idx
-        self.ecn_mark = move.ecn_mark
-
 
 # ── Connection slot + DCID demux entry ──────────────────────────────────────
 
@@ -456,10 +441,6 @@ struct _DcidEntry(Copyable, Movable):
     def __init__(out self, *, copy: Self):
         self.idx = copy.idx
         self.generation = copy.generation
-
-    def __init__(out self, *, deinit move: Self):
-        self.idx = move.idx
-        self.generation = move.generation
 
 
 struct ConnSlot[H: StreamHandler](Copyable, Movable):
@@ -509,14 +490,6 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.generation = copy.generation
         self.next_deadline_us = copy.next_deadline_us
         self.deadline_refreshed_at_us = copy.deadline_refreshed_at_us
-
-    def __init__(out self, *, deinit move: Self):
-        self.h3 = move.h3
-        self.addr = move.addr^
-        self.dcids = move.dcids^
-        self.generation = move.generation
-        self.next_deadline_us = move.next_deadline_us
-        self.deadline_refreshed_at_us = move.deadline_refreshed_at_us
 
 
 # ── H3UdpServer ──────────────────────────────────────────────────────────────
@@ -713,36 +686,6 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         self._codec_tables = QpackCodecTables()
         self.profile = AcceptProfile()
-
-    def __init__(out self, *, deinit move: Self):
-        self.udp_socket = move.udp_socket^
-        self.transport_params = move.transport_params^
-        self.make_handler = move.make_handler
-        self.conn_slots = move.conn_slots^
-        self.conn_dcid_map = move.conn_dcid_map^
-        self.next_generation = move.next_generation
-        self._tls = move._tls^
-        self.server_config = move.server_config^
-        self.pending_rx = move.pending_rx^
-        self._live_datagrams = move._live_datagrams^
-        self._dgram_refcounts = move._dgram_refcounts^
-        self._egress_backlog = move._egress_backlog^
-        self._inject_egress = move._inject_egress^
-        self._gso_max_segments = move._gso_max_segments
-        self._socket_state = move._socket_state^
-        self._recv_pool = move._recv_pool^
-        self._recv_stream = move._recv_stream^
-        self._send_sink = move._send_sink^
-        self._timer = move._timer^
-        self._loop_ptr = move._loop_ptr
-        self._armed_deadline_us = move._armed_deadline_us^
-        self._last_armed_ms = move._last_armed_ms
-        self._reset_count = move._reset_count
-        self._timeout_count = move._timeout_count
-        self._deadline_refresh_count = move._deadline_refresh_count
-        self._clock_override_us = move._clock_override_us^
-        self._codec_tables = move._codec_tables^
-        self.profile = move.profile^
 
     def __deinit__(deinit self):
         """Free heap allocations owned by the server.

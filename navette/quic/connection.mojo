@@ -31,7 +31,7 @@ from navette.tls.early_data_store import (
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
 from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR
-from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us, ProfileState, rdtsc, CallId
+from navette.quic.profile import AcceptProfile, CounterId, PROFILE_ACCEPT, monotonic_us, ProfileState, rdtsc, CallId
 from navette.quic.zero_rtt import (
     ZeroRttState, ZERO_RTT_BUFFER_MAX_PKTS, ZERO_RTT_BUFFER_MAX_BYTES,
     invoke_replay_authenticator_ffi, drive_replay_check_for_test,
@@ -853,11 +853,11 @@ struct QuicConnection(Movable):
         var rc = self._invoke_replay_authenticator_ffi(auth_buf, auth_len)
         if rc != Int32(0):
             self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_replay_reject_no_authenticator()
+            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
             return
         if self.zrtt.early_data_store_ptr is None:
             self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_replay_reject_no_authenticator()
+            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
             return
         var auth_span = Span(unsafe_ptr=auth_buf.unsafe_ptr(), length=32)
         var now_ms: UInt64
@@ -874,19 +874,19 @@ struct QuicConnection(Movable):
             raised = True
         if raised:
             self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_replay_reject_no_authenticator()
+            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
         elif decision.is_accept():
             self.zrtt.replay_decision = UInt8(1)
-            self.prof.record_replay_accept()
+            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_ACCEPT)
         elif decision.is_duplicate():
             self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_replay_reject_duplicate()
+            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)
         elif decision.is_per_key_quota():
             self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_replay_reject_per_key_quota()
+            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)
         else:
             self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_replay_reject_global_ceiling()
+            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)
 
     @always_inline
     def _parse_and_dispatch_frames(
@@ -2493,7 +2493,7 @@ struct QuicConnection(Movable):
                     # facing traces are the responsibility of the
                     # I/O-layer caller that drives recv_from_buffer.
                     _ = e
-                    self.prof.record_zero_rtt_drain_dropped()
+                    self.prof.record_counter(CounterId.ZERO_RTT_DRAIN_DROPPED)
                 # Keep `buf_ptr_owned` alive to the end of the iteration (its
                 # `.ptr()` borrow feeds recv_from_buffer above), and ensure the
                 # inner try/except is NOT the for-body's final statement: Mojo
@@ -3631,7 +3631,7 @@ struct QuicConnection(Movable):
             return False
         # Copy the payload so the caller's Span lifetime does not constrain
         # ours — outbound queues survive across `send()` boundaries.
-        var copy = List[Byte]()
+        var copy = List[Byte](capacity=len(payload))
         for ref byte in payload:
             copy.append(byte)
         self.pending_outbound_datagrams.append(copy^)

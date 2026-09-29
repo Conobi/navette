@@ -97,9 +97,6 @@ struct CompressLibrary(Movable):
     def __init__(out self, path: String) raises:
         self._handle = OwnedDLHandle(path)
 
-    def __init__(out self, *, deinit move: Self):
-        self._handle = move._handle^
-
     def last_error(self) raises -> String:
         """Retrieve the last libcompress-mojo error message.
 

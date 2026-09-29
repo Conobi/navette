@@ -208,30 +208,30 @@ def test_record_replay_methods_route_to_correct_buckets() raises:
         ]()
         )
 
-        conn.prof.record_replay_accept()
+        conn.prof.record_counter(CounterId.ZERO_RTT_REPLAY_ACCEPT)
         assert_equal_int(
             Int(prof.get(CounterId.ZERO_RTT_REPLAY_ACCEPT)), 1,
-            "record_replay_accept routes to zero_rtt_replay_accept",
+            "record_counter routes to zero_rtt_replay_accept",
         )
-        conn.prof.record_replay_reject_duplicate()
+        conn.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)
         assert_equal_int(
             Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)), 1,
-            "record_replay_reject_duplicate routes to its bucket",
+            "record_counter routes to reject_duplicate bucket",
         )
-        conn.prof.record_replay_reject_per_key_quota()
+        conn.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)
         assert_equal_int(
             Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)), 1,
-            "record_replay_reject_per_key_quota routes to its bucket",
+            "record_counter routes to reject_per_key_quota bucket",
         )
-        conn.prof.record_replay_reject_global_ceiling()
+        conn.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)
         assert_equal_int(
             Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)), 1,
-            "record_replay_reject_global_ceiling routes to its bucket",
+            "record_counter routes to reject_global_ceiling bucket",
         )
-        conn.prof.record_replay_reject_no_authenticator()
+        conn.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
         assert_equal_int(
             Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)), 1,
-            "record_replay_reject_no_authenticator routes to its bucket",
+            "record_counter routes to reject_no_authenticator bucket",
         )
 
         # Cross-check no cross-talk: each counter is exactly 1, not

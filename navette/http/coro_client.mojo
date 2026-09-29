@@ -50,10 +50,6 @@ struct HttpCoroClient(Movable):
         )
         self._alt_svc = AltSvcCache()
 
-    def __init__(out self, *, deinit move: Self):
-        self._client = move._client^
-        self._alt_svc = move._alt_svc^
-
     # --- Session management ---
 
     def attach_session(mut self, var origin: Origin, var slot: SessionSlot) raises:

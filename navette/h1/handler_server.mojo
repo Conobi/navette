@@ -40,11 +40,6 @@ struct H1HandlerServer[H: StreamHandler](Movable):
         self.handler = handler^
         self._peer_addr = peer_addr^
 
-    def __init__(out self, *, deinit move: Self):
-        self._conn = move._conn^
-        self.handler = move.handler^
-        self._peer_addr = move._peer_addr^
-
     # --- Transport bridging API ---
 
     @always_inline

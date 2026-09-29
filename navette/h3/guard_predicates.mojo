@@ -48,12 +48,6 @@ struct H3StreamCtx(Copyable, Movable):
         self.settings_seen = copy.settings_seen
         self.first_frame_seen = copy.first_frame_seen
 
-    def __init__(out self, *, deinit move: Self):
-        self.kind = move.kind
-        self.headers_seen = move.headers_seen
-        self.settings_seen = move.settings_seen
-        self.first_frame_seen = move.first_frame_seen
-
 
 def predicate_f31_data_before_headers(frame_type: UInt64, ctx: H3StreamCtx) -> Optional[GuardVerdict]:
     """Return Some(H3_FRAME_UNEXPECTED + tag) when a DATA frame arrives on a

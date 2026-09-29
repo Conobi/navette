@@ -88,6 +88,7 @@ from navette.http.headers import Headers
 from navette.http.request import Request
 from navette.http.status import StatusCode
 from navette.http.version import Version
+from navette.util.ctx_pool import CtxPool
 from navette.util.ptrbox import PtrBox
 from navette.util.null_ptr import null_ptr
 
@@ -176,20 +177,6 @@ struct H2StreamingCtx(Movable):
         self.body_frame_ring = List[BodyFrame]()
         self.cancelled = False
         self.coro_addr = PtrBox[H2StreamingCoro].null()
-
-    def __init__(out self, *, deinit move: Self):
-        self.request = move.request^
-        self.recv_body = move.recv_body^
-        self.resp_writer = move.resp_writer^
-        self.caps = move.caps^
-        self.stream_id = move.stream_id
-        self.extra_data = move.extra_data
-        self.request_ended = move.request_ended
-        self.response_ended = move.response_ended
-        self.headers_sent = move.headers_sent
-        self.body_frame_ring = move.body_frame_ring^
-        self.cancelled = move.cancelled
-        self.coro_addr = move.coro_addr^
 
     def coro_ptr(self) -> Pointer[H2StreamingCoro, MutUntrackedOrigin]:
         """Typed pointer into the coro's heap slot (null if none)."""
@@ -384,48 +371,6 @@ def _free_streaming_stream(ctx_ptr: Pointer[mut=True, T=H2StreamingCtx, origin=_
 # and long-lived across many event-loop passes).
 
 
-struct H2StreamingCtxPool(Movable):
-    """Free-list of typed H2StreamingCtx-sized heap blocks. Caller
-    owns initialisation/destruction of the pointee; the pool only
-    manages the underlying memory."""
-
-    # Holds bare (typed, uninitialised) memory blocks — pointee has been
-    # destroyed before re-entry, so this is *not* a list of live PtrBox.
-    var _free: List[Pointer[H2StreamingCtx, MutUntrackedOrigin]]
-    var _capacity: Int
-
-    def __init__(out self, *, capacity: Int = 4):
-        self._free = List[Pointer[H2StreamingCtx, MutUntrackedOrigin]]()
-        self._capacity = capacity
-
-    def __init__(out self, *, deinit move: Self):
-        self._free = move._free^
-        self._capacity = move._capacity
-
-    def __deinit__(deinit self):
-        for ref ptr in self._free:
-            ptr.unsafe_free()
-
-    def acquire(mut self) raises -> Pointer[H2StreamingCtx, MutUntrackedOrigin]:
-        """Take a free slot if one is available, else allocate fresh."""
-        if len(self._free) > 0:
-            return self._free.pop()
-        return _heap_alloc[H2StreamingCtx](1)
-
-    def release(
-        mut self, ptr: Pointer[H2StreamingCtx, MutUntrackedOrigin]
-    ):
-        """Return a slot whose pointee has already been destroyed.
-        Beyond capacity → free; under capacity → keep for reuse."""
-        if len(self._free) < self._capacity:
-            self._free.append(ptr)
-        else:
-            ptr.unsafe_free()
-
-    def idle_count(self) -> Int:
-        return len(self._free)
-
-
 # ---------------------------------------------------------------------------
 # H2StreamingServer — server adapter using per-stream stackful coroutines
 # ---------------------------------------------------------------------------
@@ -450,7 +395,7 @@ struct H2StreamingServer(Movable):
     var _extra_data: Pointer[NoneType, MutUntrackedOrigin]
     var _outbuf: List[Byte]
     var _streams: Dict[Int, PtrBox[H2StreamingCtx]]
-    var _ctx_pool: H2StreamingCtxPool
+    var _ctx_pool: CtxPool[H2StreamingCtx]
     var _coro_pool: StackPool
 
     # --- Constructors -------------------------------------------------------
@@ -474,7 +419,7 @@ struct H2StreamingServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[H2StreamingCtx]]()
-        self._ctx_pool = H2StreamingCtxPool(capacity=4)
+        self._ctx_pool = CtxPool[H2StreamingCtx](capacity=4)
         self._coro_pool = StackPool(capacity=4)
         self._flush_outbound()
 
@@ -495,7 +440,7 @@ struct H2StreamingServer(Movable):
         self._extra_data = extra_data
         self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[H2StreamingCtx]]()
-        self._ctx_pool = H2StreamingCtxPool(capacity=4)
+        self._ctx_pool = CtxPool[H2StreamingCtx](capacity=4)
         self._coro_pool = StackPool(capacity=4)
         self._flush_outbound()
 
@@ -507,7 +452,7 @@ struct H2StreamingServer(Movable):
         connection torn down mid-request would drop SUSPENDED coroutines and
         leak their stacks.
         """
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             keys.append(key)
         for ref key in keys:
@@ -812,7 +757,7 @@ struct H2StreamingServer(Movable):
             evt: The GOAWAY / CONNECTION_TERMINATED event (unused; the whole
                 connection is going away).
         """
-        var keys = List[Int]()
+        var keys = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             keys.append(key)
         for ref key in keys:
@@ -840,7 +785,7 @@ struct H2StreamingServer(Movable):
         reproduced here: we buffer data frames and fold END_STREAM onto the
         last DATA payload to avoid sending a separate 0-byte DATA(END_STREAM)
         frame (some H2 clients misbehave on that)."""
-        var stream_ids = List[Int]()
+        var stream_ids = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             stream_ids.append(key)
         for ref sid_ref in stream_ids:

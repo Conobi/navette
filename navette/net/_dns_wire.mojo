@@ -52,10 +52,6 @@ struct _Name(Copyable, Movable):
         self.value = copy.value.copy()
         self.next_off = copy.next_off
 
-    def __init__(out self, *, deinit move: Self):
-        self.value = move.value^
-        self.next_off = move.next_off
-
 
 # ── _Deadline struct ───────────────────────────────────────────────────────
 
@@ -70,9 +66,6 @@ struct _Deadline(Copyable, Movable):
 
     def __init__(out self, *, copy: Self):
         self._expires_ms = copy._expires_ms
-
-    def __init__(out self, *, deinit move: Self):
-        self._expires_ms = move._expires_ms
 
     @staticmethod
     def from_timeout_ms(ms: UInt) -> Self:
@@ -219,8 +212,7 @@ def _encode_qname_into(mut buf: List[Byte], host: String):
         var label_len = j - i
         if label_len > 0:
             buf.append(UInt8(label_len))
-            for k in range(i, j):
-                buf.append(b[k])
+            buf.extend(Span(b)[i:j])
         i = j + 1
     buf.append(Byte(0))
 
@@ -304,24 +296,30 @@ def _build_query_into(mut buf: List[Byte], host: String, txn_id: UInt16, qtype: 
     (0x00), TYPE=41, CLASS=1232 (UDP payload size per DNS Flag Day 2020),
     TTL=0 (extended-RCODE 0 / EDNS version 0 / DO=0), RDLEN=0.
     """
-    buf.append(UInt8((Int(txn_id) >> 8) & 0xFF))
-    buf.append(UInt8(Int(txn_id) & 0xFF))
-    buf.append(UInt8(0x01)); buf.append(UInt8(0x00))   # flags: RD=1
-    buf.append(UInt8(0x00)); buf.append(UInt8(0x01))   # QDCOUNT=1
-    buf.append(UInt8(0x00)); buf.append(UInt8(0x00))   # ANCOUNT=0
-    buf.append(UInt8(0x00)); buf.append(UInt8(0x00))   # NSCOUNT=0
-    buf.append(UInt8(0x00)); buf.append(UInt8(0x01))   # ARCOUNT=1
+    # DNS header: txn_id, flags RD=1, QDCOUNT=1, AN=0, NS=0, ARCOUNT=1
+    var hdr: List[Byte] = [
+        UInt8((Int(txn_id) >> 8) & 0xFF), UInt8(Int(txn_id) & 0xFF),
+        UInt8(0x01), UInt8(0x00),  # flags: RD=1
+        UInt8(0x00), UInt8(0x01),  # QDCOUNT=1
+        UInt8(0x00), UInt8(0x00),  # ANCOUNT=0
+        UInt8(0x00), UInt8(0x00),  # NSCOUNT=0
+        UInt8(0x00), UInt8(0x01),  # ARCOUNT=1
+    ]
+    buf.extend(Span(hdr))
     _encode_qname_into(buf, host)
-    buf.append(UInt8((qtype >> 8) & 0xFF)); buf.append(UInt8(qtype & 0xFF))
-    buf.append(UInt8(0x00)); buf.append(UInt8(_QCLASS_IN))
-    # EDNS0 OPT RR (additional section)
-    buf.append(UInt8(0x00))                                 # root name
-    buf.append(UInt8(0x00)); buf.append(UInt8(41))          # TYPE=41 (OPT)
-    buf.append(UInt8((_EDNS_UDP_SIZE >> 8) & 0xFF))         # CLASS hi (1232)
-    buf.append(UInt8(_EDNS_UDP_SIZE & 0xFF))                # CLASS lo
-    buf.append(UInt8(0x00)); buf.append(UInt8(0x00))        # TTL hi (DO=0)
-    buf.append(UInt8(0x00)); buf.append(UInt8(0x00))        # TTL lo
-    buf.append(UInt8(0x00)); buf.append(UInt8(0x00))        # RDLEN=0
+    # QTYPE + QCLASS + EDNS0 OPT RR (additional section)
+    var tail: List[Byte] = [
+        UInt8((qtype >> 8) & 0xFF), UInt8(qtype & 0xFF),
+        UInt8(0x00), UInt8(_QCLASS_IN),
+        UInt8(0x00),                                        # OPT root name
+        UInt8(0x00), UInt8(41),                              # TYPE=41 (OPT)
+        UInt8((_EDNS_UDP_SIZE >> 8) & 0xFF),                 # CLASS hi (1232)
+        UInt8(_EDNS_UDP_SIZE & 0xFF),                        # CLASS lo
+        UInt8(0x00), UInt8(0x00),                            # TTL hi (DO=0)
+        UInt8(0x00), UInt8(0x00),                            # TTL lo
+        UInt8(0x00), UInt8(0x00),                            # RDLEN=0
+    ]
+    buf.extend(Span(tail))
 
 
 def _random_txn_id() -> UInt16:
@@ -382,10 +380,9 @@ def _recv_dgram(fd: Int32, max_n: Int) raises -> List[Byte]:
     var buf_owned = Owned[UInt8](max_n)
     var buf = buf_owned.ptr()
     var rc = external_call["recv", Int](fd, buf, max_n, Int32(0))
-    var out = List[Byte]()
+    var out = List[Byte](capacity=max(rc, 0))
     if rc > 0:
-        for i in range(rc):
-            out.append(buf[unsafe_offset=i])
+        out.extend(Span(unsafe_ptr=buf, length=rc))
     return out^
 
 
@@ -421,7 +418,7 @@ def _recv_n(fd: Int32, want: Int, deadline: UInt64) raises -> List[Byte]:
     total-operation deadline is honoured here rather than a fresh per-call
     timeout.  Returns fewer than `want` bytes on EOF, error, or expiry.
     """
-    var out = List[Byte]()
+    var out = List[Byte](capacity=want)
     while len(out) < want and _monotonic_ms() < deadline:
         var rem = want - len(out)
         var buf_owned = Owned[UInt8](rem)
@@ -429,6 +426,5 @@ def _recv_n(fd: Int32, want: Int, deadline: UInt64) raises -> List[Byte]:
         var rc = external_call["recv", Int](fd, buf, rem, Int32(0))
         if rc <= 0:
             break
-        for i in range(rc):
-            out.append(buf[unsafe_offset=i])
+        out.extend(Span(unsafe_ptr=buf, length=rc))
     return out^

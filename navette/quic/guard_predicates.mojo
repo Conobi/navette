@@ -65,10 +65,6 @@ struct GuardVerdict(Copyable, Movable):
         self.error_code = copy.error_code
         self.tag = copy.tag
 
-    def __init__(out self, *, deinit move: Self):
-        self.error_code = move.error_code
-        self.tag = move.tag
-
 
 struct QuicResetCtx(Copyable, Movable):
     """Inputs to the F15 RESET_STREAM guard predicate."""
@@ -87,11 +83,6 @@ struct QuicResetCtx(Copyable, Movable):
         self.local_uni_opened = copy.local_uni_opened
         self.local_bidi_opened = copy.local_bidi_opened
 
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.local_uni_opened = move.local_uni_opened
-        self.local_bidi_opened = move.local_bidi_opened
-
 
 struct QuicStopSendingCtx(Copyable, Movable):
     """Inputs to the F16 STOP_SENDING guard predicate."""
@@ -109,11 +100,6 @@ struct QuicStopSendingCtx(Copyable, Movable):
         self.stream_id = copy.stream_id
         self.local_uni_opened = copy.local_uni_opened
         self.local_bidi_opened = copy.local_bidi_opened
-
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.local_uni_opened = move.local_uni_opened
-        self.local_bidi_opened = move.local_bidi_opened
 
 
 def predicate_f15_reset_on_server_uni(ctx: QuicResetCtx) -> Optional[GuardVerdict]:
@@ -191,11 +177,6 @@ struct MaxStreamDataCtx(Copyable, Movable):
         self.stream_id = copy.stream_id
         self.exists = copy.exists
         self.has_send_side = copy.has_send_side
-
-    def __init__(out self, *, deinit move: Self):
-        self.stream_id = move.stream_id
-        self.exists = move.exists
-        self.has_send_side = move.has_send_side
 
 
 def predicate_f18_f19_max_stream_data(

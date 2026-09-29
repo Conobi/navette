@@ -140,74 +140,37 @@ struct CounterId(ImplicitlyCopyable):
 
 def counter_name(id: CounterId) -> String:
     """Map counter ID to its JSON leaf key."""
-    var v = id.value
-    if v == 0: return "idle_us_total"
-    if v == 1: return "busy_us_total"
-    if v == 2: return "on_flush_events"
-    if v == 3: return "shim_ffi"
-    if v == 4: return "hp"
-    if v == 5: return "aead"
-    if v == 6: return "header_parse"
-    if v == 7: return "frame_parse"
-    if v == 8: return "sm"
-    if v == 9: return "drain"
-    if v == 10: return "residual"
-    if v == 11: return "pkt_count"
-    if v == 12: return "per_pkt_total_overflow"
-    if v == 13: return "arrivals"
-    if v == 14: return "successful"
-    if v == 15: return "timed_out"
-    if v == 16: return "arrival_lat_us_overflow"
-    if v == 17: return "arrival_lat_us_total"
-    if v == 18: return "dcid_mismatch_pkts"
-    if v == 19: return "read_hs"
-    if v == 20: return "write_hs"
-    if v == 21: return "take_keys"
-    if v == 22: return "pop_dispatch"
-    if v == 23: return "post_pkt"
-    if v == 24: return "teardown"
-    if v == 25: return "loop_iter_count"
-    if v == 26: return "drain_resp"
-    if v == 27: return "post_recv"
-    if v == 28: return "dispatch"
-    if v == 29: return "drain_stream_us_total"
-    if v == 30: return "recv_ffi_us"
-    if v == 31: return "buf_accumulate_us"
-    if v == 32: return "frame_parse_us"
-    if v == 33: return "qpack_decode_us"
-    if v == 34: return "full"
-    if v == 35: return "resumed"
-    if v == 36: return "fresh_conn_ffi_us_overflow"
-    if v == 37: return "read_hs_us_per_call_overflow"
-    if v == 38: return "read_hs_input_marshalling_us_overflow"
-    if v == 39: return "read_hs_state_machine_us_overflow"
-    if v == 40: return "read_hs_output_alloc_us_overflow"
-    if v == 41: return "read_hs_output_marshalling_us_overflow"
-    if v == 42: return "alloc_tls_handle_us_overflow"
-    if v == 43: return "iouring_park_us_total"
-    if v == 44: return "iouring_park_us_overflow"
-    if v == 45: return "cqes_per_wake_count"
-    if v == 46: return "cqes_total"
-    if v == 47: return "flush_impl_us_total"
-    if v == 48: return "flush_impl_us_overflow"
-    if v == 49: return "drain_submits_us_total"
-    if v == 50: return "flush_feed_datagram_us_total"
-    if v == 51: return "flush_feed_datagram_us_overflow"
-    if v == 52: return "hs_cpu_us_per_handshake_overflow"
-    if v == 53: return "hs_wait_us_per_handshake_overflow"
-    if v == 54: return "attempts"
-    if v == 55: return "successes"
-    if v == 56: return "dropped"
-    if v == 57: return "accept"
-    if v == 58: return "reject_duplicate"
-    if v == 59: return "reject_per_key_quota"
-    if v == 60: return "reject_global_ceiling"
-    if v == 61: return "reject_no_authenticator"
-    if v == 62: return "accept"
-    if v == 63: return "reject_425"
-    if v == 64: return "misconfig_fail_closed"
-    if v == 65: return "1rtt_bypassed"
-    if v == 66: return "user_raised"
+    var names: List[String] = [
+        "idle_us_total", "busy_us_total", "on_flush_events",
+        "shim_ffi", "hp", "aead", "header_parse", "frame_parse",
+        "sm", "drain", "residual", "pkt_count", "per_pkt_total_overflow",
+        "arrivals", "successful", "timed_out",
+        "arrival_lat_us_overflow", "arrival_lat_us_total", "dcid_mismatch_pkts",
+        "read_hs", "write_hs", "take_keys",
+        "pop_dispatch", "post_pkt", "teardown", "loop_iter_count",
+        "drain_resp", "post_recv", "dispatch",
+        "drain_stream_us_total", "recv_ffi_us", "buf_accumulate_us",
+        "frame_parse_us", "qpack_decode_us",
+        "full", "resumed",
+        "fresh_conn_ffi_us_overflow", "read_hs_us_per_call_overflow",
+        "read_hs_input_marshalling_us_overflow", "read_hs_state_machine_us_overflow",
+        "read_hs_output_alloc_us_overflow", "read_hs_output_marshalling_us_overflow",
+        "alloc_tls_handle_us_overflow",
+        "iouring_park_us_total", "iouring_park_us_overflow",
+        "cqes_per_wake_count", "cqes_total",
+        "flush_impl_us_total", "flush_impl_us_overflow",
+        "drain_submits_us_total",
+        "flush_feed_datagram_us_total", "flush_feed_datagram_us_overflow",
+        "hs_cpu_us_per_handshake_overflow", "hs_wait_us_per_handshake_overflow",
+        "attempts", "successes", "dropped",
+        "accept", "reject_duplicate", "reject_per_key_quota",
+        "reject_global_ceiling", "reject_no_authenticator",
+        "accept", "reject_425", "misconfig_fail_closed",
+        "1rtt_bypassed", "user_raised",
+    ]
+    var idx = Int(id.value)
+    if idx < len(names):
+        return names[idx]
     return "unknown"
 
 
@@ -643,7 +606,7 @@ struct AcceptProfile(Copyable, Movable):
         s += "  Idle (bouclette wait):     " + _fmt_duration_us(idle) + "  " + _fmt_pct(idle, idle + busy) + "\n"
         s += "  Busy (in loop):         " + _fmt_duration_us(busy) + "  " + _fmt_pct(busy, idle + busy) + "\n\n"
         s += "Datagrams batched per flush (approx. CQE multishot batching):\n"
-        s += _text_8bucket(self.pkts_per_flush_buckets, flush_n)
+        s += _text_8bucket_fmt(self.pkts_per_flush_buckets, "size=", "  ", total_for_pct=flush_n)
         s += "Per-packet wall-clock (bucket-estimated p_n, us):\n"
         var p50 = _bucket_percentile(self.per_pkt_total_buckets, n_closed, 50.0)
         var p90 = _bucket_percentile(self.per_pkt_total_buckets, n_closed, 90.0)
@@ -706,8 +669,8 @@ struct AcceptProfile(Copyable, Movable):
         s += "Per-fresh-conn FFI us (24-bucket pow2):\n"
         s += "  total samples:    " + _fmt_count(_sum_buckets(self.fresh_conn_ffi_us_buckets, 24)) + "\n"
         s += "  overflow (>=2^23):" + _fmt_count(self.get(CounterId.FRESH_CONN_FFI_US_OVERFLOW)) + "\n"
-        s += "Recv-batch size (8-bucket):\n" + _text_8bucket_labelled(self.recv_batch_size_buckets)
-        s += "read_hs per-handshake count (8-bucket):\n" + _text_8bucket_labelled_count(self.read_hs_per_handshake_count_buckets)
+        s += "Recv-batch size (8-bucket):\n" + _text_8bucket_fmt(self.recv_batch_size_buckets, "size=", "  ")
+        s += "read_hs per-handshake count (8-bucket):\n" + _text_8bucket_fmt(self.read_hs_per_handshake_count_buckets, "count=", "  ", trailing_newline=False)
         s += "read_hs per-call duration (24-bucket pow2 us):\n"
         s += "  total samples:    " + _fmt_count(_sum_buckets(self.read_hs_us_per_call_buckets, 24)) + "\n"
         s += "  overflow (>=2^23):" + _fmt_count(self.get(CounterId.READ_HS_US_PER_CALL_OVERFLOW)) + "\n\n"
@@ -745,8 +708,8 @@ struct AcceptProfile(Copyable, Movable):
         s += "  active_bouclette_count_samples.len:        " + _fmt_count(UInt64(len(self.active_bouclette_count_samples))) + "\n"
         s += "  in_flight_handshake_count_samples.len:  " + _fmt_count(UInt64(len(self.in_flight_handshake_count_samples))) + "\n\n"
         s += "Q7 batch-size histograms (8-bucket _pkts_per_flush_bucket dispatch):\n"
-        s += "  sendmsg:\n" + _text_8bucket_indent4(self.sendmsg_batch_size_buckets)
-        s += "  recvmsg:\n" + _text_8bucket_indent4(self.recvmsg_batch_size_buckets)
+        s += "  sendmsg:\n" + _text_8bucket_fmt(self.sendmsg_batch_size_buckets, "size=", "    ", trailing_newline=False)
+        s += "  recvmsg:\n" + _text_8bucket_fmt(self.recvmsg_batch_size_buckets, "size=", "    ", trailing_newline=False)
         s += "Q7 per-FD per-handshake (24-bucket pow2 us):\n"
         var q7_cpu = _sum_buckets(self.hs_cpu_us_per_handshake_buckets, 24)
         var q7_wait = _sum_buckets(self.hs_wait_us_per_handshake_buckets, 24)
@@ -758,7 +721,7 @@ struct AcceptProfile(Copyable, Movable):
         s += "Q-IO-1 cqes_per_wake (8-bucket via _pkts_per_flush_bucket):\n"
         s += "  cqes_per_wake.wakes:    " + _fmt_count(self.get(CounterId.CQES_PER_WAKE_COUNT)) + "\n"
         s += "  cqes_per_wake.cqes_sum: " + _fmt_count(self.get(CounterId.CQES_TOTAL)) + "\n"
-        s += _text_8bucket_indent4(self.cqes_per_wake_buckets)
+        s += _text_8bucket_fmt(self.cqes_per_wake_buckets, "size=", "    ", trailing_newline=False)
         s += "Q-IO-1 flush_impl_us (24-bucket pow2):\n"
         s += "  flush_impl_us.total:    " + _fmt_count(self.get(CounterId.FLUSH_IMPL_US_TOTAL)) + "\n"
         s += "  flush_impl_us.overflow: " + _fmt_count(self.get(CounterId.FLUSH_IMPL_US_OVERFLOW)) + "\n"
@@ -1118,41 +1081,11 @@ struct ProfileState(Movable):
             if self.ptr is not None and self.first_initial_us > UInt64(0):
                 self.ptr.value()[].record_handshake_complete(now - self.first_initial_us)
 
-    def record_replay_accept(mut self):
-        """Bump zero_rtt_replay_accept."""
+    def record_counter(mut self, id: CounterId):
+        """Bump any counter by ID (comptime-gated)."""
         comptime if PROFILE_ACCEPT:
             if self.ptr is not None:
-                self.ptr.value()[].record(CounterId.ZERO_RTT_REPLAY_ACCEPT)
-
-    def record_replay_reject_duplicate(mut self):
-        """Bump zero_rtt_replay_reject_duplicate."""
-        comptime if PROFILE_ACCEPT:
-            if self.ptr is not None:
-                self.ptr.value()[].record(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)
-
-    def record_replay_reject_per_key_quota(mut self):
-        """Bump zero_rtt_replay_reject_per_key_quota."""
-        comptime if PROFILE_ACCEPT:
-            if self.ptr is not None:
-                self.ptr.value()[].record(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)
-
-    def record_replay_reject_global_ceiling(mut self):
-        """Bump zero_rtt_replay_reject_global_ceiling."""
-        comptime if PROFILE_ACCEPT:
-            if self.ptr is not None:
-                self.ptr.value()[].record(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)
-
-    def record_replay_reject_no_authenticator(mut self):
-        """Bump zero_rtt_replay_reject_no_authenticator."""
-        comptime if PROFILE_ACCEPT:
-            if self.ptr is not None:
-                self.ptr.value()[].record(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
-
-    def record_zero_rtt_drain_dropped(mut self):
-        """Bump zero_rtt_drain_dropped."""
-        comptime if PROFILE_ACCEPT:
-            if self.ptr is not None:
-                self.ptr.value()[].record(CounterId.ZERO_RTT_DRAIN_DROPPED)
+                self.ptr.value()[].record(id)
 
 
 # ── Free functions ──
@@ -1395,72 +1328,42 @@ def _json_total_hist24(name: String, total: UInt64, buckets: List[UInt64], overf
 
 def _8bucket_keys() -> List[String]:
     """Return the 8 standard bucket key labels."""
-    var k = List[String]()
-    k.append(String("1")); k.append(String("2-3")); k.append(String("4-7"))
-    k.append(String("8-15")); k.append(String("16-31")); k.append(String("32-63"))
-    k.append(String("64-127")); k.append(String("128+"))
+    var k: List[String] = [
+        "1", "2-3", "4-7", "8-15", "16-31", "32-63", "64-127", "128+",
+    ]
     return k^
 
 
-def _8bucket_size_labels() -> List[String]:
-    """Return the 8 standard 'size=N' text labels (padded)."""
-    var l = List[String]()
-    l.append(String("size=1     ")); l.append(String("size=2-3   "))
-    l.append(String("size=4-7   ")); l.append(String("size=8-15  "))
-    l.append(String("size=16-31 ")); l.append(String("size=32-63 "))
-    l.append(String("size=64-127")); l.append(String("size=128+  "))
-    return l^
+def _text_8bucket_fmt(
+    buckets: List[UInt64],
+    prefix: String,
+    indent: String,
+    total_for_pct: UInt64 = UInt64(0),
+    pad_label: Bool = True,
+    trailing_newline: Bool = True,
+) -> String:
+    """Unified 8-bucket text formatter.
 
-
-def _8bucket_short_labels() -> List[String]:
-    """Return 8 short bucket labels (padded)."""
-    var l = List[String]()
-    l.append(String("1     ")); l.append(String("2-3   "))
-    l.append(String("4-7   ")); l.append(String("8-15  "))
-    l.append(String("16-31 ")); l.append(String("32-63 "))
-    l.append(String("64-127")); l.append(String("128+  "))
-    return l^
-
-
-def _text_8bucket(buckets: List[UInt64], total_for_pct: UInt64) -> String:
-    """Format 8-bucket histogram with labels and optional percentages."""
-    var labels = _8bucket_size_labels()
+    Args:
+        prefix: label prefix before each range (e.g. "size=", "count=", "").
+        indent: whitespace prefix per line.
+        total_for_pct: when > 0, append percentage after each count.
+        pad_label: when True, pad range label to 7 chars.
+        trailing_newline: when True, append a blank line after the block.
+    """
     var s = String()
+    var ranges = _8bucket_keys()
     for i in range(8):
-        var c = buckets[i]
-        s += "  " + labels[i] + " " + _fmt_count(c)
-        if c > UInt64(0):
-            s += "  " + _fmt_pct(c, total_for_pct)
+        var label = ranges[i]
+        if pad_label:
+            while label.byte_length() < 7:
+                label += " "
+        s += indent + prefix + label + " " + _fmt_count(buckets[i])
+        if total_for_pct > UInt64(0) and buckets[i] > UInt64(0):
+            s += "  " + _fmt_pct(buckets[i], total_for_pct)
         s += "\n"
-    s += "\n"
-    return s^
-
-
-def _text_8bucket_labelled(buckets: List[UInt64]) -> String:
-    """Format 8-bucket histogram with 'size=N' labels, 2-space indent."""
-    var labels = _8bucket_short_labels()
-    var s = String()
-    for i in range(8):
-        s += "  size=" + labels[i] + " " + _fmt_count(buckets[i]) + "\n"
-    s += "\n"
-    return s^
-
-
-def _text_8bucket_labelled_count(buckets: List[UInt64]) -> String:
-    """Format 8-bucket histogram with 'count=N' labels."""
-    var labels = _8bucket_short_labels()
-    var s = String()
-    for i in range(8):
-        s += "  count=" + labels[i] + " " + _fmt_count(buckets[i]) + "\n"
-    return s^
-
-
-def _text_8bucket_indent4(buckets: List[UInt64]) -> String:
-    """Format 8-bucket histogram with 4-space indent and 'size=N' labels."""
-    var labels = _8bucket_short_labels()
-    var s = String()
-    for i in range(8):
-        s += "    size=" + labels[i] + " " + _fmt_count(buckets[i]) + "\n"
+    if trailing_newline:
+        s += "\n"
     return s^
 
 

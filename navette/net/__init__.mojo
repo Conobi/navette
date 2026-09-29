@@ -7,5 +7,6 @@ host resolution with an optional TTL cache, and a deadline-bounded
 A/AAAA resolver for callers that need timeout guarantees.
 """
 
+from .peer_addr import peer_addr_from_fd
 from .resolver import resolve_host, Resolver, ResolvedAddr
 from .resolver_bounded import resolve_host_bounded

@@ -39,10 +39,6 @@ struct Method(Copyable, Movable, Writable):
         self._tag = copy._tag
         self._custom = copy._custom
 
-    def __init__(out self, *, deinit move: Self):
-        self._tag = move._tag
-        self._custom = move._custom^
-
     # --- Factory methods ---
 
     @staticmethod

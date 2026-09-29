@@ -52,15 +52,6 @@ struct _H3ClientCtx(Movable):
         self.errored = False
         self.error_code = UInt64(0)
 
-    def __init__(out self, *, deinit move: Self):
-        self.handle_id = move.handle_id
-        self.status_code = move.status_code
-        self.headers = move.headers^
-        self.body_data = move.body_data^
-        self.complete = move.complete
-        self.errored = move.errored
-        self.error_code = move.error_code
-
 
 # ---------------------------------------------------------------------------
 # H3Session — client session adapter
@@ -86,13 +77,6 @@ struct H3Session(Session):
         self._handle_to_stream = Dict[Int, Int]()
         self._next_id = UInt64(0)
         self.received_goaway = False
-
-    def __init__(out self, *, deinit move: Self):
-        self._h3 = move._h3^
-        self._streams = move._streams^
-        self._handle_to_stream = move._handle_to_stream^
-        self._next_id = move._next_id
-        self.received_goaway = move.received_goaway
 
     def __deinit__(deinit self):
         """Free all heap-allocated client stream contexts."""
@@ -140,7 +124,7 @@ struct H3Session(Session):
         if not scheme:
             scheme = String("https")
 
-        var fields = List[QpackHeaderField]()
+        var fields = List[QpackHeaderField](capacity=4 + len(req.headers))
         fields.append(QpackHeaderField(":method", String(req.method)))
         fields.append(QpackHeaderField(":path", req.target))
         fields.append(QpackHeaderField(":scheme", scheme^))
