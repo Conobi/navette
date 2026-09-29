@@ -382,6 +382,126 @@ def test_h3_udp_server_init_and_tick() raises:
     print("PASS: test_h3_udp_server_init_and_tick")
 
 
+def test_second_start_keeps_demux_key() raises:
+    """The first start() draws a non-zero demux key; a second start() raises and keeps it.
+
+    Redrawing the key under live connections would re-key every long
+    DCID and orphan their slots.
+    """
+    var h = UdpServerHarness[StubHandler](
+        make_stub_handler, default_transport_params(), _params(),
+    )
+    var k0 = h.srv[]._demux_sip.k0
+    var k1 = h.srv[]._demux_sip.k1
+    assert_true(k0 != 0 or k1 != 0, "start() draws a non-zero demux key")
+    var raised = False
+    try:
+        h.srv[].start(h.loop[])
+    except e:
+        raised = True
+        assert_true("already started" in String(e), "unexpected error: " + String(e))
+    assert_true(
+        h.srv[]._demux_sip.k0 == k0 and h.srv[]._demux_sip.k1 == k1,
+        "second start() must not redraw the demux key",
+    )
+    assert_true(raised, "second start() must raise")
+    _ = h.slot_count()
+    print("PASS: test_second_start_keeps_demux_key")
+
+
+def test_start_retries_after_partial_failure() raises:
+    """A start() that fails after arming the receive stream can be retried.
+
+    The retry completes the remaining setup, keeps the demux key and the
+    armed stream of the first attempt, and arms exactly one timer; a call
+    after that success still raises.
+    """
+    var cert = read_file(String("certs/server.crt"))
+    var key = read_file(String("certs/server.key"))
+    var tls = TlsBackend()
+    var config = QuicServerConfig(tls.shared(), Span(cert), Span(key))
+    var server = H3UdpServer[StubHandler, test_hooks=True](
+        udp_listener(0), tls^, config^, default_transport_params(), make_stub_handler,
+    )
+    var srv_ptr = _heap_alloc[H3UdpServer[StubHandler, test_hooks=True]](1)
+    srv_ptr.unsafe_write(server^)
+    srv_ptr[].wire_context()
+    var loop_ptr = _heap_alloc[WatchLoop](1)
+    loop_ptr.unsafe_write(WatchLoop(capacity=64))
+
+    srv_ptr[]._test_fail_start_after_recv = True
+    var failed = False
+    try:
+        srv_ptr[].start(loop_ptr[])
+    except e:
+        failed = True
+        assert_true("injected" in String(e), "unexpected error: " + String(e))
+    assert_true(failed, "the injected failure must surface")
+    assert_true(Bool(srv_ptr[]._recv_stream), "the stream was armed before the failure")
+    var k0 = srv_ptr[]._demux_sip.k0
+    var k1 = srv_ptr[]._demux_sip.k1
+
+    srv_ptr[]._test_fail_start_after_recv = False
+    srv_ptr[].start(loop_ptr[])
+    assert_true(
+        srv_ptr[]._demux_sip.k0 == k0 and srv_ptr[]._demux_sip.k1 == k1,
+        "the retry keeps the demux key the armed stream was keyed with",
+    )
+    assert_true(Bool(srv_ptr[]._send_sink), "the retry creates the send sink")
+    assert_equal_int(srv_ptr[]._timeout_count, 1, "the retry arms exactly one timer")
+
+    var raised = False
+    try:
+        srv_ptr[].start(loop_ptr[])
+    except e:
+        raised = True
+        assert_true("already started" in String(e), "unexpected error: " + String(e))
+    assert_true(raised, "start() after a success must raise")
+
+    _ = loop_ptr[].step(20)
+    srv_ptr[].flush()
+
+    _ = srv_ptr.unsafe_take_pointee()
+    srv_ptr.unsafe_free()
+    _ = loop_ptr.unsafe_take_pointee()
+    loop_ptr.unsafe_free()
+    print("PASS: test_start_retries_after_partial_failure")
+
+
+def test_production_server_ignores_test_hooks() raises:
+    """Without `test_hooks`, the fault-injection fields are compiled out.
+
+    Setting `_test_fail_start_after_recv` on a default server must not
+    make start() raise: production builds never pay for, or trip on, the
+    test hooks.
+    """
+    var cert = read_file(String("certs/server.crt"))
+    var key = read_file(String("certs/server.key"))
+    var tls = TlsBackend()
+    var config = QuicServerConfig(tls.shared(), Span(cert), Span(key))
+    var server = H3UdpServer[StubHandler](
+        udp_listener(0), tls^, config^, default_transport_params(), make_stub_handler,
+    )
+    var srv_ptr = _heap_alloc[H3UdpServer[StubHandler]](1)
+    srv_ptr.unsafe_write(server^)
+    srv_ptr[].wire_context()
+    var loop_ptr = _heap_alloc[WatchLoop](1)
+    loop_ptr.unsafe_write(WatchLoop(capacity=64))
+
+    srv_ptr[]._test_fail_start_after_recv = True
+    srv_ptr[].start(loop_ptr[])
+    assert_true(Bool(srv_ptr[]._send_sink), "start() ran to completion")
+
+    _ = loop_ptr[].step(20)
+    srv_ptr[].flush()
+
+    _ = srv_ptr.unsafe_take_pointee()
+    srv_ptr.unsafe_free()
+    _ = loop_ptr.unsafe_take_pointee()
+    loop_ptr.unsafe_free()
+    print("PASS: test_production_server_ignores_test_hooks")
+
+
 def test_timer_arm_is_min() raises:
     """timer-arm-is-min: `_timer_arm_ms` == clamp(ceil((d-now)/1000), 1, 1000)."""
     var now = UInt64(5_000_000)
@@ -1374,6 +1494,9 @@ def test_earliest_cached_deadline_pure() raises:
 
 def main() raises:
     test_h3_udp_server_init_and_tick()
+    test_second_start_keeps_demux_key()
+    test_start_retries_after_partial_failure()
+    test_production_server_ignores_test_hooks()
     test_timer_arm_is_min()
     test_idle_timeout_nonzero_on_server_runtimes()
     test_idle_reaps_abandoned_handshake()

@@ -59,5 +59,4 @@ from navette.h3.h3_udp_server import (
     PendingDatagram,
     EgressPacket,
     PBUF_COUNT,
-    PBUF_SIZE,
 )

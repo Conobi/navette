@@ -9,6 +9,7 @@ Capabilities degrade gracefully: unsupported features are silently
 disabled rather than raising.
 """
 
+from bouclette.net.message import DELIVERY_HEADER_LEN
 from bouclette.net.socket import Socket
 
 
@@ -21,6 +22,41 @@ comptime _QUIC_MIN_MTU: Int = 1200
 # Large recv buffer for coalesced datagrams (64 segments * 1500 bytes,
 # rounded to a 256 KiB boundary that the kernel will clamp to rmem_max).
 comptime _COALESCED_RECV_BUF: Int = 65535 * 4
+
+# Smallest UDP payload every receive buffer must hold: a full 1500-byte
+# Ethernet MTU minus the IPv4 (20) and UDP (8) headers.
+comptime MIN_RECV_WINDOW: Int = 1472
+
+# Payload window every coalesced receive buffer must hold. GRO stops
+# merging once the IP packet would reach 65,536 bytes (`skb_gro_receive`
+# against `gro_max_size`), so a delivery carries at most 65,507 B of UDP
+# payload over IPv4 and 65,487 B over IPv6; 65,535 covers both.
+comptime MAX_COALESCED_PAYLOAD: Int = 65535
+
+
+def recv_payload_window(buffer_size: Int, name_capacity: Int, control_capacity: Int) -> Int:
+    """Largest datagram payload one multishot recvmsg buffer can carry untruncated.
+
+    Each delivery is laid out as the 16-byte `io_uring_recvmsg_out`
+    header, then the peer name, then the control region, then the
+    payload; only what remains after the first three is payload.
+    """
+    return buffer_size - DELIVERY_HEADER_LEN - name_capacity - control_capacity
+
+
+def recv_buffer_size_for(coalesced: Bool, name_capacity: Int, control_capacity: Int) -> Int:
+    """BufferPool entry size whose payload window is `MAX_COALESCED_PAYLOAD` with GRO, `MIN_RECV_WINDOW` without.
+
+    A delivery that overflows the window comes back MSG_TRUNC and is
+    dropped whole, so with GRO the window must hold the largest merge.
+    """
+    var window = MAX_COALESCED_PAYLOAD if coalesced else MIN_RECV_WINDOW
+    return window + DELIVERY_HEADER_LEN + name_capacity + control_capacity
+
+
+def advertised_max_udp_payload(configured: UInt64, window: Int) -> UInt64:
+    """`max_udp_payload_size` to advertise: never more than the receive window (RFC 9000 Section 18.2)."""
+    return min(configured, UInt64(window))
 
 
 struct UdpSocketState(Movable):
@@ -90,15 +126,19 @@ struct UdpSocketState(Movable):
         """Largest payload a single segmented send can carry."""
         return self.max_send_segments() * self._mtu
 
-    def recv_buffer_size(self) -> Int:
-        """Minimum recv buffer to avoid truncation.
+    def recv_buffer_size(self, name_capacity: Int, control_capacity: Int) -> Int:
+        """BufferPool entry size for the probed GRO mode; see `recv_buffer_size_for`."""
+        return recv_buffer_size_for(self._coalesced_recv, name_capacity, control_capacity)
 
-        65535 when coalesced receive is active (one coalesced delivery
-        can span up to 64 segments); MTU + headroom otherwise.
+    def disable_coalesced_recv(mut self, ref socket: Socket) raises:
+        """Turn GRO off on `socket` and in this snapshot; tests use it to pin the non-coalesced path.
+
+        Raises if the kernel refuses, leaving the snapshot coalesced: a
+        snapshot claiming GRO is off while the socket still merges would
+        size single-datagram buffers and drop every coalesced delivery.
         """
-        if self._coalesced_recv:
-            return 65535
-        return self._mtu + 100
+        socket.set_gro(False)
+        self._coalesced_recv = False
 
     def downgrade_send_segments(mut self):
         """Permanently disable segmentation offload.

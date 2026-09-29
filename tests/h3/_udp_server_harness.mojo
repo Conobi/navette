@@ -94,7 +94,7 @@ struct UdpServerHarness[H: StreamHandler](Movable):
     `step()` if left on the stack). Teardown destroys the server before
     the loop.
     """
-    var srv: Pointer[H3UdpServer[Self.H], MutUntrackedOrigin]
+    var srv: Pointer[H3UdpServer[Self.H, test_hooks=True], MutUntrackedOrigin]
     var loop: Pointer[WatchLoop, MutUntrackedOrigin]
     var tls: TlsBackend
     var cli_cfg: QuicClientConfig
@@ -107,8 +107,16 @@ struct UdpServerHarness[H: StreamHandler](Movable):
         var server_params: TransportParams,
         var client_params: TransportParams,
         loop_capacity: Int = 256,
+        disable_gro: Bool = False,
+        fail_first_start: Bool = False,
     ) raises:
-        """Bind an ephemeral port, start the server and pin its clock."""
+        """Bind an ephemeral port, start the server and pin its clock.
+
+        `disable_gro` pins the non-coalesced receive path (one datagram per
+        buffer) whatever the kernel supports. `fail_first_start` leaves the
+        server as a `start()` that raised after arming its receive stream
+        leaves it; the test completes it with `start()`.
+        """
         self.tls = TlsBackend("lib/librustls_mojo.so")
         var ck = load_test_cert()
         var cert_bytes = ck[0].copy()
@@ -123,28 +131,44 @@ struct UdpServerHarness[H: StreamHandler](Movable):
         self.client_params = client_params^
 
         var sock = udp_listener(0)
-        var server = H3UdpServer[Self.H](
+        var server = H3UdpServer[Self.H, test_hooks=True](
             sock^,
             TlsBackend(copy=self.tls),
             srv_cfg^,
             server_params^,
             make_handler,
         )
-        self.srv = _heap_alloc[H3UdpServer[Self.H]](1)
+        self.srv = _heap_alloc[H3UdpServer[Self.H, test_hooks=True]](1)
         self.srv.unsafe_write(server^)
         self.srv[].wire_context()
 
         self.loop = _heap_alloc[WatchLoop](1)
         self.loop.unsafe_write(WatchLoop(capacity=loop_capacity))
         self.srv[]._set_clock_for_tests(HARNESS_CLOCK_START_US)
+        self.srv[]._test_disable_gro = disable_gro
+        self.port = self.srv[].udp_socket.local_addr_v6().port
+        if fail_first_start:
+            self.srv[]._test_fail_start_after_recv = True
+            var failed = False
+            try:
+                self.srv[].start(self.loop[])
+            except:
+                failed = True
+            self.srv[]._test_fail_start_after_recv = False
+            assert_true(failed, "the injected start() failure surfaced")
+        else:
+            self.start()
+
+    def start(mut self) raises:
+        """`srv.start()`, then send every datagram whole.
+
+        The GSO probe leaves a socket-level UDP_SEGMENT armed, which would
+        have the kernel split any datagram over 1200 bytes on the way to
+        the client. The loopback client is not segment-aware.
+        """
         self.srv[].start(self.loop[])
-        # The GSO probe leaves a socket-level UDP_SEGMENT armed, which
-        # would have the kernel split any datagram over 1200 bytes on the
-        # way to the client. The loopback client is not segment-aware, so
-        # send every datagram whole.
         self.srv[].udp_socket.set_gso_segment_size(UInt16(0))
         self.srv[]._gso_max_segments = 1
-        self.port = self.srv[].udp_socket.local_addr_v6().port
 
     def __init__(out self, *, deinit move: Self):
         self.srv = move.srv
@@ -300,3 +324,31 @@ struct UdpServerHarness[H: StreamHandler](Movable):
                 _ = self.pump(client)
                 return True
         return False
+
+
+def raw_initial(dcid: List[Byte], total_len: Int) -> List[Byte]:
+    """A `total_len`-byte QUIC v1 long-header Initial carrying `dcid`, zero-filled.
+
+    It does not decrypt, but the server creates a connection slot for
+    any long-header Initial before touching its payload, so a slot
+    appearing proves the datagram got through receive and demux intact.
+    """
+    var p = List[Byte](capacity=total_len)
+    p.append(0xC3)  # long header, fixed bit, Initial, 4-byte packet number
+    p.append(0x00)
+    p.append(0x00)
+    p.append(0x00)
+    p.append(0x01)  # version 1
+    p.append(UInt8(len(dcid)))
+    for b in dcid:
+        p.append(b)
+    p.append(8)  # SCID length
+    for i in range(8):
+        p.append(UInt8(0xA0 + i))
+    p.append(0x00)  # token length 0
+    var rest = total_len - len(p) - 2
+    p.append(UInt8(0x40 | ((rest >> 8) & 0x3F)))  # 2-byte varint length
+    p.append(UInt8(rest & 0xFF))
+    while len(p) < total_len:
+        p.append(0x00)
+    return p^

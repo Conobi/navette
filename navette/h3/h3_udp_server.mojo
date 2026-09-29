@@ -86,6 +86,7 @@ from std.collections import Optional
 from std.collections.dict import Dict
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
+from std.sys.info import size_of
 
 from bouclette import (
     WatchLoop,
@@ -101,8 +102,13 @@ from bouclette import (
 )
 from bouclette.watch import DatagramSink
 from bouclette.handle import OwnedHandle
+from bouclette.socle.platform import sockaddr_in6
 
-from navette.runtime.udp_socket_state import UdpSocketState
+from navette.runtime.udp_socket_state import (
+    UdpSocketState,
+    advertised_max_udp_payload,
+    recv_payload_window,
+)
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, FilterStrategy, PredicateStrategy
 from navette.tls.early_data_filter import EarlyDataPredicateFn, IdempotentOnlyFilter
@@ -111,7 +117,7 @@ from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.h3.qpack import QpackCodecTables
-from navette.quic.cid import dcid_to_u64
+from navette.quic.cid import demux_key
 from navette.quic.cid_buf import CidBuf
 from navette.quic.connection import QuicConnection
 from navette.quic.packet import is_long_header_initial, extract_dcid
@@ -119,22 +125,28 @@ from navette.quic.path import PathKey
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.trans_param import TransportParams
 from navette.util.null_ptr import null_ptr
+from navette.util.siphash import SipKey
 
 
 # ── Wire constants ────────────────────────────────────────────────────────────
 
 
-# BufferPool sizing for multishot recvmsg (via WatchLoop).
+# BufferPool entry count for multishot recvmsg without GRO (via WatchLoop).
+# The entry size comes from `UdpSocketState.recv_buffer_size`.
 comptime PBUF_COUNT: Int = 1024
-comptime PBUF_SIZE: Int = 1600
 
 # Control capacity passed to recv_msg_multishot. 48 bytes fits both
 # an IP_TOS/IPV6_TCLASS record (24 B) and a UDP_GRO record (24 B).
 comptime _RECV_CONTROL_CAPACITY: Int = 48
 
-# Peer address capacity used by the delivery header decoder. Must
-# match bouclette's _NAME_CAPACITY (sizeof(sockaddr_in6) = 28 on x86_64).
-comptime _RECV_NAME_CAPACITY: Int = 28
+# Shortest DCID a client Initial may carry (RFC 9000 Section 7.2).
+comptime MIN_INITIAL_DCID_LEN: Int = 8
+
+# Peer address capacity used by the delivery header decoder. Derived the
+# way bouclette sizes every stream's name slot (its private
+# `_NAME_CAPACITY = size_of[sockaddr_in6]()`), so the decoder cannot drift
+# from where the kernel writes the payload.
+comptime _RECV_NAME_CAPACITY: Int = size_of[sockaddr_in6]()
 
 # Control capacity for egress Messages. 24 bytes holds one IP_TOS (1 B)
 # or IPV6_TCLASS (4 B) ECN cmsg record (both 24 after CMSG_ALIGN).
@@ -519,10 +531,13 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
 # ── H3UdpServer ──────────────────────────────────────────────────────────────
 
 
-struct H3UdpServer[H: StreamHandler](Movable):
+struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     """Generic UDP + QUIC + H3 server (proactor model).
 
-    Parameterised on `H: StreamHandler`. Each accepted connection
+    Parameterised on `H: StreamHandler`. `test_hooks` compiles in the
+    `_test_*` fault-injection checks in `start()`; with the default
+    False they are dead code and setting those fields has no effect.
+    Each accepted connection
     allocates a heap-owned `H3HandlerServer[H]` which owns its own
     `H` instance plus the underlying `QuicConnection` + `H3Connection`.
 
@@ -646,6 +661,28 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # PROFILE_ACCEPT=False at compile time).
     var profile: AcceptProfile
 
+    # Largest datagram payload a receive buffer holds untruncated; set in
+    # start() and never below `MIN_RECV_WINDOW`.
+    var recv_window: Int
+
+    # Test-only (read only when `test_hooks`): turn GRO off in start() so
+    # tests pin the non-coalesced receive path whatever the kernel supports.
+    var _test_disable_gro: Bool
+
+    # Test-only (read only when `test_hooks`): make start() raise right
+    # after the receive stream is armed, to exercise a retried start()
+    # over partial setup.
+    var _test_fail_start_after_recv: Bool
+
+    # Set only as the last step of a successful start(); a later call
+    # raises instead of redrawing the demux key under live connections.
+    var _started: Bool
+
+    # Secret key of the long-DCID demux hash (`demux_key`); per server,
+    # drawn from getrandom(2) in start(), before any DCID is keyed with
+    # it, and never exposed.
+    var _demux_sip: SipKey
+
     # Per-pass cap on queued recv-stream deliveries (see `ingest_more`).
     var ingest_budget: Int
 
@@ -723,6 +760,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         self._codec_tables = QpackCodecTables()
         self.profile = AcceptProfile()
+        self.recv_window = 0
+        self._test_disable_gro = False
+        self._test_fail_start_after_recv = False
+        self._started = False
+        self._demux_sip = SipKey(k0=UInt64(0), k1=UInt64(0))
         self.ingest_budget = INGEST_BUDGET_DATAGRAMS
         self._dirty_conns = List[Int]()
         self._ingress_pass = UInt64(0)
@@ -744,20 +786,21 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
     # ── Connection lookup ────────────────────────────────────────
 
-    def _find_conn_by_dcid(self, dcid_u64: UInt64) -> Int:
-        """Resolve `dcid → conn_slots index`, returning -1 if absent or
-        if the demux entry is stale (slot's generation has moved on)."""
-        if dcid_u64 not in self.conn_dcid_map:
+    def _find_conn_by_dcid(self, key: UInt64) -> Int:
+        """Resolve a `demux_key` to a `conn_slots` index with one `Dict.find` probe.
+
+        -1 when absent, or when the entry is stale (the slot's generation
+        moved on after swap-and-pop).
+        """
+        var entry = self.conn_dcid_map.find(key)
+        if not entry:
             return -1
-        try:
-            var entry = self.conn_dcid_map[dcid_u64].copy()
-            if entry.idx < 0 or entry.idx >= len(self.conn_slots):
-                return -1
-            if self.conn_slots[entry.idx].generation != entry.generation:
-                return -1
-            return entry.idx
-        except:
+        var idx = entry.value().idx
+        if idx < 0 or idx >= len(self.conn_slots):
             return -1
+        if self.conn_slots[idx].generation != entry.value().generation:
+            return -1
+        return idx
 
     # ── Lifecycle — wire_context / start / flush ────────────────
 
@@ -782,12 +825,27 @@ struct H3UdpServer[H: StreamHandler](Movable):
         The WatchLoop must outlive this server; `_loop_ptr` is stored
         for re-arming the timer in `flush()`.
 
+        Call once: after a successful start() another call raises, since
+        redrawing the demux key would strand every live connection with a
+        long DCID. A start() that raised midway may be retried with the
+        same loop: it keeps what the failed attempt created (the demux key
+        is redrawn only while no receive stream is armed) and completes
+        the rest.
+
         Args:
             loop: The WatchLoop that owns recv, send, and timers.
         """
-        # Store loop pointer for re-arming in flush().
+        if self._started:
+            raise "H3UdpServer.start: already started"
+
+        # Store loop pointer for re-arming in flush(). A retry must use
+        # the loop the first attempt registered its resources with.
+        var loop_addr = Int(Pointer(to=loop))
+        var registered = Bool(self._recv_pool) or Bool(self._recv_stream)
+        if registered and Int(self._loop_ptr) != loop_addr:
+            raise "H3UdpServer.start: retried with a different WatchLoop"
         self._loop_ptr = Pointer[WatchLoop, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=loop))
+            unsafe_from_address=loop_addr
         )
 
         # Idle disabled would leak the state of every abandoned
@@ -797,46 +855,74 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 SERVER_DEFAULT_IDLE_TIMEOUT_MS
             )
 
+        # Before ingress arms: every demux key of a long DCID depends on
+        # it, so it never changes once the receive stream exists.
+        if not self._recv_stream:
+            self._demux_sip = SipKey.random()
+
         # Probe transport capabilities (ECN, GRO, GSO) on the socket.
         # UdpSocketState enables ECN internally, so no separate
         # set_recv_tos call is needed.
-        var state = UdpSocketState(self.udp_socket)
+        if not self._socket_state:
+            var probed = UdpSocketState(self.udp_socket)
+            comptime if Self.test_hooks:
+                if self._test_disable_gro:
+                    probed.disable_coalesced_recv(self.udp_socket)
+            self._socket_state = Optional(probed^)
+        ref state = self._socket_state.value()
         self._gso_max_segments = state.max_send_segments()
 
         # Size the buffer pool based on GRO support: fewer, larger
         # buffers when the kernel coalesces datagrams; many small
-        # buffers otherwise.
+        # buffers otherwise. Either way the payload window is at least
+        # MIN_RECV_WINDOW, and the advertised max_udp_payload_size never
+        # exceeds it (RFC 9000 Section 18.2): a peer may send up to that
+        # size.
         var buf_count = PBUF_COUNT
-        var buf_size = state.recv_buffer_size()
+        var buf_size = state.recv_buffer_size(
+            _RECV_NAME_CAPACITY, _RECV_CONTROL_CAPACITY
+        )
         if state.supports_coalesced_recv():
             buf_count = 128
-
-        self._socket_state = Optional(state^)
+        self.recv_window = recv_payload_window(
+            buf_size, _RECV_NAME_CAPACITY, _RECV_CONTROL_CAPACITY
+        )
+        self.transport_params.max_udp_payload_size = advertised_max_udp_payload(
+            self.transport_params.max_udp_payload_size, self.recv_window
+        )
 
         # Create the buffer pool and arm multishot recvmsg.
-        self._recv_pool = Optional(
-            loop.buffer_pool(buf_count, buf_size)
-        )
-        self._recv_stream = Optional(
-            loop.recv_msg_multishot(
-                self.udp_socket,
-                self._recv_pool.value(),
-                control_capacity=_RECV_CONTROL_CAPACITY,
+        if not self._recv_pool:
+            self._recv_pool = Optional(
+                loop.buffer_pool(buf_count, buf_size)
             )
-        )
+        if not self._recv_stream:
+            self._recv_stream = Optional(
+                loop.recv_msg_multishot(
+                    self.udp_socket,
+                    self._recv_pool.value(),
+                    control_capacity=_RECV_CONTROL_CAPACITY,
+                )
+            )
+        comptime if Self.test_hooks:
+            if self._test_fail_start_after_recv:
+                raise "H3UdpServer.start: injected failure after the receive stream"
 
         # Create the send-side sink for batched egress (sendmmsg).
-        self._send_sink = Optional(
-            loop.datagram_sink(
-                self.udp_socket,
-                capacity=_SINK_CAPACITY,
-                max_payload=1500,
-                control_capacity=_SEND_CONTROL_CAPACITY_GSO,
+        if not self._send_sink:
+            self._send_sink = Optional(
+                loop.datagram_sink(
+                    self.udp_socket,
+                    capacity=_SINK_CAPACITY,
+                    max_payload=1500,
+                    control_capacity=_SEND_CONTROL_CAPACITY_GSO,
+                )
             )
-        )
 
         # Arm the timer to the (empty) minimum deadline: the ceiling.
         self._rearm_timer()
+
+        self._started = True
 
     # ── Clock ────────────────────────────────────────────────────
 
@@ -858,10 +944,11 @@ struct H3UdpServer[H: StreamHandler](Movable):
         """One run-loop pass: `step(timeout_ms)`, then `ingest_more()`, then `flush()`.
 
         The preferred loop body; a caller that shares the loop with other
-        work can make the same three calls itself. Requires `start()`.
+        work can make the same three calls itself. Raises until a
+        `start()` has succeeded.
         """
-        if Int(self._loop_ptr) == 0:
-            raise "H3UdpServer.run_once: start() was not called"
+        if not self._started:
+            raise "H3UdpServer.run_once: start() has not succeeded"
         _ = self._loop_ptr[].step(timeout_ms)
         _ = self.ingest_more()
         self.flush()
@@ -888,7 +975,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         it would on the next ordinary step, so `flush()` never steps.
         """
         if (
-            Int(self._loop_ptr) == 0
+            not self._started
             or self._recv_stream is None
             or self._recv_pool is None
         ):
@@ -927,7 +1014,14 @@ struct H3UdpServer[H: StreamHandler](Movable):
         its buffer once every sibling segment is done. Only the slots this
         flush fed or drained are recomputed; the pass gate and the re-arm
         read the per-slot cache.
+
+        A no-op until a `start()` has succeeded: after one that raised
+        midway, received datagrams stay queued in the armed stream, since
+        serving them would queue egress with no send sink to take it.
         """
+        if not self._started:
+            return
+
         # 1. Drain datagrams from the DatagramStream into pending_rx.
         self._drain_recv_stream()
 
@@ -1541,15 +1635,26 @@ struct H3UdpServer[H: StreamHandler](Movable):
             var pd = self.pending_rx[i].copy()
 
             # DCID-keyed demux. pd.dcid extracted during _drain_recv_stream.
-            var dcid_u64 = dcid_to_u64(pd.dcid.as_span())
-            var conn_idx = self._find_conn_by_dcid(dcid_u64)
+            var conn_idx = self._find_conn_by_dcid(
+                demux_key(pd.dcid.as_span(), self._demux_sip)
+            )
 
             # RFC 9000 §12.4: only long-header Initial packets create new
-            # conns. All other DCID-misses are dropped silently.
+            # conns. All other DCID-misses are dropped silently, and so is
+            # an Initial whose DCID is under the 8-byte floor of RFC 9000
+            # Section 7.2: a 0-byte DCID would otherwise route every such
+            # client to one shared slot. ngtcp2 (`ngtcp2_accept`) applies
+            # the floor only to token-less Initials; quiche and TQUIC do
+            # not check. Ours is unconditional (stricter), which stays
+            # correct only while our Retry SCIDs are at least 8 bytes: a
+            # client echoes the Retry SCID as its next Initial's DCID.
             if conn_idx < 0:
                 var first_byte_span = Span[Byte, MutUntrackedOrigin](
                     unsafe_ptr=pd.payload_ptr, length=pd.payload_len)
-                if not is_long_header_initial(first_byte_span):
+                if (
+                    not is_long_header_initial(first_byte_span)
+                    or len(pd.dcid) < MIN_INITIAL_DCID_LEN
+                ):
                     self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
                     continue
 
@@ -1566,20 +1671,20 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     continue
 
                 # B-permissive dual-DCID: both the client's Initial DCID
-                # (random ICID) and the server's chosen SCID (local_cid)
-                # map to the same conn_idx so the ICID→SCID transition
-                # is transparent during the handshake.
-                debug_assert(
-                    len(h3_ptr[]._h3._quic.initial_dcid) == 8,
-                    "initial_dcid != 8 bytes",
-                )
+                # (random ICID, 8..20 bytes) and the server's chosen SCID
+                # (local_cid, always 8) map to the same conn_idx so the
+                # ICID→SCID transition is transparent during the handshake.
                 debug_assert(
                     len(h3_ptr[]._h3._quic.local_cid) == 8,
                     "local_cid != 8 bytes",
                 )
 
-                var icid_u64 = dcid_to_u64(h3_ptr[]._h3._quic.initial_dcid.as_span())
-                var lcid_u64 = dcid_to_u64(h3_ptr[]._h3._quic.local_cid.as_span())
+                var icid_u64 = demux_key(
+                    h3_ptr[]._h3._quic.initial_dcid.as_span(), self._demux_sip
+                )
+                var lcid_u64 = demux_key(
+                    h3_ptr[]._h3._quic.local_cid.as_span(), self._demux_sip
+                )
 
                 # Build peer address from the delivery header name region
                 # for sendmsg routing. Stored as a raw sockaddr blob (16 or
