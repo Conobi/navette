@@ -571,11 +571,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
     # Maximum datagrams that may be packed into one GSO super-buffer.
     # Starts at 1 (no GSO); wired from UdpSocketState in start().
-    # Permanently downgraded to 1 on the first GSO send failure.
     var _gso_max_segments: Int
 
-    # Transport capability snapshot probed in start(). Holds GRO/GSO
-    # probe results and receives downgrade notifications on GSO failure.
+    # Transport capability snapshot probed in start(). Holds the GRO/GSO
+    # probe results.
     var _socket_state: Optional[UdpSocketState]
 
     # WatchLoop recv infrastructure. _recv_pool is the BufferPool
@@ -788,7 +787,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
         self._send_sink = Optional(
             loop.datagram_sink(
                 self.udp_socket,
-                capacity=256,
+                capacity=_SINK_CAPACITY,
                 max_payload=1500,
                 control_capacity=_SEND_CONTROL_CAPACITY_GSO,
             )
@@ -1045,9 +1044,9 @@ struct H3UdpServer[H: StreamHandler](Movable):
         cmsg. The kernel splits the buffer back into individual
         datagrams at the segment boundary, cutting syscall overhead.
 
-        If a GSO push fails, segmentation offload is permanently
-        downgraded to one datagram per syscall and the unsent packets
-        are re-queued for the next flush cycle.
+        A full sink is backpressure, not a GSO failure: the remaining
+        packets stay in the backlog, in order, for the next flush and
+        GSO stays enabled.
 
         All accepted datagrams are submitted in one flush() call
         (sendmmsg on epoll, batched SQEs on io_uring) instead of
@@ -1078,6 +1077,12 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
                 var run_len = run_end - i
                 if run_len > 1:
+                    # A full sink is transient backpressure: keep the
+                    # rest of the backlog, in order, for the next flush.
+                    if self._sink_full():
+                        for j in range(i, n):
+                            unsent.append(self._take_backlog_entry(j))
+                        break
                     var combined = List[Byte](
                         capacity=seg_size * run_len,
                     )
@@ -1104,15 +1109,14 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     except:
                         pass
 
+                    # push_msg only fails when the sink is full or the
+                    # loop is gone — never because GSO is unsupported —
+                    # so a failure keeps the batch without downgrading.
                     try:
                         self._send_sink.value().push_msg(msg^)
                         i = run_end
                         continue
                     except:
-                        # GSO push failed — permanently downgrade.
-                        self._gso_max_segments = 1
-                        if self._socket_state is not None:
-                            self._socket_state.value().downgrade_send_segments()
                         for j in range(i, n):
                             unsent.append(self._take_backlog_entry(j))
                         break
@@ -1121,9 +1125,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
             # Check sink capacity before moving data into a Message,
             # because push_msg consumes the Message on both success and
             # failure — we can't recover the payload from a raised IOError.
-            if (self._send_sink.value().pending()
-                    + self._send_sink.value().in_flight()
-                    >= _SINK_CAPACITY):
+            if self._sink_full():
                 for j in range(i, n):
                     unsent.append(self._take_backlog_entry(j))
                 break
@@ -1154,6 +1156,14 @@ struct H3UdpServer[H: StreamHandler](Movable):
                 pass
 
         self._egress_backlog = unsent^
+
+    def _sink_full(self) -> Bool:
+        """Every sink slot is queued or in flight, so `push_msg` would raise ENOSPC."""
+        return (
+            self._send_sink.value().pending()
+            + self._send_sink.value().in_flight()
+            >= _SINK_CAPACITY
+        )
 
     def _take_backlog_entry(mut self, j: Int) -> EgressPacket:
         """Move `_egress_backlog[j]` out, leaving an empty husk behind.
