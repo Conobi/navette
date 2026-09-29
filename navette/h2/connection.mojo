@@ -363,11 +363,31 @@ def _client_magic() -> List[Byte]:
     return out^
 
 
+def _is_final_response(headers: List[Header]) -> Bool:
+    """False only for an interim (1xx) response block; a block with no `:status` counts as final.
+
+    Treating a malformed block as final means any later block is held to
+    the trailers rule instead of being delivered as another response.
+    """
+    for ref h in headers:
+        if h.name == ":status":
+            return not h.value.startswith("1")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # StreamState
 # ---------------------------------------------------------------------------
 struct StreamState(Copyable, Movable):
-    """Per-stream state, retained after close. `reset_sent` stops a closed stream earning a second RST_STREAM."""
+    """Per-stream state, retained after close.
+
+    `reset_sent` stops a closed stream earning a second RST_STREAM.
+    `block_is_trailers` tells `_handle_continuation` that the block being
+    assembled is trailers, so it can never finish as a second request or
+    response. `final_response_received` (client) marks a delivered non-1xx
+    response: every later block on the stream is trailers (RFC 9113
+    Section 8.1), with or without DATA in between.
+    """
 
     var lifecycle: Int
     var send_window: Int
@@ -378,6 +398,8 @@ struct StreamState(Copyable, Movable):
     var headers_end_stream: Bool
     var data_received: Bool
     var reset_sent: Bool
+    var block_is_trailers: Bool
+    var final_response_received: Bool
 
     def __init__(out self, *, lifecycle: Int = STREAM_IDLE, send_window: Int = DEFAULT_INITIAL_WINDOW_SIZE, recv_window: Int = DEFAULT_INITIAL_WINDOW_SIZE):
         self.lifecycle = lifecycle
@@ -389,6 +411,8 @@ struct StreamState(Copyable, Movable):
         self.headers_end_stream = False
         self.data_received = False
         self.reset_sent = False
+        self.block_is_trailers = False
+        self.final_response_received = False
 
     def __init__(out self, *, copy: Self):
         self.lifecycle = copy.lifecycle
@@ -400,6 +424,8 @@ struct StreamState(Copyable, Movable):
         self.headers_end_stream = copy.headers_end_stream
         self.data_received = copy.data_received
         self.reset_sent = copy.reset_sent
+        self.block_is_trailers = copy.block_is_trailers
+        self.final_response_received = copy.final_response_received
 
 
 # ---------------------------------------------------------------------------
@@ -693,7 +719,14 @@ struct H2Connection(Movable):
             elif frame.frame_type == FRAME_PUSH_PROMISE:
                 # RFC 9113 Section 8.4: a client cannot push, and our client
                 # sends SETTINGS_ENABLE_PUSH=0. Fail before its header block
-                # can be skipped and desynchronise HPACK.
+                # can be skipped and desynchronise HPACK. Deliberately
+                # stricter than Section 6.5.2, which mandates the error only
+                # once that SETTINGS is acknowledged: it opens the client
+                # preface, ahead of every request a server could push
+                # against, so no in-order server can push before applying
+                # it. Refusing the promise instead would mean decoding its
+                # block and tracking the refused even id so the server's
+                # in-flight HEADERS on it are dropped, not fatal.
                 self._connection_error(events, H2_PROTOCOL_ERROR, String("PUSH_PROMISE received with push disabled"))
             pos += consumed
             if self._state == CONN_CLOSED:
@@ -1298,7 +1331,15 @@ struct H2Connection(Movable):
             self._connection_error(events, H2_STREAM_CLOSED, String("WINDOW_UPDATE on a closed stream older than the tracking window"))
 
     def _handle_headers(mut self, frame: Frame, mut events: List[H2Event]):
-        """Process inbound HEADERS: new stream, response, or trailers."""
+        """Process inbound HEADERS: a new request stream (server), a response on a stream we opened (client), or trailers.
+
+        On the server any block on an existing open stream is trailers,
+        never a second request; on the client so is any block after the
+        final (non-1xx) response or after DATA. A block on a stream that already ended is
+        a stream error STREAM_CLOSED (RFC 9113 Section 5.1); on a client
+        stream we reset it is dropped. Every dropped block is still
+        HPACK-decoded.
+        """
         var stream_id = frame.stream_id
         # --- Refused or reset by us: decode to keep HPACK in sync, drop ---
         if self._is_locally_closed(stream_id):
@@ -1308,20 +1349,21 @@ struct H2Connection(Movable):
         if self._has_stream(stream_id):
             try:
                 var stream = self._streams[stream_id].copy()
-                if not self._client_side:
-                    # Only an open or half-closed (local) stream takes trailers.
-                    if stream.lifecycle == STREAM_CLOSED:
-                        # A reused id, not trailers (RFC 9113 Section 5.1.1).
-                        self._connection_error(events, H2_PROTOCOL_ERROR, String("HEADERS on closed stream"))
-                        return
-                    if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
-                        # The peer already ended the stream (RFC 9113 Section 5.1):
-                        # reset it, then decode the block to keep HPACK in sync.
-                        self._stream_error(events, stream_id, H2_STREAM_CLOSED)
-                        self._discard_header_block(frame, events, refuse=False)
-                        return
-                if stream.data_received:
-                    # Trailers — stub
+                if stream.lifecycle == STREAM_CLOSED and not self._client_side:
+                    # A reused id, not trailers (RFC 9113 Section 5.1.1).
+                    self._connection_error(events, H2_PROTOCOL_ERROR, String("HEADERS on closed stream"))
+                    return
+                if stream.reset_sent:
+                    # Client: sent before the peer saw our RST_STREAM (Section 5.1).
+                    self._discard_header_block(frame, events, refuse=False)
+                    return
+                if stream.lifecycle == STREAM_CLOSED or stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
+                    # The peer already ended the stream (RFC 9113 Section 5.1):
+                    # reset it once, then decode the block to keep HPACK in sync.
+                    self._stream_error(events, stream_id, H2_STREAM_CLOSED)
+                    self._discard_header_block(frame, events, refuse=False)
+                    return
+                if not self._client_side or stream.data_received or stream.final_response_received:
                     self._handle_trailer_headers(frame, stream, events)
                     return
                 # Response headers (client receiving server response)
@@ -1340,6 +1382,8 @@ struct H2Connection(Movable):
                     if end_stream:
                         var next_lc = STREAM_CLOSED if stream.lifecycle == STREAM_HALF_CLOSED_LOCAL else STREAM_HALF_CLOSED_REMOTE
                         self._set_lifecycle(stream, next_lc)
+                    if _is_final_response(decoded_headers):
+                        stream.final_response_received = True
                     self._streams[stream_id] = stream^
                     events.append(H2Event.response_received(UInt32(stream_id), decoded_headers, end_stream))
                 else:
@@ -1352,24 +1396,22 @@ struct H2Connection(Movable):
             except:
                 self._connection_error(events, H2_PROTOCOL_ERROR, String("Stream not found"))
             return
-        # --- New stream (existing code, unchanged) ---
-        # Validate stream ID parity
-        if not self._client_side:
-            if stream_id % 2 == 0:
-                self._connection_error(events, H2_PROTOCOL_ERROR, String("Even stream ID from client"))
-                return
-        else:
-            if stream_id % 2 != 0:
-                self._connection_error(events, H2_PROTOCOL_ERROR, String("Odd stream ID from server"))
-                return
+        # --- New stream: only a client opens one ---
+        if self._client_side:
+            # Push is disabled, so every stream a server may send HEADERS on
+            # is one we opened; any other id is idle (RFC 9113 Section 5.1).
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("HEADERS on a stream the client did not open"))
+            return
+        if stream_id % 2 == 0:
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Even stream ID from client"))
+            return
         # Must be monotonically increasing (RFC 9113 Section 5.1.1); a lower id
         # that we refused or reset was handled above.
         if stream_id <= Int(self._last_recv_stream_id):
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Stream ID not increasing"))
             return
         self._last_recv_stream_id = UInt32(stream_id)
-        if not self._client_side:
-            self._locally_closed.advance(UInt32(stream_id))
+        self._locally_closed.advance(UInt32(stream_id))
         # Max concurrent streams: refuse the stream, keep the connection
         # (RFC 9113 Section 5.1.2, Section 8.7). The block is still decoded.
         if self._active_stream_count >= Int(self._local_settings.max_concurrent_streams):
@@ -1397,10 +1439,7 @@ struct H2Connection(Movable):
                 stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
             self._streams[stream_id] = stream^
             self._active_stream_count += 1
-            if not self._client_side:
-                events.append(H2Event.request_received(UInt32(stream_id), decoded_headers, end_stream))
-            else:
-                events.append(H2Event.response_received(UInt32(stream_id), decoded_headers, end_stream))
+            events.append(H2Event.request_received(UInt32(stream_id), decoded_headers, end_stream))
         else:
             # Buffer fragment, wait for CONTINUATION
             stream.header_block_buffer.extend(Span(hp.headers_block))
@@ -1411,15 +1450,19 @@ struct H2Connection(Movable):
             self._expecting_continuation_for = UInt32(stream_id)
 
     def _handle_trailer_headers(mut self, frame: Frame, stream: StreamState, mut events: List[H2Event]):
-        """Process trailer HEADERS on an existing stream with data_received=True."""
+        """Trailer HEADERS: any later block on a server stream, or a client stream's block after its final response or DATA.
+
+        Trailers without END_STREAM make the message malformed (RFC 9113
+        Section 8.1): a stream PROTOCOL_ERROR, the block still HPACK-decoded.
+        """
         var stream_id = frame.stream_id
         var hp = decode_headers_payload(frame.copy())
         if not hp.ok():
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid trailer HEADERS: " + hp.error))
             return
-        # Trailers MUST have END_STREAM (RFC 9113 §8.1)
         if (frame.flags & FLAG_END_STREAM) == 0:
-            self._connection_error(events, H2_PROTOCOL_ERROR, String("Trailers must have END_STREAM"))
+            self._stream_error(events, stream_id, H2_PROTOCOL_ERROR)
+            self._discard_header_block(frame, events, refuse=False)
             return
         if frame.flags & FLAG_END_HEADERS != 0:
             var decode_result = self._hpack_decoder.decode(hp.headers_block)
@@ -1439,6 +1482,7 @@ struct H2Connection(Movable):
             s.header_block_buffer.extend(Span(hp.headers_block))
             s.expects_continuation = True
             s.headers_end_stream = True  # already validated above
+            s.block_is_trailers = True
             self._streams[stream_id] = s^
             self._expecting_continuation_for = UInt32(stream_id)
 
@@ -1516,14 +1560,16 @@ struct H2Connection(Movable):
                     var next_lc = STREAM_CLOSED if stream.lifecycle == STREAM_HALF_CLOSED_LOCAL else STREAM_HALF_CLOSED_REMOTE
                     self._set_lifecycle(stream, next_lc)
                 stream.header_block_buffer = List[Byte]()  # clear buffer
-                if stream.data_received:
-                    # Trailers
+                if stream.block_is_trailers:
+                    stream.block_is_trailers = False
                     self._streams[stream_id] = stream^
                     events.append(H2Event.trailers_received(UInt32(stream_id), decoded_headers))
                 elif not self._client_side:
                     self._streams[stream_id] = stream^
                     events.append(H2Event.request_received(UInt32(stream_id), decoded_headers, end_stream))
                 else:
+                    if _is_final_response(decoded_headers):
+                        stream.final_response_received = True
                     self._streams[stream_id] = stream^
                     events.append(H2Event.response_received(UInt32(stream_id), decoded_headers, end_stream))
                 return  # Don't fall through to the else branch's stream write

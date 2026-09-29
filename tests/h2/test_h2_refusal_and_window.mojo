@@ -653,6 +653,33 @@ def test_client_data_on_closed_stream_resets_once() raises:
     print("PASS: test_client_data_on_closed_stream_resets_once")
 
 
+def test_client_rejects_headers_on_streams_it_did_not_open() raises:
+    """With push disabled, HEADERS on a stream the client did not open is a connection PROTOCOL_ERROR (RFC 9113 Section 5.1)."""
+    var server_enc = HpackEncoder()
+    var cli = H2Connection(client_side=True)
+    cli.initiate_connection()
+    _ = cli.receive_data(_frame(FRAME_SETTINGS, 0, 0, List[Byte]()))
+    cli.send_headers(1, _req("GET", "/"), end_stream=True)
+    _ = cli.data_to_send()
+    var ev = cli.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 1, server_enc.encode(_status("200"))))
+    assert_equal_int(len(ev), 1, "the response on our own stream is delivered")
+    assert_true(not cli.is_closed(), "our own stream keeps working")
+    _ = cli.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 2, server_enc.encode(_status("200"))))
+    assert_true(cli.is_closed(), "an even id was never opened: no push, so it is idle")
+    assert_equal_int(cli.open_stream_count(), 1, "no stream created for it")
+    assert_equal_int(_count(_frames(cli.data_to_send()), FRAME_GOAWAY, 0, H2_PROTOCOL_ERROR), 1, "GOAWAY PROTOCOL_ERROR")
+
+    var cli2 = H2Connection(client_side=True)
+    cli2.initiate_connection()
+    _ = cli2.receive_data(_frame(FRAME_SETTINGS, 0, 0, List[Byte]()))
+    _ = cli2.data_to_send()
+    var enc2 = HpackEncoder()
+    _ = cli2.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 3, enc2.encode(_status("200"))))
+    assert_true(cli2.is_closed(), "an odd id the client never opened")
+    assert_equal_int(_count(_frames(cli2.data_to_send()), FRAME_GOAWAY, 0, H2_PROTOCOL_ERROR), 1, "GOAWAY PROTOCOL_ERROR")
+    print("PASS: test_client_rejects_headers_on_streams_it_did_not_open")
+
+
 def main() raises:
     test_stream_flow_control_error_credits_connection()
     test_never_opened_lower_ids_are_closed()
@@ -676,3 +703,4 @@ def main() raises:
     test_window_update_overflow_on_closed_stream_older_than_window()
     test_window_update_on_recently_closed_stream_is_ignored()
     test_client_data_on_closed_stream_resets_once()
+    test_client_rejects_headers_on_streams_it_did_not_open()
