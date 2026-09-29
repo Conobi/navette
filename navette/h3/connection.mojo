@@ -40,8 +40,16 @@ from navette.h3.error import (
     H3_GENERAL_PROTOCOL_ERROR,
     H3_FRAME_UNEXPECTED,
     H3_STREAM_CREATION_ERROR,
+    H3_FRAME_ERROR,
+    H3_EXCESSIVE_LOAD,
 )
-from navette.h3.qpack import QpackEncoder, QpackDecoder, QpackHeaderField, QpackCodecTables
+from navette.h3.qpack import (
+    QpackEncoder,
+    QpackDecoder,
+    QpackHeaderField,
+    QpackCodecTables,
+    QPACK_FIELD_SECTION_TOO_LARGE,
+)
 from navette.h3.guard_predicates import (
     H3StreamCtx,
     predicate_f31_data_before_headers,
@@ -60,6 +68,28 @@ from navette.h3.guard_predicates import (
 comptime MAX_DATAGRAMS_PER_DRAIN: Int = 64
 
 comptime H3_FRAME_CANCEL_PUSH: UInt64 = 0x03
+comptime _H3_FRAME_PUSH_PROMISE: UInt64 = 0x05
+comptime _H3_FRAME_MAX_PUSH_ID: UInt64 = 0x0D
+
+# SETTINGS_MAX_FIELD_SECTION_SIZE we advertise and enforce on decoded
+# header and trailer sections (RFC 9114 Section 4.2.2). 32 KiB matches the
+# quiche default and nginx's HTTP/3 header limit.
+comptime H3_MAX_FIELD_SECTION_SIZE: Int = 32 * 1024
+# Largest HEADERS payload buffered before decoding: Huffman coding can
+# make an encoded section larger than its decoded size, so allow 1.5x
+# (quiche's rule). Larger frames close the connection with
+# H3_EXCESSIVE_LOAD before any payload is buffered.
+comptime _H3_MAX_HEADERS_PAYLOAD: Int = H3_MAX_FIELD_SECTION_SIZE + H3_MAX_FIELD_SECTION_SIZE // 2
+# SETTINGS payload cap (quiche MAX_SETTINGS_PAYLOAD_SIZE).
+comptime _H3_MAX_SETTINGS_PAYLOAD: Int = 256
+# GOAWAY, CANCEL_PUSH and MAX_PUSH_ID carry a single varint.
+comptime _H3_MAX_VARINT_FRAME_PAYLOAD: Int = 8
+
+# How `_parse_frames_from_buf` treats a frame payload once its header is read.
+comptime _PAYLOAD_BUFFER: UInt8 = 0  # wait for the whole (capped) payload
+comptime _PAYLOAD_STREAM: UInt8 = 1  # DATA: deliver bytes as they arrive
+comptime _PAYLOAD_SKIP: UInt8 = 2    # dispatch the type, discard the payload
+comptime _PAYLOAD_REJECT: UInt8 = 3  # connection closed on the header alone
 
 
 # ---------------------------------------------------------------------------
@@ -119,19 +149,39 @@ struct H3Event(Copyable, Movable):
 
 
 struct _H3StreamBuf(Copyable, Movable):
+    """Per-stream receive state.
+
+    Invariant: `buf` holds at most one frame header plus one capped,
+    whole-frame payload. DATA and unknown-frame payloads never enter it;
+    they are tracked by `payload_remaining` and consumed as they arrive,
+    because QUIC has already returned their flow-control credit.
+    """
+
     var buf:       List[Byte]
     var type_byte: Optional[UInt8]
     var is_uni:    Bool
+    # Bytes of the current streamed (DATA) or skipped frame payload still
+    # to come; 0 when the next byte starts a frame header.
+    var payload_remaining: Int
+    var skipping:  Bool
+    # Unknown or QPACK uni stream: every received byte is dropped.
+    var discard:   Bool
 
     def __init__(out self):
         self.buf = List[Byte]()
         self.type_byte = Optional[UInt8]()
         self.is_uni = False
+        self.payload_remaining = 0
+        self.skipping = False
+        self.discard = False
 
     def __init__(out self, *, copy: Self):
         self.buf = List[Byte](copy=copy.buf)
         self.type_byte = copy.type_byte.copy()
         self.is_uni = copy.is_uni
+        self.payload_remaining = copy.payload_remaining
+        self.skipping = copy.skipping
+        self.discard = copy.discard
 
 
 # ---------------------------------------------------------------------------
@@ -619,7 +669,7 @@ struct H3Connection(Movable):
         # Send SETTINGS on control stream (RFC 9114 §7.2.4)
         var pairs = List[SettingsPair]()
         pairs.append(SettingsPair(SETTINGS_QPACK_MAX_TABLE_CAPACITY, UInt64(0)))
-        pairs.append(SettingsPair(SETTINGS_MAX_FIELD_SECTION_SIZE, UInt64(0x7FFFFFFF)))
+        pairs.append(SettingsPair(SETTINGS_MAX_FIELD_SECTION_SIZE, UInt64(H3_MAX_FIELD_SECTION_SIZE)))
         # RFC 9297 §2.2 — only advertise H3_DATAGRAM if the caller opted in
         # via `enable_h3_datagrams()`. Default-off keeps SETTINGS wire-byte
         # compatibility with non-MASQUE/WebTransport tests.
@@ -706,6 +756,16 @@ struct H3Connection(Movable):
         swap(new_bytes, recv_result[0])
         var fin = recv_result[1]
 
+        # RFC 9114 Section 6.2: unknown uni stream types are discarded; the
+        # QPACK streams carry nothing we act on with a zero-capacity
+        # dynamic table. Their bytes are dropped, never buffered.
+        if self._stream_bufs[key].discard:
+            comptime if PROFILE_ACCEPT:
+                if self.profile_ptr is not None:
+                    self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
+                    self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
+            return
+
         # Append new bytes to accumulator
         self._stream_bufs[key].buf.extend(Span(new_bytes))
 
@@ -738,14 +798,19 @@ struct H3Connection(Movable):
                     if self._close_duplicate_uni_stream(existing_qenc^, "qpack encoder", now, t_start_buf, t_start_drain):
                         return
                     self._peer_qenc_sid = Optional[UInt64](stream_id)
+                    self._stream_bufs[key].discard = True
                 elif type_byte == UInt8(0x03):
                     # RFC 9204 §4.2: at most one QPACK decoder stream per peer.
                     var existing_qdec = self._peer_qdec_sid.copy()
                     if self._close_duplicate_uni_stream(existing_qdec^, "qpack decoder", now, t_start_buf, t_start_drain):
                         return
                     self._peer_qdec_sid = Optional[UInt64](stream_id)
+                    self._stream_bufs[key].discard = True
                 else:
-                    # B3a + B1 exit (return path 2 — unknown UNI type).
+                    self._stream_bufs[key].discard = True
+                if self._stream_bufs[key].discard:
+                    # B3a + B1 exit (return path 2 — discarded UNI type).
+                    self._stream_bufs[key].buf.clear()
                     comptime if PROFILE_ACCEPT:
                         if self.profile_ptr is not None:
                             self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
@@ -787,59 +852,162 @@ struct H3Connection(Movable):
                 self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
 
     def _parse_frames_from_buf(mut self, stream_id: UInt64, is_ctrl: Bool, now: UInt64) raises:
-        """Parse H3 frames from accumulated bytes. Consumes one frame per iteration."""
+        """Dispatch frames from the stream buffer without buffering by declared length.
+
+        Each frame header is classified by `_payload_action` before any
+        payload is kept: capped frames wait for their whole payload, DATA
+        payloads are handed on in chunks as they arrive, unknown payloads
+        are dropped, and an oversized header closes the connection. Stops
+        at the first incomplete header or frame, or once the connection
+        starts closing.
+        """
         var _ct_start = UInt64(0)
         comptime if PROFILE_ACCEPT:
             _ct_start = rdtsc()
         var key = Int(stream_id)
         # Hoisted per-iter clock-read state (Q1 lesson: hoist to function scope, reassign per iter).
         var t_start_parse: UInt64 = 0
-        var t_start_buf: UInt64 = 0
         comptime if not PROFILE_ACCEPT:
             _ = t_start_parse
-            _ = t_start_buf
         while True:
-            if len(self._stream_bufs[key].buf) == 0:
+            if (self._quic.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
                 break
-            var r = ByteReader(Span(self._stream_bufs[key].buf))
-            var ok = True
-            var frame = H3RawFrame(UInt64(0), List[Byte]())
-            var consumed = 0
-            # B4 entry — wrap parse_h3_frame only.
+            var avail = len(self._stream_bufs[key].buf)
+            if avail == 0:
+                break
+
+            # Continue a streamed DATA or skipped payload.
+            var remaining = self._stream_bufs[key].payload_remaining
+            if remaining > 0:
+                var n = min(remaining, avail)
+                self._stream_bufs[key].payload_remaining = remaining - n
+                if self._stream_bufs[key].skipping:
+                    self._consume_front(key, n)
+                else:
+                    var chunk = List[Byte](capacity=n)
+                    chunk.extend(Span(self._stream_bufs[key].buf)[0:n])
+                    self._consume_front(key, n)
+                    self._handle_request_frame(stream_id, H3RawFrame(H3_FRAME_DATA, chunk^), now)
+                continue
+
+            # B4 entry — wrap the frame-header parse.
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     t_start_parse = monotonic_us()
+            var frame_type = UInt64(0)
+            var length = UInt64(0)
+            var hdr_len = 0
+            var ok = True
+            var hdr_view = Span(self._stream_bufs[key].buf)
             try:
-                frame = parse_h3_frame(r)
-                consumed = r.pos
+                var r = ByteReader(hdr_view)
+                frame_type = varint_decode(r)
+                length = varint_decode(r)
+                hdr_len = r.pos
             except:
                 ok = False
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     self.profile_ptr.value()[].record_drain_frame_parse(monotonic_us() - t_start_parse)
             if not ok:
+                break  # header incomplete
+
+            var action = self._payload_action(frame_type, length, is_ctrl, now)
+            if action == _PAYLOAD_REJECT:
+                self._stream_bufs[key].buf.clear()  # closing: never parsed
                 break
-            # B3b entry — wrap residual rebuild + Dict reassign.
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    t_start_buf = monotonic_us()
-            # Remove consumed bytes from front of buf — shift in-place.
-            var buf_len = len(self._stream_bufs[key].buf)
-            var remaining = buf_len - consumed
-            for i in range(remaining):
-                self._stream_bufs[key].buf[i] = self._stream_bufs[key].buf[consumed + i]
-            for _ in range(consumed):
-                _ = self._stream_bufs[key].buf.pop()
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
-            if is_ctrl:
-                self._handle_control_frame(stream_id, frame^, now)
-            else:
-                self._handle_request_frame(stream_id, frame^, now)
+            if action == _PAYLOAD_BUFFER:
+                # Capped above, so the Int conversion and sum are safe.
+                var n = Int(length)
+                if avail - hdr_len < n:
+                    break  # payload incomplete
+                var payload = List[Byte](capacity=n)
+                payload.extend(Span(self._stream_bufs[key].buf)[hdr_len : hdr_len + n])
+                self._consume_front(key, hdr_len + n)
+                self._dispatch_frame(stream_id, is_ctrl, H3RawFrame(frame_type, payload^), now)
+                continue
+
+            # _PAYLOAD_STREAM / _PAYLOAD_SKIP: length is a varint (< 2^62).
+            self._consume_front(key, hdr_len)
+            self._stream_bufs[key].payload_remaining = Int(length)
+            self._stream_bufs[key].skipping = action == _PAYLOAD_SKIP
+            if action == _PAYLOAD_SKIP or length == 0:
+                # Skipped frames still reach the handler (type-only checks
+                # such as "first control frame must be SETTINGS").
+                self._dispatch_frame(stream_id, is_ctrl, H3RawFrame(frame_type, List[Byte]()), now)
         comptime if PROFILE_ACCEPT:
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].call_tracker.record(CallId.PARSE_FRAMES, rdtsc() - _ct_start)
+
+    def _payload_action(
+        mut self, frame_type: UInt64, length: UInt64, is_ctrl: Bool, now: UInt64
+    ) -> UInt8:
+        """Classify a frame by its header; closes the connection on oversize.
+
+        Caps mirror quiche: HEADERS / PUSH_PROMISE above
+        `_H3_MAX_HEADERS_PAYLOAD` are H3_EXCESSIVE_LOAD, SETTINGS above
+        256 bytes and single-varint frames above 8 bytes are H3_FRAME_ERROR.
+        Unknown types and DATA on the control stream are skipped (the
+        handler still sees the type and rejects control-stream DATA).
+        """
+        if frame_type == H3_FRAME_DATA:
+            return _PAYLOAD_SKIP if is_ctrl else _PAYLOAD_STREAM
+        if frame_type == H3_FRAME_HEADERS or frame_type == _H3_FRAME_PUSH_PROMISE:
+            var cap = UInt64(_H3_MAX_HEADERS_PAYLOAD)
+            if frame_type == _H3_FRAME_PUSH_PROMISE:
+                cap += UInt64(8)  # leading push-id varint
+            if length > cap:
+                self._quic.close_app(H3_EXCESSIVE_LOAD, "field section too large", now)
+                return _PAYLOAD_REJECT
+            return _PAYLOAD_BUFFER
+        if frame_type == H3_FRAME_SETTINGS:
+            if length > UInt64(_H3_MAX_SETTINGS_PAYLOAD):
+                self._quic.close_app(H3_FRAME_ERROR, "SETTINGS frame too large", now)
+                return _PAYLOAD_REJECT
+            return _PAYLOAD_BUFFER
+        if (
+            frame_type == H3_FRAME_GOAWAY
+            or frame_type == H3_FRAME_CANCEL_PUSH
+            or frame_type == _H3_FRAME_MAX_PUSH_ID
+        ):
+            if length > UInt64(_H3_MAX_VARINT_FRAME_PAYLOAD):
+                self._quic.close_app(H3_FRAME_ERROR, "frame too large", now)
+                return _PAYLOAD_REJECT
+            return _PAYLOAD_BUFFER
+        return _PAYLOAD_SKIP
+
+    def _dispatch_frame(
+        mut self, stream_id: UInt64, is_ctrl: Bool, var frame: H3RawFrame, now: UInt64
+    ) raises:
+        if is_ctrl:
+            self._handle_control_frame(stream_id, frame^, now)
+        else:
+            self._handle_request_frame(stream_id, frame^, now)
+
+    def _consume_front(mut self, key: Int, n: Int):
+        """Drop the first `n` buffered bytes of stream `key` (shift in place).
+
+        O(len(buf)); the buffer is bounded by one capped frame.
+        """
+        comptime if PROFILE_ACCEPT:
+            var t_start_buf: UInt64 = 0
+            if self.profile_ptr is not None:
+                t_start_buf = monotonic_us()
+            self._shift_front(key, n)
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
+        else:
+            self._shift_front(key, n)
+
+    def _shift_front(mut self, key: Int, n: Int):
+        try:
+            ref buf = self._stream_bufs[key].buf
+            var remaining = len(buf) - n
+            for i in range(remaining):
+                buf[i] = buf[n + i]
+            buf.resize(remaining, Byte(0))  # truncates
+        except:
+            pass
 
     def _handle_control_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on the peer control stream."""
@@ -953,7 +1121,16 @@ struct H3Connection(Movable):
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     t_start_qpack = monotonic_us()
-            var fields = self._dec.decode(frame.payload)
+            var fields: List[QpackHeaderField]
+            try:
+                fields = self._dec.decode(frame.payload, H3_MAX_FIELD_SECTION_SIZE)
+            except e:
+                # RFC 9114 Section 4.2.2 limit we advertised; quiche closes
+                # with H3_EXCESSIVE_LOAD too.
+                if String(e) == QPACK_FIELD_SECTION_TOO_LARGE:
+                    self._quic.close_app(H3_EXCESSIVE_LOAD, "field section too large", now)
+                    return
+                raise e.copy()
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     self.profile_ptr.value()[].record_drain_qpack_decode(monotonic_us() - t_start_qpack)

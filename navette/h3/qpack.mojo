@@ -186,6 +186,9 @@ comptime QPACK_INT_MAX: UInt64 = (UInt64(1) << 62) - 1
 # Continuation bytes cover shifts 0, 7, ..., 63; an 11th can only be an
 # overlong encoding (or a CPU-burning stream of 0x80 bytes).
 comptime _QPACK_INT_MAX_SHIFT: UInt64 = 63
+# Raised by `QpackDecoder.decode` when the decoded field section outgrows
+# its `max_size`; callers map it to H3_EXCESSIVE_LOAD.
+comptime QPACK_FIELD_SECTION_TOO_LARGE = "QPACK: field section exceeds max size"
 
 
 def qpack_decode_int(data: List[Byte], offset: Int, prefix_bits: UInt8) raises -> _IntDecodeResult:
@@ -222,6 +225,12 @@ def qpack_decode_int(data: List[Byte], offset: Int, prefix_bits: UInt8) raises -
         if not more:
             return _IntDecodeResult(value, pos)
     raise "QPACK: truncated integer encoding"
+
+
+@always_inline
+def _field_size(f: QpackHeaderField) -> Int:
+    """RFC 9114 Section 4.2.2 field size: name + value bytes + 32."""
+    return f.name.byte_length() + f.value.byte_length() + 32
 
 
 struct _StrDecodeResult(Copyable, Movable):
@@ -456,13 +465,23 @@ struct QpackDecoder(Movable):
             var s = bytes_to_string(raw^)
             return _StrDecodeResult(s, pos)
 
-    def decode(mut self, data: List[Byte]) raises -> List[QpackHeaderField]:
+    def decode(
+        mut self, data: List[Byte], max_size: Int = Int.MAX
+    ) raises -> List[QpackHeaderField]:
         """Decode a QPACK field section block.
 
         Skips the 2-byte prefix (Required Insert Count + Delta Base),
         then decodes each field instruction until data is exhausted.
 
         Reuses the cached Huffman decode tables stored on the decoder.
+
+        Args:
+            data: The encoded field section.
+            max_size: Limit on the decoded size (name + value + 32 per
+                field, RFC 9114 Section 4.2.2). Checked field by field, so
+                one-byte static references cannot expand a small frame into
+                an unbounded field list; exceeding it raises
+                QPACK_FIELD_SECTION_TOO_LARGE.
         """
         if len(data) < 2:
             raise "QPACK: field section too short"
@@ -481,11 +500,18 @@ struct QpackDecoder(Movable):
         if base_result.value != 0:
             raise "QPACK: non-zero Delta Base not supported; dynamic table required"
         var pos = base_result.new_offset
+        var size = 0
 
         ref trie = self._tables[].huff_trie
         ref fast = self._tables[].huff_fast
 
         while pos < len(data):
+            # Account for the field the previous iteration appended (the
+            # last one is accounted after the loop).
+            if len(result) > 0:
+                size += _field_size(result[len(result) - 1])
+                if size > max_size:
+                    raise QPACK_FIELD_SECTION_TOO_LARGE
             var b = data[pos]
 
             if (b & 0x80) != 0:
@@ -546,4 +572,8 @@ struct QpackDecoder(Movable):
             else:
                 raise "QPACK: unknown field instruction byte: " + String(Int(b))
 
+        if len(result) > 0:
+            size += _field_size(result[len(result) - 1])
+            if size > max_size:
+                raise QPACK_FIELD_SECTION_TOO_LARGE
         return result^
