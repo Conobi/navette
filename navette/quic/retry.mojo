@@ -1,12 +1,15 @@
 # src/quic/retry.mojo
-# Stateless Retry token generation/validation and integrity tag computation.
-# RFC 9001 Section 8.1 (Retry), Appendix A.4 (integrity tag test vector).
+# Stateless Retry token generation/classification and integrity tag computation.
+# RFC 9000 Section 8.1 (address validation), RFC 9001 Section 5.8
+# (integrity tag, Appendix A.4 test vector).
 
-from std.ffi import external_call
 from std.memory import Pointer
-from std.collections import Span
+from std.collections import InlineArray, Span
 
 from navette.util.owned_alloc import Owned
+from navette.util.secure_random import fill_random
+from navette.util.sha256 import sha256
+from navette.util.sockaddr import sockaddr_ip, SOCKADDR_PORT_OFFSET
 from navette.tls.lib import SharedLibrary
 
 
@@ -26,233 +29,292 @@ def _copy_span_to_ptr(
     return offset + len(src)
 
 
-def _write_u64_be(
-    dst: Pointer[mut=True, T=UInt8, origin=_], offset: Int, value: UInt64
-) -> Int:
-    """Write a UInt64 in big-endian at offset. Returns new offset."""
-    dst[unsafe_offset=offset + 0] = UInt8((value >> 56) & 0xFF)
-    dst[unsafe_offset=offset + 1] = UInt8((value >> 48) & 0xFF)
-    dst[unsafe_offset=offset + 2] = UInt8((value >> 40) & 0xFF)
-    dst[unsafe_offset=offset + 3] = UInt8((value >> 32) & 0xFF)
-    dst[unsafe_offset=offset + 4] = UInt8((value >> 24) & 0xFF)
-    dst[unsafe_offset=offset + 5] = UInt8((value >> 16) & 0xFF)
-    dst[unsafe_offset=offset + 6] = UInt8((value >> 8) & 0xFF)
-    dst[unsafe_offset=offset + 7] = UInt8(value & 0xFF)
-    return offset + 8
+comptime RETRY_TOKEN_TYPE: UInt8 = 0x01
+comptime RETRY_TOKEN_LIFETIME_US: UInt64 = 10_000_000
+# Length of the shortest genuine token (empty original DCID): type (1) +
+# nonce (12) + dcid_len (1) + addr_hash (32) + timestamp (8) + AEAD tag
+# (16). A type-0x01 token shorter than this cannot be ours, so it is
+# NONE (answer with a Retry), never INVALID (an INVALID_TOKEN close).
+comptime RETRY_TOKEN_MIN_LEN: Int = 70
+# Length of the longest genuine token (20-byte original DCID). A longer
+# type-0x01 token cannot be ours either, so it is NONE as well.
+comptime RETRY_TOKEN_MAX_LEN: Int = RETRY_TOKEN_MIN_LEN + 20
+comptime TOKEN_NONE: Int = 0
+comptime TOKEN_VALID: Int = 1
+comptime TOKEN_INVALID: Int = 2
+
+# Why a type-0x01 token was rejected. Integers, not messages, so the
+# INVALID path of `classify_retry_token` allocates nothing.
+comptime RETRY_REJECT_OK: Int = 0
+comptime RETRY_REJECT_OVERSIZED: Int = 1
+comptime RETRY_REJECT_AUTH: Int = 2
+comptime RETRY_REJECT_LENGTH: Int = 3
+comptime RETRY_REJECT_ADDRESS: Int = 4
+comptime RETRY_REJECT_FUTURE: Int = 5
+comptime RETRY_REJECT_EXPIRED: Int = 6
+comptime RETRY_REJECT_UNDERSIZED: Int = 7
+
+comptime _NONCE_LEN: Int = 12
+comptime _TAG_LEN: Int = 16
+comptime _HASH_LEN: Int = 32
+# dcid_len (1) + orig_dcid (<= 20) + addr_hash (32) + timestamp (8).
+comptime _MAX_PT_LEN: Int = 61
+comptime _AAD_LABEL = "navette-retry-v2"
+comptime _AAD_LEN: Int = 17
 
 
-def _read_u64_be(
-    src: Pointer[mut=True, T=UInt8, origin=_], offset: Int
-) -> UInt64:
-    """Read a big-endian UInt64 from src at offset."""
-    return (
-        (UInt64(src[unsafe_offset=offset + 0]) << 56)
-        | (UInt64(src[unsafe_offset=offset + 1]) << 48)
-        | (UInt64(src[unsafe_offset=offset + 2]) << 40)
-        | (UInt64(src[unsafe_offset=offset + 3]) << 32)
-        | (UInt64(src[unsafe_offset=offset + 4]) << 24)
-        | (UInt64(src[unsafe_offset=offset + 5]) << 16)
-        | (UInt64(src[unsafe_offset=offset + 6]) << 8)
-        | UInt64(src[unsafe_offset=offset + 7])
-    )
+struct RetryTokenScratch(Movable):
+    """Caller-owned buffers for token sealing and opening; one per server, reused for every Retry.
+
+    Keeps the Retry path allocation-free: a flood of token-less Initials
+    costs AEAD work only, never heap traffic. The AAD is the label plus
+    the token type byte, so a token of another type can never open.
+    """
+
+    var key: InlineArray[UInt8, 16]
+    var nonce: InlineArray[UInt8, _NONCE_LEN]
+    var aad: InlineArray[UInt8, _AAD_LEN]
+    var pt: InlineArray[UInt8, _MAX_PT_LEN]
+    var ct: InlineArray[UInt8, _MAX_PT_LEN + _TAG_LEN]
+    var out_len: InlineArray[Int32, 1]
+
+    def __init__(out self):
+        self.key = InlineArray[UInt8, 16](fill=UInt8(0))
+        self.nonce = InlineArray[UInt8, _NONCE_LEN](fill=UInt8(0))
+        self.aad = InlineArray[UInt8, _AAD_LEN](fill=UInt8(0))
+        var label = StringSlice(_AAD_LABEL).as_bytes()
+        for i in range(_AAD_LEN - 1):
+            self.aad[i] = label[i]
+        self.aad[_AAD_LEN - 1] = RETRY_TOKEN_TYPE
+        self.pt = InlineArray[UInt8, _MAX_PT_LEN](fill=UInt8(0))
+        self.ct = InlineArray[UInt8, _MAX_PT_LEN + _TAG_LEN](fill=UInt8(0))
+        self.out_len = InlineArray[Int32, 1](fill=Int32(0))
+
+
+def retry_addr_hash(sockaddr: Span[Byte, _]) -> InlineArray[UInt8, 32]:
+    """SHA-256 of the peer's IP address bytes (4, or 16) and port (big-endian).
+
+    `flowinfo` and `scope_id` are not read, and an IPv4-mapped IPv6
+    address hashes as its 4 IPv4 bytes, so the token survives the
+    dual-stack socket reporting the same peer either way. A malformed
+    blob (no parsable IP) yields all zeros instead of a digest:
+    `generate_retry_token` refuses it and classification rejects it as
+    an address mismatch, so two malformed names can never share a token.
+    """
+    var ip = sockaddr_ip(sockaddr)
+    var ip_off = ip[0]
+    var ip_len = ip[1]
+    if ip_len == 0:
+        return InlineArray[UInt8, 32](fill=UInt8(0))
+    var msg = InlineArray[UInt8, 18](fill=UInt8(0))
+    for i in range(ip_len):
+        msg[i] = sockaddr[ip_off + i]
+    msg[ip_len] = sockaddr[SOCKADDR_PORT_OFFSET]
+    msg[ip_len + 1] = sockaddr[SOCKADDR_PORT_OFFSET + 1]
+    return sha256(Span(msg)[: ip_len + 2])
+
+
+def _is_unusable_addr_hash(client_addr_hash: Span[Byte, _]) -> Bool:
+    """True for the all-zero hash `retry_addr_hash` returns for a malformed sockaddr (no SHA-256 preimage is known)."""
+    var acc = UInt8(0)
+    for i in range(len(client_addr_hash)):
+        acc |= client_addr_hash[i]
+    return acc == 0
 
 
 def generate_retry_token(
     mut buf: List[Byte],
     lib: SharedLibrary,
+    mut scratch: RetryTokenScratch,
     server_secret: Span[Byte, _],
     orig_dcid: Span[Byte, _],
     client_addr_hash: Span[Byte, _],
-    now: UInt64,
+    now_us: UInt64,
 ) raises:
-    """Generate an encrypted Retry token, appending it directly to buf.
+    """Append a Retry token for `orig_dcid` issued at `now_us` (µs) to `buf`.
 
-    Token format: nonce (12) || ciphertext+tag
-    Plaintext: dcid_len (1) || orig_dcid || addr_hash (32) || timestamp (8 BE)
+    Token: `type (0x01) ‖ nonce (12) ‖ AES-128-GCM(dcid_len ‖ orig_dcid ‖
+    addr_hash (32) ‖ timestamp µs (8, BE))`, AAD = label ‖ type: 70 bytes
+    plus the DCID length (`RETRY_TOKEN_MIN_LEN` .. `RETRY_TOKEN_MAX_LEN`). Raises only on a
+    caller error (secret, hash or DCID length, or the all-zero hash of a
+    malformed peer address), an FFI failure, or a failed kernel RNG draw.
     """
     if len(server_secret) != 16:
         raise "server_secret must be 16 bytes"
-    if len(client_addr_hash) != 32:
+    if len(client_addr_hash) != _HASH_LEN:
         raise "client_addr_hash must be 32 bytes"
     if len(orig_dcid) > 20:
         raise "orig_dcid too long"
+    if _is_unusable_addr_hash(client_addr_hash):
+        raise "unusable peer address: malformed sockaddr"
 
-    var rlib = lib.inner_ptr()
+    var pt_len = 1 + len(orig_dcid) + _HASH_LEN + 8
+    scratch.pt[0] = UInt8(len(orig_dcid))
+    for i in range(len(orig_dcid)):
+        scratch.pt[1 + i] = orig_dcid[i]
+    var off = 1 + len(orig_dcid)
+    for i in range(_HASH_LEN):
+        scratch.pt[off + i] = client_addr_hash[i]
+    off += _HASH_LEN
+    for i in range(8):
+        scratch.pt[off + i] = UInt8((now_us >> UInt64(56 - 8 * i)) & 0xFF)
+    for i in range(16):
+        scratch.key[i] = server_secret[i]
+    # A partial fill would leave the previous token's nonce in scratch:
+    # GCM nonce reuse under one key leaks the authentication key.
+    fill_random(Span(scratch.nonce))
+    scratch.out_len[0] = 0
 
-    # Build plaintext: 1 + dcid_len + 32 + 8
-    var pt_len = 1 + len(orig_dcid) + 32 + 8
-    var pt_buf = Owned[UInt8](pt_len)
-    var pt_ptr = pt_buf.ptr()
-    pt_ptr[unsafe_offset=0] = UInt8(len(orig_dcid))
-    var off = 1
-    off = _copy_span_to_ptr(orig_dcid, pt_ptr, off)
-    off = _copy_span_to_ptr(client_addr_hash, pt_ptr, off)
-    _ = _write_u64_be(pt_ptr, off, now)
-
-    # Generate 12-byte random nonce via getrandom(2).
-    var nonce_buf = Owned[UInt8](12)
-    var nonce_ptr = nonce_buf.ptr()
-    _ = external_call["getrandom", Int](nonce_ptr, UInt64(12), UInt32(0))
-
-    # Prepare key pointer
-    var key_buf = Owned[UInt8](16)
-    var key_ptr = key_buf.ptr()
-    _ = _copy_span_to_ptr(server_secret, key_ptr, 0)
-
-    # Prepare AAD
-    var aad_str = String("navette-retry-v1")
-    var aad_bytes = aad_str.as_bytes()
-    var aad_len = len(aad_bytes)
-    var aad_buf = Owned[UInt8](aad_len)
-    var aad_ptr = aad_buf.ptr()
-    for i in range(aad_len):
-        aad_ptr[unsafe_offset=i] = aad_bytes[i]
-
-    # Output buffer: plaintext + 16-byte tag
-    var out_cap = pt_len + 16
-    var out_buf = Owned[UInt8](out_cap)
-    var out_ptr = out_buf.ptr()
-    var out_len_buf = Owned[Int32](1)
-    var out_len_ptr = out_len_buf.ptr()
-    out_len_ptr[unsafe_offset=0] = Int32(0)
-
-    var rc = rlib[].aes_gcm_128_seal(
-        key_ptr,
-        Int32(16),
-        nonce_ptr,
-        Int32(12),
-        aad_ptr,
-        Int32(aad_len),
-        pt_ptr,
-        Int32(pt_len),
-        out_ptr,
-        out_len_ptr,
+    var rc = lib.inner_ptr()[].aes_gcm_128_seal(
+        scratch.key.unsafe_ptr(), Int32(16),
+        scratch.nonce.unsafe_ptr(), Int32(_NONCE_LEN),
+        scratch.aad.unsafe_ptr(), Int32(_AAD_LEN),
+        scratch.pt.unsafe_ptr(), Int32(pt_len),
+        scratch.ct.unsafe_ptr(), scratch.out_len.unsafe_ptr(),
     )
-
     if rc != 0:
-        var err = rlib[].last_error()
-        raise "AES-GCM-128 seal failed: " + err
+        raise "AES-GCM-128 seal failed: " + lib.inner_ptr()[].last_error()
 
-    var ct_len = Int(out_len_ptr[unsafe_offset=0])
+    buf.append(RETRY_TOKEN_TYPE)
+    buf.extend(Span(scratch.nonce))
+    buf.extend(Span(scratch.ct)[: Int(scratch.out_len[0])])
 
-    # Append token: nonce (12) || ciphertext+tag
-    buf.extend(Span(unsafe_ptr=nonce_ptr, length=12))
-    buf.extend(Span(unsafe_ptr=out_ptr, length=ct_len))
 
-    # Keep the post-FFI-read buffers alive through their last reads above.
-    _ = nonce_buf
-    _ = out_buf
-    _ = out_len_buf
+def _open_retry_token(
+    mut orig_dcid_out: List[Byte],
+    lib: SharedLibrary,
+    mut scratch: RetryTokenScratch,
+    server_secret: Span[Byte, _],
+    token: Span[Byte, _],
+    client_addr_hash: Span[Byte, _],
+    now_us: UInt64,
+    lifetime_us: UInt64,
+) raises -> Int:
+    """A `RETRY_REJECT_*` code for a type-0x01 token; `RETRY_REJECT_OK` only when valid, and only then is the DCID appended.
+
+    Checks both length bounds itself rather than trusting callers: the
+    nonce and ciphertext copies index the token and the fixed scratch
+    buffers, so an unchecked short or long token reads or writes out of
+    bounds.
+    """
+    if len(token) < RETRY_TOKEN_MIN_LEN:
+        return RETRY_REJECT_UNDERSIZED
+    if len(token) > RETRY_TOKEN_MAX_LEN:
+        return RETRY_REJECT_OVERSIZED
+    if _is_unusable_addr_hash(client_addr_hash):
+        return RETRY_REJECT_ADDRESS
+    var ct_len = len(token) - 1 - _NONCE_LEN
+    for i in range(_NONCE_LEN):
+        scratch.nonce[i] = token[1 + i]
+    for i in range(ct_len):
+        scratch.ct[i] = token[1 + _NONCE_LEN + i]
+    for i in range(16):
+        scratch.key[i] = server_secret[i]
+    scratch.out_len[0] = 0
+    var rc = lib.inner_ptr()[].aes_gcm_128_open(
+        scratch.key.unsafe_ptr(), Int32(16),
+        scratch.nonce.unsafe_ptr(), Int32(_NONCE_LEN),
+        scratch.aad.unsafe_ptr(), Int32(_AAD_LEN),
+        scratch.ct.unsafe_ptr(), Int32(ct_len),
+        scratch.pt.unsafe_ptr(), scratch.out_len.unsafe_ptr(),
+    )
+    if rc != 0:
+        return RETRY_REJECT_AUTH
+    var pt_len = Int(scratch.out_len[0])
+    var dcid_len = Int(scratch.pt[0])
+    if pt_len < 1 + _HASH_LEN + 8 or 1 + dcid_len + _HASH_LEN + 8 != pt_len:
+        return RETRY_REJECT_LENGTH
+    var hash_off = 1 + dcid_len
+    for i in range(_HASH_LEN):
+        if scratch.pt[hash_off + i] != client_addr_hash[i]:
+            return RETRY_REJECT_ADDRESS
+    var ts = UInt64(0)
+    for i in range(8):
+        ts = (ts << 8) | UInt64(scratch.pt[hash_off + _HASH_LEN + i])
+    if now_us < ts:
+        return RETRY_REJECT_FUTURE
+    if now_us - ts > lifetime_us:
+        return RETRY_REJECT_EXPIRED
+    orig_dcid_out.extend(Span(scratch.pt)[1 : 1 + dcid_len])
+    return RETRY_REJECT_OK
+
+
+def classify_retry_token(
+    mut orig_dcid_out: List[Byte],
+    lib: SharedLibrary,
+    mut scratch: RetryTokenScratch,
+    server_secret: Span[Byte, _],
+    token: Span[Byte, _],
+    client_addr_hash: Span[Byte, _],
+    now_us: UInt64,
+    lifetime_us: UInt64,
+) raises -> Int:
+    """TOKEN_NONE, TOKEN_VALID or TOKEN_INVALID (RFC 9000 Section 8.1.2-8.1.3); appends the original DCID only when VALID.
+
+    NONE: not ours (type ≠ 0x01, or a length outside
+    `RETRY_TOKEN_MIN_LEN` .. `RETRY_TOKEN_MAX_LEN`) — a token we cannot
+    validate is treated as absent (RFC 9000 Section 8.1.3): answer with a Retry.
+    INVALID: type 0x01 but AEAD failure, address mismatch (including a
+    malformed peer address), expiry or a future timestamp — answer with one INVALID_TOKEN close. Raises only
+    on a caller error or an FFI failure, never on token content.
+    """
+    if len(server_secret) != 16:
+        raise "server_secret must be 16 bytes"
+    if len(client_addr_hash) != _HASH_LEN:
+        raise "client_addr_hash must be 32 bytes"
+    if (
+        len(token) < RETRY_TOKEN_MIN_LEN
+        or len(token) > RETRY_TOKEN_MAX_LEN
+        or token[0] != RETRY_TOKEN_TYPE
+    ):
+        return TOKEN_NONE
+    var why = _open_retry_token(
+        orig_dcid_out, lib, scratch, server_secret, token, client_addr_hash, now_us, lifetime_us
+    )
+    return TOKEN_VALID if why == RETRY_REJECT_OK else TOKEN_INVALID
 
 
 def validate_retry_token(
     mut buf: List[Byte],
     lib: SharedLibrary,
+    mut scratch: RetryTokenScratch,
     server_secret: Span[Byte, _],
     token: Span[Byte, _],
     client_addr_hash: Span[Byte, _],
-    now: UInt64,
-    max_age: UInt64 = 5,
+    now_us: UInt64,
+    max_age_us: UInt64,
 ) raises:
-    """Validate a Retry token, appending the original DCID directly to buf.
+    """Raising form of `classify_retry_token`: appends the original DCID, or raises with the reason.
 
-    Raises on authentication failure, address mismatch, or expiration.
-    buf is only appended to once every check has passed, so a rejected
-    token never leaves partial output in the caller's buffer.
+    `max_age_us` has no default: the lifetime is in microseconds, the
+    unit of every protocol clock in navette (the server passes
+    `RETRY_TOKEN_LIFETIME_US`).
     """
     if len(server_secret) != 16:
         raise "server_secret must be 16 bytes"
-    if len(client_addr_hash) != 32:
+    if len(client_addr_hash) != _HASH_LEN:
         raise "client_addr_hash must be 32 bytes"
-    # Minimum: 12 (nonce) + 16 (tag) = 28 bytes
-    if len(token) < 28:
+    if len(token) < RETRY_TOKEN_MIN_LEN:
         raise "token too short"
-
-    var rlib = lib.inner_ptr()
-
-    # Extract nonce (first 12 bytes) and ciphertext+tag (rest)
-    var nonce_buf = Owned[UInt8](12)
-    var nonce_ptr = nonce_buf.ptr()
-    for i in range(12):
-        nonce_ptr[unsafe_offset=i] = token[i]
-
-    var ct_len = len(token) - 12
-    var ct_buf = Owned[UInt8](ct_len)
-    var ct_ptr = ct_buf.ptr()
-    for i in range(ct_len):
-        ct_ptr[unsafe_offset=i] = token[12 + i]
-
-    # Prepare key
-    var key_buf = Owned[UInt8](16)
-    var key_ptr = key_buf.ptr()
-    for i in range(16):
-        key_ptr[unsafe_offset=i] = server_secret[i]
-
-    # Prepare AAD
-    var aad_str = String("navette-retry-v1")
-    var aad_bytes = aad_str.as_bytes()
-    var aad_len = len(aad_bytes)
-    var aad_buf = Owned[UInt8](aad_len)
-    var aad_ptr = aad_buf.ptr()
-    for i in range(aad_len):
-        aad_ptr[unsafe_offset=i] = aad_bytes[i]
-
-    # Output buffer for plaintext (ct_len - 16 bytes)
-    var pt_cap = ct_len - 16
-    if pt_cap < 0:
-        raise "token ciphertext too short"
-
-    var out_buf = Owned[UInt8](pt_cap)
-    var out_ptr = out_buf.ptr()
-    var out_len_buf = Owned[Int32](1)
-    var out_len_ptr = out_len_buf.ptr()
-    out_len_ptr[unsafe_offset=0] = Int32(0)
-
-    var rc = rlib[].aes_gcm_128_open(
-        key_ptr,
-        Int32(16),
-        nonce_ptr,
-        Int32(12),
-        aad_ptr,
-        Int32(aad_len),
-        ct_ptr,
-        Int32(ct_len),
-        out_ptr,
-        out_len_ptr,
+    if len(token) > RETRY_TOKEN_MAX_LEN:
+        raise "token too long"
+    if token[0] != RETRY_TOKEN_TYPE:
+        raise "not a navette retry token"
+    var why = _open_retry_token(
+        buf, lib, scratch, server_secret, token, client_addr_hash, now_us, max_age_us
     )
-
-    if rc != 0:
-        var err = rlib[].last_error()
-        raise "token authentication failed: " + err
-
-    var pt_len = Int(out_len_ptr[unsafe_offset=0])
-
-    # Parse plaintext: dcid_len (1) || dcid || addr_hash (32) || timestamp (8)
-    if pt_len < 1 + 0 + 32 + 8:
-        raise "decrypted token plaintext too short"
-
-    var dcid_len = Int(out_ptr[unsafe_offset=0])
-    if 1 + dcid_len + 32 + 8 != pt_len:
+    if why == RETRY_REJECT_AUTH:
+        raise "token authentication failed"
+    if why == RETRY_REJECT_LENGTH:
         raise "token plaintext length mismatch"
-
-    # Verify addr_hash
-    var hash_offset = 1 + dcid_len
-    for i in range(32):
-        if out_ptr[unsafe_offset=hash_offset + i] != client_addr_hash[i]:
-            raise "token address hash mismatch"
-
-    # Verify timestamp
-    var ts_offset = hash_offset + 32
-    var timestamp = _read_u64_be(out_ptr, ts_offset)
-    if now < timestamp or (now - timestamp) > max_age:
+    if why == RETRY_REJECT_ADDRESS:
+        raise "token address hash mismatch"
+    if why == RETRY_REJECT_FUTURE:
+        raise "token timestamp in the future"
+    if why == RETRY_REJECT_EXPIRED:
         raise "token expired"
-
-    # Append orig_dcid only after every check above has passed.
-    buf.extend(Span(unsafe_ptr=out_ptr.unsafe_offset(1), length=dcid_len))
-
-    # Keep the post-FFI-read output buffers alive through their last reads above.
-    _ = out_buf
-    _ = out_len_buf
+    if why != RETRY_REJECT_OK:
+        raise "token rejected"
 
 
 def compute_retry_integrity_tag(

@@ -7,13 +7,27 @@
 #
 # Properties (per spec §Retry-AEAD property set):
 #   P1 — Inverse identity: validate(generate(...)) returns the orig_dcid.
-#   P2 — Tag/ciphertext tamper: flipping any bit in token[12:] → validate raises.
-#   P2b — Nonce tamper: flipping any bit in token[:12] → validate raises.
+#   P2 — Tag/ciphertext tamper: flipping any bit in token[13:] → validate raises.
+#   P2b — Type/nonce tamper: flipping any bit in token[:13] → validate raises.
 #   P3 — Cross-secret rejection: distinct server_secret → validate raises.
 #   P4 — Address-hash mismatch: distinct client_addr_hash → validate raises.
 #   P5 — Expiry: now_v > now_g + max_age → validate raises.
 #   P6 — Nonce uniqueness probe: two generate() calls with identical inputs
-#        produce tokens whose nonce prefix (bytes 0..11) differs.
+#        produce tokens whose nonces (bytes 1..12) differ.
+#   C1 — classify: the genuine token is VALID and yields orig_dcid.
+#   C2 — classify: any single-bit flip in token[1:] is INVALID.
+#   C3 — classify: a type byte other than 0x01 is NONE.
+#   C4 — classify: truncation below RETRY_TOKEN_MIN_LEN (70) bytes is
+#        NONE, at or above it INVALID; appended bytes are INVALID up to
+#        RETRY_TOKEN_MAX_LEN (90) bytes and NONE beyond it.
+#   C5 — classify: wrong address, rotated secret or expiry is INVALID.
+#   C6 — the all-zero address hash (malformed peer sockaddr): generate
+#        raises, and the genuine token classifies INVALID against it.
+#   Non-VALID results never append to the output buffer.
+#
+# Default: 100 iterations (~1 minute under ASSERT=all). Deep runs:
+#   FUZZ_ITERS=10000 FUZZ_SEED=<n> scripts/test.sh tests/fuzz/test_fuzz_retry_aead.mojo
+# FUZZ_SOAK=1 keeps going past 20 disagreements.
 
 from std.os import getenv
 
@@ -21,7 +35,17 @@ from tests.fuzz.lib.prng import SplitMix64
 from tests.fuzz.lib.report import FuzzReport, ObserveResult
 
 from navette.tls.lib import TlsBackend, SharedLibrary
-from navette.quic.retry import generate_retry_token, validate_retry_token
+from navette.quic.retry import (
+    RETRY_TOKEN_MAX_LEN,
+    RETRY_TOKEN_MIN_LEN,
+    RetryTokenScratch,
+    TOKEN_INVALID,
+    TOKEN_NONE,
+    TOKEN_VALID,
+    classify_retry_token,
+    generate_retry_token,
+    validate_retry_token,
+)
 
 
 def _random_bytes(mut rng: SplitMix64, n: Int) -> List[Byte]:
@@ -31,8 +55,8 @@ def _random_bytes(mut rng: SplitMix64, n: Int) -> List[Byte]:
     return out^
 
 
-def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> ObserveResult:
-    """Each invocation exercises P1-P6 on freshly-generated inputs."""
+def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: RetryTokenScratch) raises -> ObserveResult:
+    """Each invocation exercises P1-P5 on freshly-generated inputs."""
     var secret = _random_bytes(rng, 16)
     var dcid_len = Int(rng.next_below(UInt64(21)))  # 0-20
     var orig_dcid = _random_bytes(rng, dcid_len)
@@ -42,12 +66,12 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
     # P1: inverse identity
     var token = List[Byte]()
     try:
-        generate_retry_token(token, lib, Span(secret), Span(orig_dcid), Span(addr_hash), now_g)
+        generate_retry_token(token, lib, scratch, Span(secret), Span(orig_dcid), Span(addr_hash), now_g)
     except e:
         return ObserveResult(False, String("P1: generate_retry_token raised: ") + String(e))
     var recovered = List[Byte]()
     try:
-        validate_retry_token(recovered, lib, Span(secret), Span(token), Span(addr_hash), now_g, UInt64(10000))
+        validate_retry_token(recovered, lib, scratch, Span(secret), Span(token), Span(addr_hash), now_g, UInt64(10000))
     except e:
         return ObserveResult(False, String("P1: validate raised on its own token: ") + String(e))
     if len(recovered) != dcid_len:
@@ -56,30 +80,30 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
         if recovered[i] != orig_dcid[i]:
             return ObserveResult(False, String("P1: recovered dcid byte ") + String(i) + String(" differs"))
 
-    # P2: tag/ciphertext tamper (flip a bit in token[12:])
-    if len(token) > 12:
+    # P2: tag/ciphertext tamper (flip a bit in token[13:])
+    if len(token) > 13:
         var tampered = token.copy()
-        var byte_idx = 12 + Int(rng.next_below(UInt64(len(token) - 12)))
+        var byte_idx = 13 + Int(rng.next_below(UInt64(len(token) - 13)))
         var bit = Int(rng.next_below(UInt64(8)))
         tampered[byte_idx] = tampered[byte_idx] ^ UInt8(1 << bit)
         var raised = False
         try:
             var _p2 = List[Byte]()
-            validate_retry_token(_p2, lib, Span(secret), Span(tampered), Span(addr_hash), now_g, UInt64(10000))
+            validate_retry_token(_p2, lib, scratch, Span(secret), Span(tampered), Span(addr_hash), now_g, UInt64(10000))
         except:
             raised = True
         if not raised:
             return ObserveResult(False, String("P2: tag/ciphertext tamper did not raise"))
 
-    # P2b: nonce tamper
+    # P2b: type-byte / nonce tamper
     var nonce_tampered = token.copy()
     var nbit = Int(rng.next_below(UInt64(8)))
-    var nbyte = Int(rng.next_below(UInt64(12)))
+    var nbyte = Int(rng.next_below(UInt64(13)))
     nonce_tampered[nbyte] = nonce_tampered[nbyte] ^ UInt8(1 << nbit)
     var raised_2b = False
     try:
         var _p2b = List[Byte]()
-        validate_retry_token(_p2b, lib, Span(secret), Span(nonce_tampered), Span(addr_hash), now_g, UInt64(10000))
+        validate_retry_token(_p2b, lib, scratch, Span(secret), Span(nonce_tampered), Span(addr_hash), now_g, UInt64(10000))
     except:
         raised_2b = True
     if not raised_2b:
@@ -93,7 +117,7 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
     var raised_3 = False
     try:
         var _p3 = List[Byte]()
-        validate_retry_token(_p3, lib, Span(secret2), Span(token), Span(addr_hash), now_g, UInt64(10000))
+        validate_retry_token(_p3, lib, scratch, Span(secret2), Span(token), Span(addr_hash), now_g, UInt64(10000))
     except:
         raised_3 = True
     if not raised_3:
@@ -106,7 +130,7 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
     var raised_4 = False
     try:
         var _p4 = List[Byte]()
-        validate_retry_token(_p4, lib, Span(secret), Span(token), Span(hash2), now_g, UInt64(10000))
+        validate_retry_token(_p4, lib, scratch, Span(secret), Span(token), Span(hash2), now_g, UInt64(10000))
     except:
         raised_4 = True
     if not raised_4:
@@ -117,7 +141,7 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
     var raised_5 = False
     try:
         var _p5 = List[Byte]()
-        validate_retry_token(_p5, lib, Span(secret), Span(token), Span(addr_hash), now_v, UInt64(5))
+        validate_retry_token(_p5, lib, scratch, Span(secret), Span(token), Span(addr_hash), now_v, UInt64(5))
     except:
         raised_5 = True
     if not raised_5:
@@ -126,7 +150,115 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary) raises -> Obs
     return ObserveResult(True, String(""))
 
 
-def _check_p6(lib: SharedLibrary) raises -> ObserveResult:
+def _classify_expect(
+    lib: SharedLibrary,
+    mut scratch: RetryTokenScratch,
+    secret: List[Byte],
+    token: List[Byte],
+    addr_hash: List[Byte],
+    now: UInt64,
+    max_age: UInt64,
+    want: Int,
+    label: String,
+) raises -> String:
+    """Empty when classify returns `want` (and appends only when VALID), else a failure message."""
+    var out = List[Byte]()
+    var got = classify_retry_token(
+        out, lib, scratch, Span(secret), Span(token), Span(addr_hash), now, max_age
+    )
+    if got != want:
+        return label + String(": classify ") + String(got) + String(" != ") + String(want)
+    if want != TOKEN_VALID and len(out) != 0:
+        return label + String(": non-VALID token appended a DCID")
+    return String("")
+
+
+def _check_classify(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: RetryTokenScratch) raises -> ObserveResult:
+    """C1-C6 on freshly generated inputs."""
+    var secret = _random_bytes(rng, 16)
+    var dcid_len = Int(rng.next_below(UInt64(21)))
+    var orig_dcid = _random_bytes(rng, dcid_len)
+    var addr_hash = _random_bytes(rng, 32)
+    var now_g = rng.next_u64() % UInt64(1000000)
+    var age = UInt64(10000)
+    var token = List[Byte]()
+    generate_retry_token(token, lib, scratch, Span(secret), Span(orig_dcid), Span(addr_hash), now_g)
+
+    # C1
+    var out = List[Byte]()
+    var c1 = classify_retry_token(out, lib, scratch, Span(secret), Span(token), Span(addr_hash), now_g, age)
+    if c1 != TOKEN_VALID:
+        return ObserveResult(False, String("C1: genuine token classified ") + String(c1))
+    if len(out) != dcid_len:
+        return ObserveResult(False, String("C1: recovered dcid length differs"))
+    for i in range(dcid_len):
+        if out[i] != orig_dcid[i]:
+            return ObserveResult(False, String("C1: recovered dcid byte ") + String(i) + String(" differs"))
+
+    # C2
+    var flipped = token.copy()
+    var fb = 1 + Int(rng.next_below(UInt64(len(token) - 1)))
+    flipped[fb] = flipped[fb] ^ UInt8(1 << Int(rng.next_below(UInt64(8))))
+    var why = _classify_expect(lib, scratch, secret, flipped, addr_hash, now_g, age, TOKEN_INVALID, String("C2 bit flip"))
+    if why.byte_length() > 0:
+        return ObserveResult(False, why)
+    # C3
+    var retyped = token.copy()
+    # 2..256, where 256 wraps to 0: every type byte except 0x01.
+    retyped[0] = UInt8(rng.next_below(UInt64(255))) + 2
+    why = _classify_expect(lib, scratch, secret, retyped, addr_hash, now_g, age, TOKEN_NONE, String("C3 retyped"))
+    if why.byte_length() > 0:
+        return ObserveResult(False, why)
+    # C4
+    var cut = Int(rng.next_below(UInt64(len(token))))
+    var truncated = List[Byte](capacity=cut)
+    for i in range(cut):
+        truncated.append(token[i])
+    var want_cut = TOKEN_NONE if cut < RETRY_TOKEN_MIN_LEN else TOKEN_INVALID
+    why = _classify_expect(lib, scratch, secret, truncated, addr_hash, now_g, age, want_cut, String("C4 truncated to ") + String(cut))
+    if why.byte_length() > 0:
+        return ObserveResult(False, why)
+    var extended = token.copy()
+    var extra = 1 + Int(rng.next_below(UInt64(64)))
+    for _ in range(extra):
+        extended.append(rng.next_u8())
+    var want_ext = TOKEN_NONE if len(extended) > RETRY_TOKEN_MAX_LEN else TOKEN_INVALID
+    why = _classify_expect(
+        lib, scratch, secret, extended, addr_hash, now_g, age, want_ext, String("C4 extended to ") + String(len(extended))
+    )
+    if why.byte_length() > 0:
+        return ObserveResult(False, why)
+    # C5
+    var hash2 = addr_hash.copy()
+    hash2[Int(rng.next_below(UInt64(32)))] ^= UInt8(1 << Int(rng.next_below(UInt64(8))))
+    why = _classify_expect(lib, scratch, secret, token, hash2, now_g, age, TOKEN_INVALID, String("C5 address"))
+    if why.byte_length() > 0:
+        return ObserveResult(False, why)
+    var secret2 = secret.copy()
+    secret2[Int(rng.next_below(UInt64(16)))] ^= UInt8(1 << Int(rng.next_below(UInt64(8))))
+    why = _classify_expect(lib, scratch, secret2, token, addr_hash, now_g, age, TOKEN_INVALID, String("C5 secret"))
+    if why.byte_length() > 0:
+        return ObserveResult(False, why)
+    why = _classify_expect(lib, scratch, secret, token, addr_hash, now_g + age + 1, age, TOKEN_INVALID, String("C5 expired"))
+    if why.byte_length() > 0:
+        return ObserveResult(False, why)
+    # C6
+    var zero_hash = List[Byte](length=32, fill=Byte(0))
+    var zero_raised = False
+    try:
+        var _c6 = List[Byte]()
+        generate_retry_token(_c6, lib, scratch, Span(secret), Span(orig_dcid), Span(zero_hash), now_g)
+    except:
+        zero_raised = True
+    if not zero_raised:
+        return ObserveResult(False, String("C6: generate accepted the all-zero address hash"))
+    why = _classify_expect(lib, scratch, secret, token, zero_hash, now_g, age, TOKEN_INVALID, String("C6 zero hash"))
+    if why.byte_length() > 0:
+        return ObserveResult(False, why)
+    return ObserveResult(True, String(""))
+
+
+def _check_p6(lib: SharedLibrary, mut scratch: RetryTokenScratch) raises -> ObserveResult:
     """Nonce-uniqueness probe: two calls with identical inputs → distinct nonces."""
     var secret = List[Byte]()
     for i in range(16):
@@ -138,11 +270,11 @@ def _check_p6(lib: SharedLibrary) raises -> ObserveResult:
     for i in range(32):
         addr_hash.append(UInt8(i))
     var t1 = List[Byte]()
-    generate_retry_token(t1, lib, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
+    generate_retry_token(t1, lib, scratch, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
     var t2 = List[Byte]()
-    generate_retry_token(t2, lib, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
+    generate_retry_token(t2, lib, scratch, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
     var same = True
-    for i in range(12):
+    for i in range(1, 13):
         if t1[i] != t2[i]:
             same = False
             break
@@ -172,7 +304,7 @@ def _env_bool(name: String) -> Bool:
 
 def main() raises:
     var seed = _env_u64(String("FUZZ_SEED"), UInt64(0xC0FFEE))
-    var iters = _env_int(String("FUZZ_ITERS"), 1000)  # AEAD is heavier; smaller default
+    var iters = _env_int(String("FUZZ_ITERS"), 100)  # keeps the default run near 1 minute
     var soak = _env_bool(String("FUZZ_SOAK"))
 
     var tls = TlsBackend("lib/librustls_mojo.so")
@@ -181,16 +313,19 @@ def main() raises:
     var rng = SplitMix64(seed)
     var report = FuzzReport(String("fuzz_retry_aead"), seed, iters)
 
+    var scratch = RetryTokenScratch()
+
     # P6 once at startup
-    report.observe(_check_p6(shared))
+    report.observe(_check_p6(shared, scratch))
 
     # P1-P5 per iteration
     var stage = 0
     for _ in range(iters):
         if (not soak) and report.disagreements >= 20: break
-        report.observe(_check_all_properties(rng, shared))
+        report.observe(_check_all_properties(rng, shared, scratch))
+        report.observe(_check_classify(rng, shared, scratch))
         stage += 1
-    print("stage (P1-P5):", stage, "iters")
+    print("stage (P1-P5, C1-C6):", stage, "iters")
     print("plus P6 (nonce-uniqueness probe)")
 
     report.finish()

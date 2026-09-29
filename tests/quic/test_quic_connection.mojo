@@ -69,7 +69,10 @@ from navette.quic.stream import SendState
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.quic.ecn import ECN_STATE_DISABLED
 from navette.quic.retry import (
+    RETRY_TOKEN_LIFETIME_US,
+    RetryTokenScratch,
     generate_retry_token,
+    retry_addr_hash,
     validate_retry_token,
     compute_retry_integrity_tag,
 )
@@ -589,33 +592,41 @@ def test_handshake_with_retry() raises:
     for i in range(16):
         server_secret.append(UInt8(Int(py=py_secret[i])))
 
-    #    client_addr_hash: 32 bytes (SHA-256 of simulated address).
-    var hashlib = Python.import_module("hashlib")
-    var builtins = Python.import_module("builtins")
-    var py_hash = hashlib.sha256(builtins.bytes("127.0.0.1:12345", "utf-8")).digest()
+    #    client_addr_hash: SHA-256 of 127.0.0.1 and port 12345.
+    var sa = List[Byte](length=16, fill=Byte(0))
+    sa[0] = 2
+    sa[2] = UInt8(12345 >> 8)
+    sa[3] = UInt8(12345 & 0xFF)
+    sa[4] = 127
+    sa[7] = 1
+    var digest = retry_addr_hash(Span(sa))
     var client_addr_hash = List[Byte](capacity=32)
     for i in range(32):
-        client_addr_hash.append(UInt8(Int(py=py_hash[i])))
+        client_addr_hash.append(digest[i])
 
+    var scratch = RetryTokenScratch()
     var token = List[Byte]()
     generate_retry_token(
         token,
         tls.shared(),
+        scratch,
         Span(server_secret),
         Span(client_initial_dcid),
         Span(client_addr_hash),
         now,
     )
 
-    # 3. Validate the token (proving the round-trip works).
+    # 3. Validate the token 2 s later (the lifetime is 10 s of the µs clock).
     var recovered_dcid = List[Byte]()
     validate_retry_token(
         recovered_dcid,
         tls.shared(),
+        scratch,
         Span(server_secret),
         Span(token),
         Span(client_addr_hash),
-        now,
+        now + UInt64(2_000_000),
+        RETRY_TOKEN_LIFETIME_US,
     )
 
     # Verify recovered DCID matches original.
