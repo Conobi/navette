@@ -468,6 +468,8 @@ struct H2Connection(Movable):
     var _client_magic_validated: Bool
     var _closed_stream_count: Int
     var _pending_data: Dict[Int, List[PendingDataChunk]]
+    # DATA bytes credited back to the connection window without reaching a stream.
+    var window_credited_back_bytes: UInt64
 
     def __init__(out self, *, client_side: Bool, config: H2Config = H2Config()):
         self._config = H2Config(copy=config)
@@ -497,6 +499,7 @@ struct H2Connection(Movable):
         self._client_magic_validated = client_side
         self._closed_stream_count = 0
         self._pending_data = Dict[Int, List[PendingDataChunk]]()
+        self.window_credited_back_bytes = UInt64(0)
 
     def initiate_connection(mut self) raises:
         """Send connection preface. Must be called before any other operation."""
@@ -1090,11 +1093,7 @@ struct H2Connection(Movable):
         if self._state == CONN_CLOSED:
             raise Error("Connection is closed")
         # Connection-level tracking
-        self._recv_window_consumed += size
-        if self._recv_window_consumed > DEFAULT_CONNECTION_WINDOW // 2:
-            self._send_window_update_frame(UInt32(0), UInt32(self._recv_window_consumed))
-            self._recv_window += self._recv_window_consumed
-            self._recv_window_consumed = 0
+        self._credit_connection(size)
         # Stream-level tracking
         var sid = Int(stream_id)
         if self._has_stream(sid):
@@ -1109,6 +1108,50 @@ struct H2Connection(Movable):
                 self._streams[sid] = stream^
             except:
                 pass
+
+    def _is_implicitly_closed(self, stream_id: Int) -> Bool:
+        """Server side: a client-initiated id below the last one received, closed without ever being opened.
+
+        RFC 9113 Section 5.1.1: opening a stream implicitly closes the peer's
+        idle streams with lower ids. Even ids are ours and stay idle (we
+        never push), and the client side keeps today's strict behaviour.
+        """
+        return (
+            not self._client_side
+            and stream_id % 2 == 1
+            and stream_id < Int(self._last_recv_stream_id)
+        )
+
+    def _credit_connection(mut self, size: Int):
+        """Return `size` consumed bytes to the connection receive window; batched WINDOW_UPDATE past half the window."""
+        self._recv_window_consumed += size
+        if self._recv_window_consumed > DEFAULT_CONNECTION_WINDOW // 2:
+            self._send_window_update_frame(UInt32(0), UInt32(self._recv_window_consumed))
+            self._recv_window += self._recv_window_consumed
+            self._recv_window_consumed = 0
+
+    def credit_back_connection_window(mut self, size: Int):
+        """Credit back connection window for DATA bytes no stream will consume (RFC 9113 Section 6.9).
+
+        For every non-fatal DATA path that does not deliver its bytes: a
+        refused or locally-closed stream, a closed stream, a stream-level
+        flow-control error, or an application that dropped the bytes.
+        A no-op on a closed connection.
+        """
+        if size <= 0 or self._state == CONN_CLOSED:
+            return
+        self.window_credited_back_bytes += UInt64(size)
+        self._credit_connection(size)
+
+    def _debit_undelivered(mut self, frame: Frame, mut events: List[H2Event]) -> Bool:
+        """Debit a DATA frame that will not be delivered, then credit it back; False after a connection error."""
+        var fcl = len(frame.payload)
+        if fcl > self._recv_window:
+            self._connection_error(events, H2_FLOW_CONTROL_ERROR, String("Connection recv window exceeded"))
+            return False
+        self._recv_window -= fcl
+        self.credit_back_connection_window(fcl)
+        return True
 
     def send_window_update(mut self, stream_id: UInt32, increment: UInt32) raises:
         """Manually send a WINDOW_UPDATE frame."""
@@ -1377,13 +1420,21 @@ struct H2Connection(Movable):
         if stream_id == 0:
             self._connection_error(events, H2_PROTOCOL_ERROR, String("DATA on stream 0"))
             return
+        # Every non-fatal path below that does not deliver the bytes
+        # debits and credits back the connection window (RFC 9113 Section 6.9).
         if not self._has_stream(stream_id):
-            self._connection_error(events, H2_PROTOCOL_ERROR, String("DATA on unknown stream"))
+            if not self._is_implicitly_closed(stream_id):
+                self._connection_error(events, H2_PROTOCOL_ERROR, String("DATA on idle stream"))
+                return
+            # An older id we never opened: closed (RFC 9113 Section 5.1.1).
+            if self._debit_undelivered(frame, events):
+                self._stream_error(events, stream_id, H2_STREAM_CLOSED)
             return
         try:
             var stream = self._streams[stream_id].copy()
             if stream.lifecycle != STREAM_OPEN and stream.lifecycle != STREAM_HALF_CLOSED_LOCAL:
-                self._stream_error(events, stream_id, H2_STREAM_CLOSED)
+                if self._debit_undelivered(frame, events):
+                    self._stream_error(events, stream_id, H2_STREAM_CLOSED)
                 return
             var dp = decode_data_payload(frame.copy())
             if not dp.ok():
@@ -1396,7 +1447,8 @@ struct H2Connection(Movable):
                 self._connection_error(events, H2_FLOW_CONTROL_ERROR, String("Connection recv window exceeded"))
                 return
             if fcl > stream.recv_window:
-                self._stream_error(events, stream_id, H2_FLOW_CONTROL_ERROR)
+                if self._debit_undelivered(frame, events):
+                    self._stream_error(events, stream_id, H2_FLOW_CONTROL_ERROR)
                 return
             # Decrement recv windows
             self._recv_window -= fcl
@@ -1421,7 +1473,10 @@ struct H2Connection(Movable):
             self._connection_error(events, H2_PROTOCOL_ERROR, String("RST_STREAM on stream 0"))
             return
         if not self._has_stream(stream_id):
-            self._connection_error(events, H2_PROTOCOL_ERROR, String("RST_STREAM on idle stream"))
+            if not self._is_implicitly_closed(stream_id):
+                self._connection_error(events, H2_PROTOCOL_ERROR, String("RST_STREAM on idle stream"))
+                return
+            # Closed stream we never opened: never answer RST with RST (Section 5.4.2).
             return
         var rp = decode_rst_stream_payload(frame.copy())
         if not rp.ok():
