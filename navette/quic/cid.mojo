@@ -22,6 +22,13 @@ comptime CID_ACTIVE: UInt8 = 0
 comptime CID_PENDING_RETIRE: UInt8 = 1
 comptime CID_RETIRED: UInt8 = 2
 
+# Most local CIDs we keep active at once, whatever the peer's
+# active_connection_id_limit (a varint up to 2^62-1). RFC 9000 Section 5.1.1
+# allows issuing fewer than the peer's limit; quic-go and msquic keep 4,
+# ngtcp2 8, quiche min(peer, 2). Without it one handshake drives an
+# unbounded issuance loop (getrandom + HMAC + allocation per CID).
+comptime MAX_ISSUED_CIDS = 4
+
 
 # ── CidEntry ──────────────────────────────────────────────────────────────────
 
@@ -73,9 +80,9 @@ struct CidManager(Movable):
     var remote_cids: List[CidEntry]        # peer's CIDs
     var remote_active_cid_seq: UInt64      # seq of CID we're currently using
     var local_active_limit: UInt64         # our active_connection_id_limit
-    var peer_active_limit: UInt64          # peer's active_connection_id_limit
+    var peer_active_limit: UInt64          # peer's active_connection_id_limit, unclamped
     var retire_queue: List[UInt64]         # seq numbers to RETIRE_CONNECTION_ID for
-    var retire_queue_cap: Int              # max queue depth (peer_active_limit * 8)
+    var retire_queue_cap: Int              # max queue depth (issue_limit() * 8)
     var highest_retire_prior_to: UInt64    # highest retire_prior_to from peer
     var _lib: SharedLibrary                # ref-counted RustlsLibrary for HMAC-SHA256
     var server_secret: List[Byte]         # 32-byte key for HMAC-SHA256 reset tokens
@@ -95,7 +102,8 @@ struct CidManager(Movable):
             initial_local_cid:  The CID we present as SCID in Initial packets.
             initial_remote_cid: The peer's initial CID (their SCID / our DCID).
             local_active_limit: Our active_connection_id_limit transport parameter.
-            peer_active_limit:  Peer's active_connection_id_limit transport parameter.
+            peer_active_limit:  Peer's active_connection_id_limit transport
+                parameter; issuance is clamped to MAX_ISSUED_CIDS.
         """
         self._lib = SharedLibrary(copy=lib)
 
@@ -133,10 +141,26 @@ struct CidManager(Movable):
         self.remote_active_cid_seq = UInt64(0)
 
         self.local_active_limit = local_active_limit
-        self.peer_active_limit = peer_active_limit
+        self.peer_active_limit = UInt64(0)
         self.retire_queue = List[UInt64]()
-        self.retire_queue_cap = Int(peer_active_limit * UInt64(8))
+        self.retire_queue_cap = 0
         self.highest_retire_prior_to = UInt64(0)
+        self.set_peer_active_limit(peer_active_limit)
+
+    def set_peer_active_limit(mut self, limit: UInt64):
+        """Record the peer's limit and size the retire queue from the clamped value.
+
+        `limit` is untrusted (up to 2^62-1): every derived quantity goes
+        through `issue_limit()` so no arithmetic sees the raw value.
+        """
+        self.peer_active_limit = limit
+        self.retire_queue_cap = self.issue_limit() * 8
+
+    def issue_limit(self) -> Int:
+        """Active local CIDs we keep: min(peer limit, MAX_ISSUED_CIDS)."""
+        if self.peer_active_limit < UInt64(MAX_ISSUED_CIDS):
+            return Int(self.peer_active_limit)
+        return MAX_ISSUED_CIDS
 
     # ── CID generation ────────────────────────────────────────────────────────
 
@@ -156,12 +180,12 @@ struct CidManager(Movable):
     # ── Local CID issuance ────────────────────────────────────────────────────
 
     def issue_new_cid(mut self) raises -> Optional[CidEntry]:
-        """Issue a new local CID if below peer_active_limit.
+        """Issue a new local CID if below `issue_limit()`.
 
         Returns the new CidEntry so the caller can build a NEW_CONNECTION_ID frame,
-        or None if the peer's limit has been reached.
+        or None once `issue_limit()` active CIDs exist.
         """
-        if UInt64(self.active_local_count()) >= self.peer_active_limit:
+        if self.active_local_count() >= self.issue_limit():
             return None
 
         var new_cid = self.generate_cid()
@@ -237,7 +261,7 @@ struct CidManager(Movable):
         """Handle a RETIRE_CONNECTION_ID frame from the peer.
 
         Marks the identified local CID as Retired.  Per RFC 9000 §5.1.1, if
-        the number of active local CIDs then drops below peer_active_limit, a
+        the number of active local CIDs then drops below `issue_limit()`, a
         replacement CID is issued automatically so the connection layer can
         advertise it in a NEW_CONNECTION_ID frame.
 
@@ -253,7 +277,7 @@ struct CidManager(Movable):
             raise "RETIRE_CONNECTION_ID: unknown sequence " + String(Int(sequence))
 
         # Replace the retired CID if the active count dropped below the limit.
-        if self.active_local_count() < Int(self.peer_active_limit):
+        if self.active_local_count() < self.issue_limit():
             _ = self.issue_new_cid()
 
     # ── Drain retirement queue ────────────────────────────────────────────────
@@ -286,8 +310,8 @@ struct CidManager(Movable):
         return count
 
     def needs_new_cid(self) -> Bool:
-        """True if a new local CID should be issued (count below peer_active_limit)."""
-        return UInt64(self.active_local_count()) < self.peer_active_limit
+        """True if a new local CID should be issued (count below `issue_limit()`)."""
+        return self.active_local_count() < self.issue_limit()
 
     def has_unadvertised(self) -> Bool:
         """Non-allocating: an Active local CID still owes a NEW_CONNECTION_ID."""

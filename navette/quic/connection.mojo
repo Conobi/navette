@@ -429,7 +429,7 @@ struct QuicConnection(Movable):
     # One-shot guard for the initial NEW_CONNECTION_ID burst (RFC 9000
     # §5.1.1): on the first 1-RTT _build_frames_for_space call after the
     # connection becomes CONN_ESTABLISHED, fill `cid_mgr.local_cids` up
-    # to `peer_active_limit`. Subsequent flushes drain
+    # to `cid_mgr.issue_limit()`. Subsequent flushes drain
     # `pending_new_cid_entries` normally without re-issuing.
     var initial_cids_emitted: Bool
     # Maps Application-space packet number -> list of stream-layer frames
@@ -2355,8 +2355,7 @@ struct QuicConnection(Movable):
             stream_fc_uni=peer.initial_max_stream_data_uni,
             conn_fc_send_limit=peer.initial_max_data,
         )
-        self.cid_mgr.peer_active_limit = peer.active_connection_id_limit
-        self.cid_mgr.retire_queue_cap = Int(peer.active_connection_id_limit) * 8
+        self.cid_mgr.set_peer_active_limit(peer.active_connection_id_limit)
         _ = self.cid_mgr.issue_new_cid()
 
     def _promote_to_established(mut self) raises:
@@ -2924,7 +2923,8 @@ struct QuicConnection(Movable):
         if space_idx == 2:
             # RFC 9000 §5.1.1: initial NEW_CONNECTION_ID burst. On the first
             # 1-RTT flush after CONN_ESTABLISHED, fill `local_cids` up to
-            # `peer_active_limit` so the peer has spare CIDs for migration.
+            # `cid_mgr.issue_limit()` (the peer's limit clamped to
+            # MAX_ISSUED_CIDS) so the peer has spare CIDs for migration.
             # `_build_app_frames` below drains the resulting unadvertised
             # entries into NEW_CONNECTION_ID frames in this same flight —
             # alongside HANDSHAKE_DONE on the server's very first 1-RTT
@@ -2934,7 +2934,7 @@ struct QuicConnection(Movable):
                 and not self.initial_cids_emitted
                 and (self.state & CONN_ESTABLISHED) != 0
             ):
-                var limit = Int(self.cid_mgr.peer_active_limit)
+                var limit = self.cid_mgr.issue_limit()
                 while self.cid_mgr.active_local_count() < limit:
                     var issued = self.cid_mgr.issue_new_cid()
                     if not Bool(issued):
