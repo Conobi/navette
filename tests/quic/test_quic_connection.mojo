@@ -1791,6 +1791,85 @@ def test_max_streams_linear_growth() raises:
     print("  test_max_streams_linear_growth: PASS")
 
 
+def test_reordered_ack_ranges_free_stream_credit() raises:
+    """A response acked by a two-range ACK frame must still free its stream.
+
+    The client withholds one mid-response datagram, so its ACK carries two
+    ranges; ranges are processed highest-first, so the FIN-bearing chunk is
+    acked before the chunks below it. The server must still reach DATA_RECVD
+    once the gap fills, drop the stream, and raise MAX_STREAMS(bidi).
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+    var client = QuicConnection.client(
+        tls.shared(), client_config, "localhost", params, now,
+    )
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
+    var server = QuicConnection.server(
+        tls.shared(), server_config, params,
+        Span(orig_dcid), Span(client_dcid), now,
+    )
+    now = _establish_handshake(client, server, now)
+    now = _pump(client, server, now, 3)
+    _drain_events(client)
+    _drain_events(server)
+
+    var sid = client.open_stream(True)
+    var req = _to_bytes("GET")
+    client.send_stream_data(sid, Span(req), True)
+    now = _pump(client, server, now, 3)
+    _drain_events(server)
+    var srv_read = server.recv_stream_data(sid)
+    assert_true(srv_read[1], "server did not read request FIN")
+    var limit_before = _peer_granted_bidi_limit(server)
+
+    var body = _pattern_bytes(5000, 3)
+    server.send_stream_data(sid, Span(body), True)
+    now += UInt64(10_000)
+    var resp = List[List[Byte]]()
+    var s_dg = List[List[Byte]](capacity=1)
+    for _ in range(10):
+        var n = server.send(now, s_dg)
+        if n == 0:
+            break
+        for i in range(n):
+            resp.append(s_dg[i].copy())
+    assert_true(len(resp) >= 4, "5 kB response should span >= 4 datagrams, got " + String(len(resp)))
+
+    # Deliver every datagram except the second-to-last: the client's ACK
+    # then has a high range (the FIN-bearing tail) and a low range.
+    var held = len(resp) - 2
+    for i in range(len(resp)):
+        if i != held:
+            client.recv(Span(resp[i]), now)
+    var c_dg = List[List[Byte]](capacity=1)
+    var c_n = client.send(now + UInt64(30_000), c_dg)
+    assert_true(c_n > 0, "client did not ACK the reordered response")
+    for i in range(c_n):
+        server.recv(Span(c_dg[i]), now)
+
+    # Fill the gap; the next client ACK covers the held datagram.
+    client.recv(Span(resp[held]), now)
+    now += UInt64(30_000)
+    now = _pump(client, server, now, 3)
+
+    assert_false(server.stream_map.has_stream(Int(sid)), "server leaked the acked stream")
+    assert_true(
+        _peer_granted_bidi_limit(server) == limit_before + UInt64(1),
+        "MAX_STREAMS(bidi) did not advance: " + String(_peer_granted_bidi_limit(server)),
+    )
+    _ = tls^
+    print("  test_reordered_ack_ranges_free_stream_credit: PASS")
+
+
 def _count_active_cids(conn: QuicConnection) -> Int:
     """Count local CIDs with state == CID_ACTIVE."""
     var count = 0
@@ -4836,6 +4915,7 @@ def main() raises:
     test_final_size_error_on_reset_mismatch()
     test_max_stream_data_and_max_data_cycle()
     test_max_streams_linear_growth()
+    test_reordered_ack_ranges_free_stream_credit()
     test_m3c_frames_retransmit_on_loss()
     test_anti_amp_ok_extract_parity()
     test_persistent_congestion_end_to_end()

@@ -759,6 +759,33 @@ def test_send_buf_bare_fin_acked() raises:
     print("  test_send_buf_bare_fin_acked: PASS")
 
 
+def test_send_buf_out_of_order_ack_reaches_fully_acked() raises:
+    """Regression: ACKs for later chunks arriving before earlier ones must not be dropped.
+
+    An ACK frame's ranges are processed highest-first, so the chunk carrying
+    FIN is routinely acked before the chunks below it. Each packet's stream
+    records are consumed on ACK, so a dropped range is never re-delivered:
+    the stream would never become fully acked and its MAX_STREAMS credit
+    would leak.
+    """
+    var buf = SendBuf()
+    var data = List[Byte]()
+    for i in range(30):
+        data.append(UInt8(i))
+    buf.write(Span(data), True)
+    _ = buf.make_frame(UInt64(0), 10)   # [0, 10)
+    _ = buf.make_frame(UInt64(0), 10)   # [10, 20)
+    _ = buf.make_frame(UInt64(0), 10)   # [20, 30) + FIN
+
+    buf.on_ack(UInt64(20), UInt64(10))
+    buf.on_ack(UInt64(10), UInt64(10))
+    assert_false(buf.is_fully_acked(), "ooo ack: not fully acked while [0,10) unacked")
+    buf.on_ack(UInt64(0), UInt64(10))
+    assert_equal_int(Int(buf.acked_offset), 30, "ooo ack: acked_offset spans all chunks")
+    assert_true(buf.is_fully_acked(), "ooo ack: fully acked once the gap fills")
+    print("  test_send_buf_out_of_order_ack_reaches_fully_acked: PASS")
+
+
 def test_send_buf_write_after_fin() raises:
     """After FIN is queued, additional writes must raise."""
     var sb = SendBuf()
@@ -827,5 +854,6 @@ def main() raises:
 
     test_send_buf_write_after_fin()
     test_send_buf_bare_fin_acked()
+    test_send_buf_out_of_order_ack_reaches_fully_acked()
 
     print("All test_quic_stream tests passed.")

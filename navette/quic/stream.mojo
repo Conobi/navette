@@ -459,12 +459,19 @@ struct SendBuf(Copyable, Movable):
     """Send-side data buffer for a QUIC stream.
 
     Tracks outgoing data, framing progress, and acknowledgement.
+    `acked_offset` is the contiguous acked prefix; ACKed ranges above it
+    are parked in `acked_above` (sorted, disjoint, all starting past
+    `acked_offset`) until the gap fills. They cannot be dropped: each
+    packet's stream records are consumed when its ACK is processed, so a
+    discarded range is never re-delivered and the stream would never
+    reach fully-acked.
     """
 
     var data: List[Byte]
     var offset: UInt64              # byte offset of data[0] in the stream
     var unsent_offset: UInt64       # first unsent byte (absolute)
     var acked_offset: UInt64        # contiguous ACKed bytes from stream start
+    var acked_above: List[Tuple[UInt64, UInt64]]  # [start, end) acked past a gap
     var fin: Bool
     var fin_offset: Optional[UInt64]    # set when FIN first framed
     var fin_acked: Bool
@@ -475,6 +482,7 @@ struct SendBuf(Copyable, Movable):
         self.offset = UInt64(0)
         self.unsent_offset = UInt64(0)
         self.acked_offset = UInt64(0)
+        self.acked_above = List[Tuple[UInt64, UInt64]]()
         self.fin = False
         self.fin_offset = None
         self.fin_acked = False
@@ -485,6 +493,7 @@ struct SendBuf(Copyable, Movable):
         self.offset = copy.offset
         self.unsent_offset = copy.unsent_offset
         self.acked_offset = copy.acked_offset
+        self.acked_above = copy.acked_above.copy()
         self.fin = copy.fin
         self.fin_offset = Optional[UInt64](copy=copy.fin_offset)
         self.fin_acked = copy.fin_acked
@@ -579,8 +588,10 @@ struct SendBuf(Copyable, Movable):
     def on_ack(mut self, ack_off: UInt64, ack_len: UInt64):
         """Handle acknowledgment of [ack_off, ack_off+ack_len) bytes.
 
-        If the ack range extends the contiguous acked_offset, advances the
-        read cursor past consumed bytes (O(1) instead of reallocating) and
+        A range starting past acked_offset is parked in acked_above and
+        absorbed once the gap below it is acked. If the ack range extends the
+        contiguous acked_offset, advances the read cursor past consumed
+        bytes (O(1) instead of reallocating) and
         floors unsent_offset at acked_offset so acked bytes are never
         retransmitted (guards the on_loss-then-late-ACK spurious-loss race).
         Bare-FIN ACKs (ack_len == 0) are handled by checking if all data was
@@ -595,9 +606,23 @@ struct SendBuf(Copyable, Movable):
 
         var ack_end = ack_off + ack_len
 
-        # Only process if this extends the contiguous acked region
-        if ack_off <= self.acked_offset and ack_end > self.acked_offset:
+        if ack_off > self.acked_offset:
+            self._park_acked_range(ack_off, ack_end)
+        elif ack_end > self.acked_offset:
             self.acked_offset = ack_end
+            # Absorb parked ranges the new prefix now reaches.
+            var absorbed = 0
+            for ref r in self.acked_above:
+                if r[0] > self.acked_offset:
+                    break
+                if r[1] > self.acked_offset:
+                    self.acked_offset = r[1]
+                absorbed += 1
+            if absorbed > 0:
+                var rest = List[Tuple[UInt64, UInt64]]()
+                for i in range(absorbed, len(self.acked_above)):
+                    rest.append(self.acked_above[i])
+                self.acked_above = rest^
 
             # A prior on_loss may have rewound unsent_offset below bytes this
             # ACK now covers (spurious loss / reordered ACK). Acked bytes must
@@ -621,6 +646,27 @@ struct SendBuf(Copyable, Movable):
         if self.fin_offset:
             if self.acked_offset >= self.fin_offset.value():
                 self.fin_acked = True
+
+    def _park_acked_range(mut self, start: UInt64, end: UInt64):
+        """Insert [start, end) into acked_above, merging overlapping or adjacent ranges."""
+        var new_start = start
+        var new_end = end
+        var merged = List[Tuple[UInt64, UInt64]](capacity=len(self.acked_above) + 1)
+        var placed = False
+        for ref r in self.acked_above:
+            if r[1] < new_start:
+                merged.append(r)
+            elif r[0] > new_end:
+                if not placed:
+                    merged.append((new_start, new_end))
+                    placed = True
+                merged.append(r)
+            else:
+                new_start = min(new_start, r[0])
+                new_end = max(new_end, r[1])
+        if not placed:
+            merged.append((new_start, new_end))
+        self.acked_above = merged^
 
     def on_loss(mut self, lost_off: UInt64, lost_len: UInt64):
         """Handle loss of [lost_off, lost_off+lost_len) bytes.
