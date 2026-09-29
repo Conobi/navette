@@ -21,11 +21,13 @@ and egress (DatagramSink with batched sendmmsg + ECN/GSO cmsgs).
     │  │          connection deadline, 1 ms floor, 1000 ms ceiling)
     │  ├─ a wake-up source only: flush() services deadlines by clock
     │
-    │  flush() ──── (after each step)
+    │  ingest_more() ── (after each step) step(0) again while the
+    │                   last step was a full kernel batch, within budget
+    │  flush() ──── (after ingest_more)
     │  └─ _drain_recv_stream: take datagrams from DatagramStream
     │  └─ _flush_ingress: demux pending_rx by DCID, route to
-    │                     H3HandlerServer[H] per conn, drain egress,
-    │                     reap connections that closed
+    │                     H3HandlerServer[H] per conn, then drain each
+    │                     fed conn once (rotating order), reap closed ones
     │  └─ timer pass (when the timer fired or a deadline passed):
     │                     drain only the expired slots, reap closed ones
     │  └─ _rearm_timer: re-arm to the new minimum deadline
@@ -75,7 +77,9 @@ After construction, the caller must:
   2. Call `wire_context()` (no-op kept for lifecycle compatibility).
   3. Call `start(loop)` to probe transport capabilities, create
      the BufferPool and DatagramStream, and arm the timer.
-  4. In the run loop: `loop.step(TIMER_CEILING_MS)`, then `server.flush()`.
+  4. In the run loop: `server.run_once()`, i.e. `loop.step(TIMER_CEILING_MS)`,
+     `server.ingest_more()`, then `server.flush()`. `flush()` alone after a
+     step stays correct; it only reads one kernel batch per pass.
 """
 
 from std.collections import Optional
@@ -143,6 +147,20 @@ comptime _SEND_CONTROL_CAPACITY_GSO: Int = 48
 # Pre-allocated send slots in the DatagramSink. 256 slots covers
 # 100+ connections with GSO batching (one slot per GSO group).
 comptime _SINK_CAPACITY: Int = 256
+
+
+# ── Ingest pass policy ───────────────────────────────────────────────────────
+
+
+# Default cap on recv-stream deliveries one pass may queue before `flush()`
+# processes them; `ingest_more` stops re-stepping once it is reached.
+comptime INGEST_BUDGET_DATAGRAMS: Int = 1024
+
+# A step that delivered at least this many datagrams most likely stopped at
+# the kernel's multishot retry limit (32 retries + the first recv = 33 per
+# task-work round) rather than on an empty socket, so another `step(0)` is
+# worth taking.
+comptime _RESTEP_MIN_BATCH: Int = 32
 
 
 # ── Timer policy ─────────────────────────────────────────────────────────────
@@ -457,6 +475,9 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     creation-time write and `_refresh_deadline` may change it, and the
     timer scan reads it without touching `h3`.
 
+    `dirty_pass` is the id of the last ingress pass that fed the slot; it
+    deduplicates the slot in that pass's drain list.
+
     `Copyable` is required by `List[ConnSlot[H]]` storage; aliasing
     `h3` across copies matches the prior `List[UnsafePointer[...]]`
     semantics (the underlying pointer was already trivially copied
@@ -468,6 +489,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     var generation: UInt64
     var next_deadline_us: UInt64
     var deadline_refreshed_at_us: UInt64
+    var dirty_pass: UInt64
 
     def __init__(
         out self,
@@ -482,6 +504,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.generation = generation
         self.next_deadline_us = NO_DEADLINE_US
         self.deadline_refreshed_at_us = UInt64(0)
+        self.dirty_pass = UInt64(0)
 
     def __init__(out self, *, copy: Self):
         self.h3 = copy.h3
@@ -490,6 +513,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.generation = copy.generation
         self.next_deadline_us = copy.next_deadline_us
         self.deadline_refreshed_at_us = copy.deadline_refreshed_at_us
+        self.dirty_pass = copy.dirty_pass
 
 
 # ── H3UdpServer ──────────────────────────────────────────────────────────────
@@ -622,6 +646,20 @@ struct H3UdpServer[H: StreamHandler](Movable):
     # PROFILE_ACCEPT=False at compile time).
     var profile: AcceptProfile
 
+    # Per-pass cap on queued recv-stream deliveries (see `ingest_more`).
+    var ingest_budget: Int
+
+    # Fair drain (see `_drain_dirty`): the connections the current ingress
+    # pass fed, each once, in first-datagram order. Cleared, never
+    # reallocated, so its capacity is reused across passes.
+    var _dirty_conns: List[Int]
+    # Id of the current ingress pass; a slot is in `_dirty_conns` iff its
+    # `dirty_pass` equals it. Starts at 0, the value new slots carry, and
+    # is bumped before each pass so a fresh slot is never taken as marked.
+    var _ingress_pass: UInt64
+    # Rotates the first connection `_drain_dirty` serves.
+    var _drain_rotation: Int
+
     # ── Construction ─────────────────────────────────────────────
 
     def __init__(
@@ -685,6 +723,10 @@ struct H3UdpServer[H: StreamHandler](Movable):
 
         self._codec_tables = QpackCodecTables()
         self.profile = AcceptProfile()
+        self.ingest_budget = INGEST_BUDGET_DATAGRAMS
+        self._dirty_conns = List[Int]()
+        self._ingress_pass = UInt64(0)
+        self._drain_rotation = 0
 
     def __deinit__(deinit self):
         """Free heap allocations owned by the server.
@@ -812,11 +854,69 @@ struct H3UdpServer[H: StreamHandler](Movable):
         """
         self._clock_override_us = Optional[UInt64](now_us)
 
+    def run_once(mut self, timeout_ms: Int = Int(TIMER_CEILING_MS)) raises:
+        """One run-loop pass: `step(timeout_ms)`, then `ingest_more()`, then `flush()`.
+
+        The preferred loop body; a caller that shares the loop with other
+        work can make the same three calls itself. Requires `start()`.
+        """
+        if Int(self._loop_ptr) == 0:
+            raise "H3UdpServer.run_once: start() was not called"
+        _ = self._loop_ptr[].step(timeout_ms)
+        _ = self.ingest_more()
+        self.flush()
+
+    def ingest_more(mut self) raises -> Int:
+        """Re-step the loop with `step(0)` while the last step came back full; returns the re-step count.
+
+        Call after the run loop's `step()` and before `flush()`. One step
+        hands over at most one or two kernel multishot rounds (33 deliveries
+        each), so without re-stepping a busy socket is read at a fixed 66
+        datagrams per pass and the rest overflows the receive buffer while
+        the pass is processed. A re-step is taken only while the previous
+        step delivered at least `_RESTEP_MIN_BATCH`, fewer than
+        `ingest_budget` deliveries are queued, the pool has a free buffer and
+        the stream is armed. Each step either adds `_RESTEP_MIN_BATCH` or more
+        deliveries or ends the loop, so it runs at most
+        `ingest_budget / _RESTEP_MIN_BATCH` times; the step that crosses the
+        budget is kept, so a pass can exceed it by one step's deliveries.
+
+        Re-entrancy: this runs before `flush()`, at the same point of the
+        pass as the run loop's own `step()`. Whatever the extra steps
+        dispatch (sink send completions, the timer, another user of a shared
+        loop calling `inject_response`) lands between two flushes exactly as
+        it would on the next ordinary step, so `flush()` never steps.
+        """
+        if (
+            Int(self._loop_ptr) == 0
+            or self._recv_stream is None
+            or self._recv_pool is None
+        ):
+            return 0
+        # `flush()` empties the stream, so everything queued now came from
+        # the step that opened this pass.
+        var queued = self._recv_stream.value().pending()
+        var last = queued
+        var resteps = 0
+        while (
+            last >= _RESTEP_MIN_BATCH
+            and queued < self.ingest_budget
+            and self._recv_pool.value().available() > 0
+            and self._recv_stream.value().armed()
+        ):
+            _ = self._loop_ptr[].step(0)
+            resteps += 1
+            var now_queued = self._recv_stream.value().pending()
+            last = now_queued - queued
+            queued = now_queued
+        return resteps
+
     def flush(mut self) raises:
         """Drain the recv stream, process ingress, service deadlines, submit egress.
 
-        Called by the external run loop after each step. MUST NOT call
-        loop.step() during flush (no-callback-during-flush invariant).
+        Called by the external run loop after each step (and after
+        `ingest_more`, which does all of a pass's extra stepping). MUST NOT
+        call loop.step() during flush (no-callback-during-flush invariant).
 
         Order matters: the timer pass runs before egress submission so a
         datagram owed to a deadline (delayed ACK, PTO probe, CLOSE) leaves
@@ -1419,8 +1519,9 @@ struct H3UdpServer[H: StreamHandler](Movable):
         """Process all buffered datagrams through QUIC/H3.
 
         Drains `pending_rx`, routes each packet by DCID, creates new
-        connections for Initial packets, feeds datagrams into the QUIC
-        stack, and queues egress into `_egress_backlog`. Connections
+        connections for Initial packets and feeds datagrams into the QUIC
+        stack; only then does `_drain_dirty` queue each fed connection's
+        egress into `_egress_backlog`, once per connection. Connections
         that reached CLOSED while being fed are reaped once the loop is
         over (never inside it: `pending_rx` entries resolve their slot
         through the DCID map, which swap-and-pop would invalidate).
@@ -1428,6 +1529,13 @@ struct H3UdpServer[H: StreamHandler](Movable):
         method returns.
         """
         var now = self._now()
+        # Bumped before any slot is marked, so a slot created this pass
+        # (dirty_pass 0) is never mistaken for one already listed; cleared
+        # here too so a raise that skipped `_drain_dirty` cannot leave
+        # indices that a reap has since invalidated.
+        self._ingress_pass += UInt64(1)
+        var pass_id = self._ingress_pass
+        self._dirty_conns.clear()
 
         for i in range(len(self.pending_rx)):
             var pd = self.pending_rx[i].copy()
@@ -1495,7 +1603,7 @@ struct H3UdpServer[H: StreamHandler](Movable):
                     ConnSlot[Self.H](h3_ptr, addr^, dcids^, gen)
                 )
                 # Provisional cache so no live slot ever holds the sentinel;
-                # this iteration's `_drain_and_send` replaces it.
+                # this pass's `_drain_dirty` replaces it.
                 self.conn_slots[conn_idx].next_deadline_us = now
                 self.conn_slots[conn_idx].deadline_refreshed_at_us = now
 
@@ -1571,20 +1679,49 @@ struct H3UdpServer[H: StreamHandler](Movable):
                         addr_update.append(pd.name_ptr[unsafe_offset=j])
                     self.conn_slots[conn_idx].addr = addr_update^
 
-            # Egress — drain QUIC + H3 packets and queue sendmsg submits.
-            try:
-                self._drain_and_send(conn_idx, now)
-            except e:
-                print("H3UdpServer: drain_and_send error:", e)
+            # Egress is deferred to `_drain_dirty`: list the slot once.
+            if self.conn_slots[conn_idx].dirty_pass != pass_id:
+                self.conn_slots[conn_idx].dirty_pass = pass_id
+                self._dirty_conns.append(conn_idx)
 
             # Release this segment's share of the buffer refcount.
             self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
 
         self.pending_rx.clear()
 
+        self._drain_dirty(now)
+
         # Reap connections the ingress drove to CLOSED, now that no
         # `pending_rx` entry can resolve to a moved slot.
         self._reap_closed()
+
+    def _drain_dirty(mut self, now: UInt64):
+        """Drain and send each connection this ingress pass fed, once, rotating the first one served.
+
+        Draining after every datagram let the connection whose datagrams
+        arrived first fill the egress backlog and the sink before the others
+        were drained at all, and paid one drain per datagram. Here every fed
+        connection is drained exactly once per pass, after all of its
+        datagrams, starting at a position that advances each pass so no
+        connection is always served first. A connection with more egress
+        than one drain emits stays capped and is picked up by the timer pass
+        through its cached deadline (`now` while capped). Must run before
+        `_reap_closed`: the listed indices are only valid until a
+        swap-and-pop.
+        """
+        var n = len(self._dirty_conns)
+        if n > 0:
+            var start = self._drain_rotation % n
+            self._drain_rotation = (self._drain_rotation + 1) % n
+            for k in range(n):
+                var idx = start + k
+                if idx >= n:
+                    idx -= n
+                try:
+                    self._drain_and_send(self._dirty_conns[idx], now)
+                except e:
+                    print("H3UdpServer: drain_and_send error:", e)
+        self._dirty_conns.clear()
 
     # ── Egress ───────────────────────────────────────────────────
 

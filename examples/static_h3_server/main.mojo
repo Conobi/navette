@@ -131,5 +131,4 @@ def main() raises:
     srv_ptr[].start(loop_ptr[])
 
     while True:
-        _ = loop_ptr[].step(Int(TIMER_CEILING_MS))
-        srv_ptr[].flush()
+        srv_ptr[].run_once(Int(TIMER_CEILING_MS))
