@@ -179,8 +179,24 @@ struct _IntDecodeResult(Copyable, Movable):
         self.new_offset = copy_from.new_offset
 
 
+# RFC 9204 Section 4.1.1: decoders must handle integers up to 62 bits and
+# treat larger values as a decoding error. 2^62-1 also keeps any
+# `pos + Int(value)` sum far from Int overflow in callers.
+comptime QPACK_INT_MAX: UInt64 = (UInt64(1) << 62) - 1
+# Continuation bytes cover shifts 0, 7, ..., 63; an 11th can only be an
+# overlong encoding (or a CPU-burning stream of 0x80 bytes).
+comptime _QPACK_INT_MAX_SHIFT: UInt64 = 63
+
+
 def qpack_decode_int(data: List[Byte], offset: Int, prefix_bits: UInt8) raises -> _IntDecodeResult:
-    """Decode a prefix integer per RFC 7541 §5.1."""
+    """Decode a prefix integer per RFC 7541 Section 5.1, bounded to 62 bits.
+
+    Raises on `offset` outside `data`, truncation, more than 10
+    continuation bytes, or a value above QPACK_INT_MAX, so callers may
+    convert the result to Int and add it to an in-bounds offset.
+    """
+    if offset < 0 or offset >= len(data):
+        raise "QPACK: truncated integer encoding"
     var max_first = UInt64((1 << Int(prefix_bits)) - 1)
     var first = UInt64(data[offset]) & max_first
     if first < max_first:
@@ -189,11 +205,21 @@ def qpack_decode_int(data: List[Byte], offset: Int, prefix_bits: UInt8) raises -
     var shift = UInt64(0)
     var pos = offset + 1
     while pos < len(data):
-        var b = UInt64(data[pos])
+        if shift > _QPACK_INT_MAX_SHIFT:
+            raise "QPACK: integer encoding too long"
+        var chunk = UInt64(data[pos]) & 0x7F
+        var more = (data[pos] & 0x80) != 0
         pos += 1
-        value += (b & 0x7F) << shift
+        if chunk != 0:
+            # chunk <= MAX >> shift keeps chunk << shift <= MAX; the sum of
+            # two such terms stays below 2^63, so the next check is exact.
+            if shift >= 62 or chunk > (QPACK_INT_MAX >> shift):
+                raise "QPACK: integer exceeds 62 bits"
+            value += chunk << shift
+            if value > QPACK_INT_MAX:
+                raise "QPACK: integer exceeds 62 bits"
         shift += 7
-        if (b & 0x80) == 0:
+        if not more:
             return _IntDecodeResult(value, pos)
     raise "QPACK: truncated integer encoding"
 
