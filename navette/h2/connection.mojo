@@ -806,11 +806,8 @@ struct H2Connection(Movable):
             if end_stream:
                 try:
                     var stream = self._streams[sid].copy()
-                    if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
-                        stream.lifecycle = STREAM_CLOSED
-                        self._active_stream_count -= 1
-                    else:
-                        stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
+                    var next_lc = STREAM_CLOSED if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE else STREAM_HALF_CLOSED_LOCAL
+                    self._set_lifecycle(stream, next_lc)
                     self._streams[sid] = stream^
                 except:
                     raise Error("Stream not found: " + String(sid))
@@ -888,11 +885,8 @@ struct H2Connection(Movable):
                     return
             var frame0 = Frame(0, FRAME_DATA, FLAG_END_STREAM, sid, List[Byte]())
             self._queue_frame(frame0)
-            if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
-                stream.lifecycle = STREAM_CLOSED
-                self._active_stream_count -= 1
-            else:
-                stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
+            var next_lc = STREAM_CLOSED if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE else STREAM_HALF_CLOSED_LOCAL
+            self._set_lifecycle(stream, next_lc)
             self._streams[sid] = stream^
             return
 
@@ -945,11 +939,8 @@ struct H2Connection(Movable):
             self._pending_data[sid].append(pchunk^)
 
         if end_stream and sendable >= total:
-            if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
-                stream.lifecycle = STREAM_CLOSED
-                self._active_stream_count -= 1
-            else:
-                stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
+            var next_lc = STREAM_CLOSED if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE else STREAM_HALF_CLOSED_LOCAL
+            self._set_lifecycle(stream, next_lc)
         self._streams[sid] = stream^
 
     def _drain_pending_data(mut self, hint_stream_id: Int):
@@ -1038,11 +1029,8 @@ struct H2Connection(Movable):
 
             if emit_full:
                 if data_end_stream and is_last_chunk:
-                    if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
-                        stream.lifecycle = STREAM_CLOSED
-                        self._active_stream_count -= 1
-                    else:
-                        stream.lifecycle = STREAM_HALF_CLOSED_LOCAL
+                    var next_lc = STREAM_CLOSED if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE else STREAM_HALF_CLOSED_LOCAL
+                    self._set_lifecycle(stream, next_lc)
                 idx += 1
             else:
                 var rem = List[Byte]()
@@ -1099,9 +1087,7 @@ struct H2Connection(Movable):
         if self._has_stream(sid):
             try:
                 var stream = self._streams[sid].copy()
-                if stream.lifecycle == STREAM_OPEN or stream.lifecycle == STREAM_HALF_CLOSED_LOCAL or stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
-                    self._active_stream_count -= 1
-                stream.lifecycle = STREAM_CLOSED
+                self._set_lifecycle(stream, STREAM_CLOSED)
                 self._streams[sid] = stream^
             except:
                 pass
@@ -1283,6 +1269,18 @@ struct H2Connection(Movable):
         if self._has_stream(stream_id):
             try:
                 var stream = self._streams[stream_id].copy()
+                if not self._client_side:
+                    # Only an open or half-closed (local) stream takes trailers.
+                    if stream.lifecycle == STREAM_CLOSED:
+                        # A reused id, not trailers (RFC 9113 Section 5.1.1).
+                        self._connection_error(events, H2_PROTOCOL_ERROR, String("HEADERS on closed stream"))
+                        return
+                    if stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
+                        # The peer already ended the stream (RFC 9113 Section 5.1):
+                        # reset it, then decode the block to keep HPACK in sync.
+                        self._stream_error(events, stream_id, H2_STREAM_CLOSED)
+                        self._discard_header_block(frame, events, refuse=False)
+                        return
                 if stream.data_received:
                     # Trailers — stub
                     self._handle_trailer_headers(frame, stream, events)
@@ -1301,11 +1299,8 @@ struct H2Connection(Movable):
                         return
                     var end_stream = (frame.flags & FLAG_END_STREAM) != 0
                     if end_stream:
-                        if stream.lifecycle == STREAM_HALF_CLOSED_LOCAL:
-                            stream.lifecycle = STREAM_CLOSED
-                            self._active_stream_count -= 1
-                        else:
-                            stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
+                        var next_lc = STREAM_CLOSED if stream.lifecycle == STREAM_HALF_CLOSED_LOCAL else STREAM_HALF_CLOSED_REMOTE
+                        self._set_lifecycle(stream, next_lc)
                     self._streams[stream_id] = stream^
                     events.append(H2Event.response_received(UInt32(stream_id), decoded_headers, end_stream))
                 else:
@@ -1395,11 +1390,8 @@ struct H2Connection(Movable):
                 self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_error))
                 return
             var s = StreamState(copy=stream)
-            if s.lifecycle == STREAM_HALF_CLOSED_LOCAL:
-                s.lifecycle = STREAM_CLOSED
-                self._active_stream_count -= 1
-            else:
-                s.lifecycle = STREAM_HALF_CLOSED_REMOTE
+            var next_lc = STREAM_CLOSED if s.lifecycle == STREAM_HALF_CLOSED_LOCAL else STREAM_HALF_CLOSED_REMOTE
+            self._set_lifecycle(s, next_lc)
             self._streams[stream_id] = s^
             events.append(H2Event.trailers_received(UInt32(stream_id), decoded_headers))
         else:
@@ -1417,6 +1409,21 @@ struct H2Connection(Movable):
             return self._streams[Int(stream_id)].lifecycle
         except:
             raise Error("Unknown stream: " + String(Int(stream_id)))
+
+    def _set_lifecycle(mut self, mut stream: StreamState, new_lifecycle: Int):
+        """Move `stream` to `new_lifecycle`, keeping `_active_stream_count` equal to its open and half-closed streams.
+
+        CLOSED is terminal: a late transition (an application answering a
+        stream the peer reset, a queued END_STREAM) leaves a closed stream
+        closed. Reopening it would leave it uncounted, and its next close
+        would drive the count negative, lifting MAX_CONCURRENT_STREAMS.
+        Streams are counted where they are created, not here.
+        """
+        if stream.lifecycle == STREAM_CLOSED or stream.lifecycle == new_lifecycle:
+            return
+        if new_lifecycle == STREAM_CLOSED and stream.lifecycle != STREAM_IDLE:
+            self._active_stream_count -= 1
+        stream.lifecycle = new_lifecycle
 
     def _has_stream(self, stream_id: Int) -> Bool:
         try:
@@ -1467,11 +1474,8 @@ struct H2Connection(Movable):
                     return
                 var end_stream = stream.headers_end_stream
                 if end_stream:
-                    if stream.lifecycle == STREAM_HALF_CLOSED_LOCAL:
-                        stream.lifecycle = STREAM_CLOSED
-                        self._active_stream_count -= 1
-                    else:
-                        stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
+                    var next_lc = STREAM_CLOSED if stream.lifecycle == STREAM_HALF_CLOSED_LOCAL else STREAM_HALF_CLOSED_REMOTE
+                    self._set_lifecycle(stream, next_lc)
                 stream.header_block_buffer = List[Byte]()  # clear buffer
                 if stream.data_received:
                     # Trailers
@@ -1500,12 +1504,26 @@ struct H2Connection(Movable):
         if self._has_stream(stream_id):
             try:
                 var stream = self._streams[stream_id].copy()
-                if stream.lifecycle == STREAM_OPEN or stream.lifecycle == STREAM_HALF_CLOSED_LOCAL or stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
-                    self._active_stream_count -= 1
-                stream.lifecycle = STREAM_CLOSED
+                self._set_lifecycle(stream, STREAM_CLOSED)
                 self._streams[stream_id] = stream^
             except:
                 pass
+
+    def _data_on_closed_stream(mut self, frame: Frame, mut events: List[H2Event]):
+        """DATA on a closed (or half-closed remote) stream we have not marked.
+
+        Inside the locally-closed window: debit and credit back, then reset
+        with STREAM_CLOSED, which marks the stream so later frames are
+        ignored. Server side, outside the window a mark cannot hold, so
+        every frame would earn its own RST_STREAM (an unbounded reflection);
+        the connection is closed with STREAM_CLOSED instead (RFC 9113
+        Section 5.1).
+        """
+        if not self._client_side and not self._locally_closed.in_window(UInt32(frame.stream_id)):
+            self._connection_error(events, H2_STREAM_CLOSED, String("DATA on a closed stream older than the tracking window"))
+            return
+        if self._debit_undelivered(frame, events):
+            self._stream_error(events, frame.stream_id, H2_STREAM_CLOSED)
 
     def _handle_data(mut self, frame: Frame, mut events: List[H2Event]):
         """Process inbound DATA frame."""
@@ -1524,14 +1542,12 @@ struct H2Connection(Movable):
                 self._connection_error(events, H2_PROTOCOL_ERROR, String("DATA on idle stream"))
                 return
             # An older id we never opened: closed (RFC 9113 Section 5.1.1).
-            if self._debit_undelivered(frame, events):
-                self._stream_error(events, stream_id, H2_STREAM_CLOSED)
+            self._data_on_closed_stream(frame, events)
             return
         try:
             var stream = self._streams[stream_id].copy()
             if stream.lifecycle != STREAM_OPEN and stream.lifecycle != STREAM_HALF_CLOSED_LOCAL:
-                if self._debit_undelivered(frame, events):
-                    self._stream_error(events, stream_id, H2_STREAM_CLOSED)
+                self._data_on_closed_stream(frame, events)
                 return
             var dp = decode_data_payload(frame.copy())
             if not dp.ok():
@@ -1553,11 +1569,8 @@ struct H2Connection(Movable):
             stream.data_received = True
             var end_stream = (frame.flags & FLAG_END_STREAM) != 0
             if end_stream:
-                if stream.lifecycle == STREAM_HALF_CLOSED_LOCAL:
-                    stream.lifecycle = STREAM_CLOSED
-                    self._active_stream_count -= 1
-                else:
-                    stream.lifecycle = STREAM_HALF_CLOSED_REMOTE
+                var next_lc = STREAM_CLOSED if stream.lifecycle == STREAM_HALF_CLOSED_LOCAL else STREAM_HALF_CLOSED_REMOTE
+                self._set_lifecycle(stream, next_lc)
             self._streams[stream_id] = stream^
             events.append(H2Event.data_received(UInt32(stream_id), dp.data, fcl, end_stream))
         except:
@@ -1584,9 +1597,7 @@ struct H2Connection(Movable):
             return
         try:
             var stream = self._streams[stream_id].copy()
-            if stream.lifecycle == STREAM_OPEN or stream.lifecycle == STREAM_HALF_CLOSED_LOCAL or stream.lifecycle == STREAM_HALF_CLOSED_REMOTE:
-                self._active_stream_count -= 1
-            stream.lifecycle = STREAM_CLOSED
+            self._set_lifecycle(stream, STREAM_CLOSED)
             self._streams[stream_id] = stream^
         except:
             pass
