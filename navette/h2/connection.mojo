@@ -66,6 +66,7 @@ from .payloads import (
 )
 from .hpack import HpackEncoder, HpackDecoder, HpackConfig
 from .header import Header
+from navette.protect.locally_closed import LocallyClosedSet
 
 # ---------------------------------------------------------------------------
 # SETTINGS identifiers (RFC 9113 §6.5.2)
@@ -470,6 +471,16 @@ struct H2Connection(Movable):
     var _pending_data: Dict[Int, List[PendingDataChunk]]
     # DATA bytes credited back to the connection window without reaching a stream.
     var window_credited_back_bytes: UInt64
+    # Server side: client streams we refused or reset; frames on them are
+    # ignored (RFC 9113 Section 5.1 "closed", after RST_STREAM).
+    var _locally_closed: LocallyClosedSet
+    var ignored_frames_locally_closed: UInt64
+    # A header block decoded only to keep HPACK in sync (refused stream,
+    # or trailers on a locally-closed one), assembled across CONTINUATION.
+    var _discard_block: List[Byte]
+    var _discarding: Bool
+    var _refusing: Bool
+    var refused_streams: UInt64
 
     def __init__(out self, *, client_side: Bool, config: H2Config = H2Config()):
         self._config = H2Config(copy=config)
@@ -500,6 +511,12 @@ struct H2Connection(Movable):
         self._closed_stream_count = 0
         self._pending_data = Dict[Int, List[PendingDataChunk]]()
         self.window_credited_back_bytes = UInt64(0)
+        self._locally_closed = LocallyClosedSet()
+        self.ignored_frames_locally_closed = UInt64(0)
+        self._discard_block = List[Byte]()
+        self._discarding = False
+        self._refusing = False
+        self.refused_streams = UInt64(0)
 
     def initiate_connection(mut self) raises:
         """Send connection preface. Must be called before any other operation."""
@@ -1077,6 +1094,7 @@ struct H2Connection(Movable):
         var sid = Int(stream_id)
         var frame = Frame(4, FRAME_RST_STREAM, 0, sid, payload)
         self._queue_frame(frame)
+        self._mark_locally_closed(sid)
         # Close the stream
         if self._has_stream(sid):
             try:
@@ -1153,6 +1171,57 @@ struct H2Connection(Movable):
         self.credit_back_connection_window(fcl)
         return True
 
+    def _is_locally_closed(self, stream_id: Int) -> Bool:
+        """Server side: a client stream we refused or reset, still inside the 1,024-stream window."""
+        if self._client_side or stream_id <= 0:
+            return False
+        return self._locally_closed.is_marked(UInt32(stream_id))
+
+    def _mark_locally_closed(mut self, stream_id: Int):
+        """Server side: remember a client stream we reset so its later frames are ignored, not answered."""
+        if not self._client_side and stream_id > 0:
+            self._locally_closed.mark(UInt32(stream_id))
+
+    def _queue_rst_frame(mut self, stream_id: Int, error_code: Int):
+        """RST_STREAM for a stream the application never saw; no event."""
+        var payload = List[Byte](capacity=4)
+        payload.resize(4, Byte(0))
+        _ = write_u32_be_at(payload, 0, UInt32(error_code))
+        var frame = Frame(4, FRAME_RST_STREAM, 0, stream_id, payload)
+        self._queue_frame(frame)
+        self._mark_locally_closed(stream_id)
+
+    def _finish_discarded_block(mut self, stream_id: Int, refuse: Bool):
+        """A discarded header block is fully decoded: refuse its stream, or count the ignored trailers."""
+        if refuse:
+            self.refused_streams += 1
+            self._queue_rst_frame(stream_id, H2_REFUSED_STREAM)
+        else:
+            self.ignored_frames_locally_closed += 1
+
+    def _discard_header_block(mut self, frame: Frame, mut events: List[H2Event], refuse: Bool):
+        """HPACK-decode a HEADERS block and drop it; CONTINUATION frames finish it in `_handle_continuation`.
+
+        Decoding keeps the HPACK dynamic table in step with the peer's
+        encoder, which a refusal must not desynchronise (RFC 9113 Section 4.3).
+        """
+        var hp = decode_headers_payload(frame)
+        if not hp.ok():
+            self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid HEADERS: " + hp.error))
+            return
+        if frame.flags & FLAG_END_HEADERS != 0:
+            var decode_result = self._hpack_decoder.decode(hp.headers_block)
+            if decode_result[1].byte_length() > 0:
+                self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + decode_result[1]))
+                return
+            self._finish_discarded_block(frame.stream_id, refuse)
+            return
+        self._discard_block.clear()
+        self._discard_block.extend(Span(hp.headers_block))
+        self._discarding = True
+        self._refusing = refuse
+        self._expecting_continuation_for = UInt32(frame.stream_id)
+
     def send_window_update(mut self, stream_id: UInt32, increment: UInt32) raises:
         """Manually send a WINDOW_UPDATE frame."""
         if self._state == CONN_CLOSED:
@@ -1187,6 +1256,9 @@ struct H2Connection(Movable):
             self._drain_pending_data(0)
         else:
             # Stream-level
+            if self._is_locally_closed(frame.stream_id):
+                self.ignored_frames_locally_closed += 1
+                return
             if self._has_stream(frame.stream_id):
                 try:
                     var stream = self._streams[frame.stream_id].copy()
@@ -1203,6 +1275,10 @@ struct H2Connection(Movable):
     def _handle_headers(mut self, frame: Frame, mut events: List[H2Event]):
         """Process inbound HEADERS: new stream, response, or trailers."""
         var stream_id = frame.stream_id
+        # --- Refused or reset by us: decode to keep HPACK in sync, drop ---
+        if self._is_locally_closed(stream_id):
+            self._discard_header_block(frame, events, refuse=False)
+            return
         # --- Existing stream: response headers or trailers ---
         if self._has_stream(stream_id):
             try:
@@ -1252,15 +1328,19 @@ struct H2Connection(Movable):
             if stream_id % 2 != 0:
                 self._connection_error(events, H2_PROTOCOL_ERROR, String("Odd stream ID from server"))
                 return
-        # Must be monotonically increasing
+        # Must be monotonically increasing (RFC 9113 Section 5.1.1); a lower id
+        # that we refused or reset was handled above.
         if stream_id <= Int(self._last_recv_stream_id):
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Stream ID not increasing"))
             return
-        # Max concurrent streams
-        if self._active_stream_count >= Int(self._local_settings.max_concurrent_streams):
-            self._connection_error(events, H2_PROTOCOL_ERROR, String("Exceeds MAX_CONCURRENT_STREAMS"))
-            return
         self._last_recv_stream_id = UInt32(stream_id)
+        if not self._client_side:
+            self._locally_closed.advance(UInt32(stream_id))
+        # Max concurrent streams: refuse the stream, keep the connection
+        # (RFC 9113 Section 5.1.2, Section 8.7). The block is still decoded.
+        if self._active_stream_count >= Int(self._local_settings.max_concurrent_streams):
+            self._discard_header_block(frame, events, refuse=True)
+            return
         var stream = StreamState(
             lifecycle=STREAM_OPEN,
             send_window=Int(self._remote_settings.initial_window_size),
@@ -1358,6 +1438,18 @@ struct H2Connection(Movable):
         if not cp.ok():
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid CONTINUATION"))
             return
+        if self._discarding:
+            self._discard_block.extend(Span(cp.headers_block))
+            if frame.flags & FLAG_END_HEADERS != 0:
+                self._expecting_continuation_for = UInt32(0)
+                self._discarding = False
+                var discard_result = self._hpack_decoder.decode(self._discard_block)
+                self._discard_block.clear()
+                if discard_result[1].byte_length() > 0:
+                    self._connection_error(events, H2_COMPRESSION_ERROR, String("HPACK decode error: " + discard_result[1]))
+                    return
+                self._finish_discarded_block(stream_id, self._refusing)
+            return
         # Read-modify-write for Dict value
         try:
             var stream = self._streams[stream_id].copy()
@@ -1403,6 +1495,7 @@ struct H2Connection(Movable):
         _ = write_u32_be_at(payload, 0, UInt32(error_code))
         var frame = Frame(4, FRAME_RST_STREAM, 0, stream_id, payload)
         self._queue_frame(frame)
+        self._mark_locally_closed(stream_id)
         events.append(H2Event.stream_reset(UInt32(stream_id), UInt32(error_code)))
         if self._has_stream(stream_id):
             try:
@@ -1422,6 +1515,10 @@ struct H2Connection(Movable):
             return
         # Every non-fatal path below that does not deliver the bytes
         # debits and credits back the connection window (RFC 9113 Section 6.9).
+        if self._is_locally_closed(stream_id):
+            if self._debit_undelivered(frame, events):
+                self.ignored_frames_locally_closed += 1
+            return
         if not self._has_stream(stream_id):
             if not self._is_implicitly_closed(stream_id):
                 self._connection_error(events, H2_PROTOCOL_ERROR, String("DATA on idle stream"))
@@ -1471,6 +1568,9 @@ struct H2Connection(Movable):
         var stream_id = frame.stream_id
         if stream_id == 0:
             self._connection_error(events, H2_PROTOCOL_ERROR, String("RST_STREAM on stream 0"))
+            return
+        if self._is_locally_closed(stream_id):
+            self.ignored_frames_locally_closed += 1
             return
         if not self._has_stream(stream_id):
             if not self._is_implicitly_closed(stream_id):

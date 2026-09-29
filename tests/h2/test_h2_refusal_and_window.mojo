@@ -179,7 +179,109 @@ def test_idle_and_reused_ids_stay_connection_errors() raises:
     print("PASS: test_idle_and_reused_ids_stay_connection_errors")
 
 
+def test_data_after_our_408_and_reset_is_ignored() raises:
+    var srv = _server(10)
+    var enc = HpackEncoder()
+    _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 1, enc.encode(_req("POST", "/slow"))))
+    var status = List[Header]()
+    status.append(Header(":status", "408"))
+    srv.send_headers(1, status^, end_stream=True)
+    srv.send_rst_stream(1, UInt32(H2_NO_ERROR))
+    _ = srv.data_to_send()
+    var ev = srv.receive_data(_data(1, 1000))
+    assert_equal_int(len(ev), 0, "no event")
+    var out = _frames(srv.data_to_send())
+    assert_equal_int(_count(out, FRAME_RST_STREAM, 1, H2_STREAM_CLOSED), 0, "no RST_STREAM answer")
+    assert_true(srv.ignored_frames_locally_closed == 1, "counted as ignored")
+    assert_true(srv.window_credited_back_bytes == 1000, "its bytes credited back")
+    print("PASS: test_data_after_our_408_and_reset_is_ignored")
+
+def test_data_on_closed_unmarked_stream_no_window_loss() raises:
+    """1,000 DATA frames on a normally closed stream: one STREAM_CLOSED, and every byte credited back."""
+    var srv = _server(10)
+    var enc = HpackEncoder()
+    _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS | FLAG_END_STREAM, 1, enc.encode(_req("GET", "/"))))
+    var status = List[Header]()
+    status.append(Header(":status", "200"))
+    srv.send_headers(1, status^, end_stream=True)
+    _ = srv.data_to_send()
+    var wire = List[Byte]()
+    for _ in range(1000):
+        wire.extend(Span(_data(1, 100)))
+    _ = srv.receive_data(wire)
+    assert_true(not srv.is_closed(), "connection survives 100,000 bytes on a closed stream")
+    var out = _frames(srv.data_to_send())
+    assert_equal_int(_count(out, FRAME_RST_STREAM, 1, H2_STREAM_CLOSED), 1, "one STREAM_CLOSED, then the stream is locally closed")
+    assert_equal_int(_conn_window_credit(out) + srv._recv_window_consumed, 100_000, "no connection-window loss")
+    print("PASS: test_data_on_closed_unmarked_stream_no_window_loss")
+
+
+def test_refused_stream_keeps_connection_and_hpack() raises:
+    """Refused POST (HEADERS+CONTINUATION) + DATA + trailers + RST_STREAM: connection survives, window restored, next request decodes."""
+    var srv = _server(1)
+    var enc = HpackEncoder()
+    var ev = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 1, enc.encode(_req("POST", "/a"))))
+    assert_equal_int(_requests(ev), 1, "stream 1 accepted")
+
+    var block = enc.encode(_req("POST", "/b"))
+    var half = len(block) // 2
+    var first = List[Byte](block[:half])
+    var rest = List[Byte](block[half:])
+    var wire = _frame(FRAME_HEADERS, 0, 3, first)
+    wire.extend(Span(_frame(FRAME_CONTINUATION, FLAG_END_HEADERS, 3, rest)))
+    ev = srv.receive_data(wire)
+    assert_equal_int(len(ev), 0, "refused stream raises no event")
+    assert_true(not srv.is_closed(), "stream-limit excess is not a connection error")
+    var out = _frames(srv.data_to_send())
+    assert_equal_int(_count(out, FRAME_RST_STREAM, 3, H2_REFUSED_STREAM), 1, "RST_STREAM(REFUSED_STREAM) on 3")
+    assert_true(srv.refused_streams == 1, "refusal counted")
+
+    var body = _data(3, 16000)
+    body.extend(Span(_data(3, 16000)))
+    body.extend(Span(_data(3, 16000)))
+    ev = srv.receive_data(body)
+    assert_equal_int(len(ev), 0, "DATA on the refused stream is ignored")
+    out = _frames(srv.data_to_send())
+    assert_equal_int(_conn_window_credit(out), 48000, "its bytes are credited back to the connection window")
+    assert_equal_int(_count(out, FRAME_RST_STREAM, 3, H2_STREAM_CLOSED), 0, "and not answered")
+
+    var trailers = List[Header]()
+    trailers.append(Header("x-trailer", "t1"))  # new dynamic-table entry in the client encoder
+    ev = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS | FLAG_END_STREAM, 3, enc.encode(trailers)))
+    ev.extend(srv.receive_data(_frame(FRAME_RST_STREAM, 0, 3, _u32(H2_CANCEL))))
+    assert_equal_int(len(ev), 0, "trailers and RST_STREAM on the refused stream are ignored")
+    assert_true(srv.ignored_frames_locally_closed == 5, "3 DATA + trailers + RST_STREAM ignored")
+
+    _ = srv.receive_data(_data(1, 0, end_stream=True))
+    var status = List[Header]()
+    status.append(Header(":status", "200"))
+    srv.send_headers(1, status^, end_stream=True)
+    _ = srv.data_to_send()
+    var next_req = _req("GET", "/c")
+    next_req.append(Header("x-trailer", "t1"))  # the encoder now emits an indexed reference
+    ev = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS | FLAG_END_STREAM, 5, enc.encode(next_req)))
+    assert_equal_int(_requests(ev), 1, "stream 5 accepted")
+    var found = False
+    for ref h in ev[0].headers:
+        if h.name == "x-trailer" and h.value == "t1":
+            found = True
+    assert_true(found, "HPACK stayed in sync through the discarded blocks")
+    print("PASS: test_refused_stream_keeps_connection_and_hpack")
+
+def test_refused_block_with_bad_hpack_is_compression_error() raises:
+    var srv = _server(0)
+    var garbage = List[Byte](length=4, fill=Byte(0xFF))  # indexed field with an out-of-range index
+    _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 1, garbage))
+    assert_true(srv.is_closed(), "undecodable block closes the connection")
+    assert_equal_int(_count(_frames(srv.data_to_send()), FRAME_GOAWAY, 0, H2_COMPRESSION_ERROR), 1, "COMPRESSION_ERROR, even when refused")
+    print("PASS: test_refused_block_with_bad_hpack_is_compression_error")
+
+
 def main() raises:
     test_stream_flow_control_error_credits_connection()
     test_never_opened_lower_ids_are_closed()
     test_idle_and_reused_ids_stay_connection_errors()
+    test_data_after_our_408_and_reset_is_ignored()
+    test_data_on_closed_unmarked_stream_no_window_loss()
+    test_refused_stream_keeps_connection_and_hpack()
+    test_refused_block_with_bad_hpack_is_compression_error()
