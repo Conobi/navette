@@ -2,7 +2,7 @@
 # Build navette bench server binaries locally (no Docker).
 #
 # Usage:
-#   build-local.sh [h1|h2|h2s|h3|h3s|launcher|all]  (default: h3)
+#   build-local.sh [h1|h2|h2s|h3|h3s|h3lib|launcher|all]  (default: h3)
 #
 # Environment:
 #   MARCH  — target microarch (default: x86-64-v3+pclmul+aes)
@@ -62,6 +62,9 @@ case "$TARGET" in
     h3s)
         build_server "$REPO_ROOT/bench/servers/h3_streaming_server.mojo" "$BUILD_DIR/h3_streaming_server" "h3_streaming_server" "$JSONETTE_DIR"
         ;;
+    h3lib)
+        build_server "$REPO_ROOT/examples/static_h3_server/main.mojo" "$BUILD_DIR/static_h3_server" "static_h3_server"
+        ;;
     launcher)
         build_server "$REPO_ROOT/bench/launcher.mojo" "$BUILD_DIR/launcher" "launcher"
         ;;
@@ -74,7 +77,7 @@ case "$TARGET" in
         build_server "$REPO_ROOT/bench/launcher.mojo" "$BUILD_DIR/launcher" "launcher"
         ;;
     *)
-        echo "unknown target: $TARGET (expected h1|h2|h2s|h3|h3s|launcher|all)" >&2
+        echo "unknown target: $TARGET (expected h1|h2|h2s|h3|h3s|h3lib|launcher|all)" >&2
         exit 2
         ;;
 esac

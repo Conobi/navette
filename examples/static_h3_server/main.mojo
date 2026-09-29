@@ -13,6 +13,8 @@ Binds `[::]:8443` by default.  Override with env vars:
   STATIC_BODY_SIZE  — response body in bytes (default 1024)
   STATIC_CERT       — PEM certificate path (default certs/server.crt)
   STATIC_KEY        — PEM private key path (default certs/server.key)
+  STATIC_MAX_STREAMS — initial_max_streams_bidi transport parameter
+                       (default: library default)
 """
 
 from std.collections import Span
@@ -68,6 +70,7 @@ struct StaticHandler(StreamHandler):
     ) raises:
         var hdrs = Headers()
         hdrs.set(String("content-type"), String("application/octet-stream"))
+        hdrs.set(String("content-length"), String(len(self.payload)))
         resp.send_status(StatusCode(200), hdrs^)
         var data = List[Byte](copy=self.payload)
         _ = resp.try_send_body(BodyFrame.data(data^))
@@ -118,6 +121,10 @@ def main() raises:
 
     var tp = default_transport_params()
     tp.max_idle_timeout = UInt64(30_000)
+    var max_streams = getenv("STATIC_MAX_STREAMS")
+    if max_streams:
+        tp.initial_max_streams_bidi = UInt64(atol(max_streams))
+    print("  max_streams_bidi: " + String(tp.initial_max_streams_bidi))
 
     var server = H3UdpServer[StaticHandler](
         sock^, TlsBackend(copy=tls), config^, tp^, make_handler,

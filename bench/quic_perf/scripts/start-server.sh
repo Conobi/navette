@@ -25,11 +25,15 @@ LSQUIC_IMAGE="${LSQUIC_IMAGE:-lsquic-bench:latest}"
 
 case "$SERVER" in
     navette)
-        # Resolve the Mojo runtime lib directory via uv.
-        MOJO_LIB_DIR="$(cd "$REPO_ROOT" && uv run python -c \
-            "import importlib.util; spec = importlib.util.find_spec('modular'); print(spec.submodule_search_locations[0] + '/lib')" 2>/dev/null)"
+        # Resolve the Mojo runtime lib directory.
+        if [[ -n "${MOJO_LIB_DIR_OVERRIDE:-}" && -d "$MOJO_LIB_DIR_OVERRIDE" ]]; then
+            MOJO_LIB_DIR="$MOJO_LIB_DIR_OVERRIDE"
+        else
+            MOJO_LIB_DIR="$(cd "$REPO_ROOT" && uv run python -c \
+                "import importlib.util; spec = importlib.util.find_spec('modular'); print(spec.submodule_search_locations[0] + '/lib')" 2>/dev/null)"
+        fi
         if [[ -z "$MOJO_LIB_DIR" || ! -d "$MOJO_LIB_DIR" ]]; then
-            echo "[start-server] ERROR: Mojo runtime lib dir not found — run 'uv sync' first" >&2
+            echo "[start-server] ERROR: Mojo runtime lib dir not found — run 'uv sync' or set MOJO_LIB_DIR_OVERRIDE" >&2
             exit 1
         fi
 
@@ -57,6 +61,10 @@ case "$SERVER" in
             --ulimit nofile=65536:65536 \
             --cpuset-cpus=0 \
             "${WAIT_NR_ARG[@]}" \
+            -e "STATIC_CERT=/certs/server.crt" \
+            -e "STATIC_KEY=/certs/server.key" \
+            -e "STATIC_BODY_SIZE=${STATIC_BODY_SIZE:-1024}" \
+            -e "STATIC_MAX_STREAMS=${STATIC_MAX_STREAMS:-}" \
             -v "$BENCH_BIN:/usr/local/bin/h3_server:ro" \
             -v "$REPO_ROOT/lib/librustls_mojo.so:/usr/local/lib/librustls_mojo.so:ro" \
             -v "$REPO_ROOT/lib/librustls_mojo.so:/app/lib/librustls_mojo.so:ro" \

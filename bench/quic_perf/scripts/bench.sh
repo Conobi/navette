@@ -50,6 +50,10 @@ esac
 
 "$HERE/scripts/gen-payloads.sh" >/dev/null
 
+# Body size for navette's static_h3_server; matches the payload file TQUIC serves.
+STATIC_BODY_SIZE=$(stat -c %s "$HERE/payloads/$PAYLOAD.bin")
+export STATIC_BODY_SIZE
+
 # Capture host facts once per invocation.
 KERNEL=$(uname -sr)
 CPU_MODEL=$(awk -F: '/^model name/ {print $2; exit}' /proc/cpuinfo | sed 's/^ //')
@@ -128,6 +132,13 @@ print(f"[bench] wrote {out_path}")
 PYEOF
 
     "$HERE/scripts/stop-server.sh" >/dev/null
+
+    # Inter-iteration cooldown: back-to-back iterations decline
+    # monotonically due to kernel/Docker cleanup lag.
+    if [[ "$iter" -lt "$ITERS" ]]; then
+        echo "[bench] cooldown 30s..."
+        sleep 30
+    fi
 done
 
 echo "[bench] done: $ITERS iteration(s)"

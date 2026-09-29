@@ -282,3 +282,6 @@ if [[ -f "$OUT/icache-flamegraph.svg" ]]; then
 fi
 echo "Folded stacks:    $OUT/perf-cpu-folded.txt"
 echo "Re-analyze:       perf-diag.sh --analyze-only $OUT"
+
+# ---- Cleanup raw perf data (derived artifacts are kept) ----
+rm -f "$OUT"/perf-*.data
