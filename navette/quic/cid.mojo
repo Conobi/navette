@@ -13,6 +13,7 @@ from std.collections import Span
 from std.memory.alloc import unsafe_alloc as _cid_alloc
 
 from navette.tls.lib import SharedLibrary
+from navette.util.siphash import SipKey, siphash13
 
 
 # ── CID state constants ────────────────────────────────────────────────────────
@@ -391,3 +392,21 @@ def dcid_to_u64(bytes: Span[Byte, _]) -> UInt64:
     for i in range(8):
         result = (result << 8) | UInt64(bytes[i])
     return result
+
+
+def demux_key(dcid: Span[Byte, _], key: SipKey) -> UInt64:
+    """Server demux key of a DCID; the function is fixed by the DCID length, so a lookup is one probe.
+
+    8 bytes (every server SCID, and 8-byte client Initial DCIDs) pack raw
+    via `dcid_to_u64`, so `caps.conn_id` stays the SCID as a u64. Any
+    other length is SipHash-1-3 of the whole DCID under the server's
+    secret `key`: two long DCIDs sharing a prefix no longer collide, and
+    a client cannot aim one at another connection's raw key without
+    knowing `key`. Lengths 0-7 hash too, but only as lookups that miss:
+    the server drops an Initial whose DCID is under 8 bytes (RFC 9000
+    Section 7.2) before it can create a connection, so no slot is ever
+    keyed by one.
+    """
+    if len(dcid) == 8:
+        return dcid_to_u64(dcid)
+    return siphash13(key, dcid)
