@@ -367,6 +367,8 @@ def _client_magic() -> List[Byte]:
 # StreamState
 # ---------------------------------------------------------------------------
 struct StreamState(Copyable, Movable):
+    """Per-stream state, retained after close. `reset_sent` stops a closed stream earning a second RST_STREAM."""
+
     var lifecycle: Int
     var send_window: Int
     var recv_window: Int
@@ -375,6 +377,7 @@ struct StreamState(Copyable, Movable):
     var header_block_buffer: List[Byte]
     var headers_end_stream: Bool
     var data_received: Bool
+    var reset_sent: Bool
 
     def __init__(out self, *, lifecycle: Int = STREAM_IDLE, send_window: Int = DEFAULT_INITIAL_WINDOW_SIZE, recv_window: Int = DEFAULT_INITIAL_WINDOW_SIZE):
         self.lifecycle = lifecycle
@@ -385,6 +388,7 @@ struct StreamState(Copyable, Movable):
         self.header_block_buffer = List[Byte]()
         self.headers_end_stream = False
         self.data_received = False
+        self.reset_sent = False
 
     def __init__(out self, *, copy: Self):
         self.lifecycle = copy.lifecycle
@@ -395,6 +399,7 @@ struct StreamState(Copyable, Movable):
         self.header_block_buffer = copy.header_block_buffer.copy()
         self.headers_end_stream = copy.headers_end_stream
         self.data_received = copy.data_received
+        self.reset_sent = copy.reset_sent
 
 
 # ---------------------------------------------------------------------------
@@ -685,6 +690,11 @@ struct H2Connection(Movable):
                 self._handle_rst_stream(frame, events)
             elif frame.frame_type == FRAME_PRIORITY:
                 pass  # Accept and ignore (RFC 9113 §5.3.2)
+            elif frame.frame_type == FRAME_PUSH_PROMISE:
+                # RFC 9113 Section 8.4: a client cannot push, and our client
+                # sends SETTINGS_ENABLE_PUSH=0. Fail before its header block
+                # can be skipped and desynchronise HPACK.
+                self._connection_error(events, H2_PROTOCOL_ERROR, String("PUSH_PROMISE received with push disabled"))
             pos += consumed
             if self._state == CONN_CLOSED:
                 break
@@ -1088,6 +1098,7 @@ struct H2Connection(Movable):
             try:
                 var stream = self._streams[sid].copy()
                 self._set_lifecycle(stream, STREAM_CLOSED)
+                stream.reset_sent = True
                 self._streams[sid] = stream^
             except:
                 pass
@@ -1227,7 +1238,14 @@ struct H2Connection(Movable):
         self._queue_frame(wu_frame)
 
     def _handle_window_update(mut self, frame: Frame, mut events: List[H2Event]):
-        """Process inbound WINDOW_UPDATE on stream 0 or a specific stream."""
+        """Process inbound WINDOW_UPDATE on stream 0 or a specific stream.
+
+        Stream-level: overflow past 2^31-1 on an open or half-closed stream
+        is a stream FLOW_CONTROL_ERROR (RFC 9113 Section 6.9.1); an idle
+        stream id is a connection PROTOCOL_ERROR (Section 5.1); a
+        never-opened lower id is closed and ignores it; a retained closed
+        stream goes to `_window_update_on_closed_stream`.
+        """
         var wp = decode_window_update_payload(frame)
         if not wp.ok():
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid WINDOW_UPDATE"))
@@ -1245,18 +1263,39 @@ struct H2Connection(Movable):
             if self._is_locally_closed(frame.stream_id):
                 self.ignored_frames_locally_closed += 1
                 return
-            if self._has_stream(frame.stream_id):
-                try:
-                    var stream = self._streams[frame.stream_id].copy()
-                    if stream.send_window + wp.window_increment > 2147483647:
-                        events.append(H2Event.stream_reset(UInt32(frame.stream_id), UInt32(H2_FLOW_CONTROL_ERROR)))
-                        return
-                    stream.send_window += wp.window_increment
-                    self._streams[frame.stream_id] = stream^
-                    events.append(H2Event.window_updated(UInt32(frame.stream_id), UInt32(wp.window_increment)))
-                    self._drain_pending_data(Int(frame.stream_id))
-                except:
-                    pass
+            if not self._has_stream(frame.stream_id):
+                if not self._is_implicitly_closed(frame.stream_id):
+                    self._connection_error(events, H2_PROTOCOL_ERROR, String("WINDOW_UPDATE on idle stream"))
+                # Closed stream we never opened: WINDOW_UPDATE is allowed there (Section 5.1).
+                return
+            try:
+                var stream = self._streams[frame.stream_id].copy()
+                if stream.lifecycle == STREAM_CLOSED:
+                    self._window_update_on_closed_stream(frame, events)
+                    return
+                if stream.send_window + wp.window_increment > 2147483647:
+                    # RFC 9113 Section 6.9.1: a stream error; RST_STREAM, close, mark.
+                    self._stream_error(events, frame.stream_id, H2_FLOW_CONTROL_ERROR)
+                    return
+                stream.send_window += wp.window_increment
+                self._streams[frame.stream_id] = stream^
+                events.append(H2Event.window_updated(UInt32(frame.stream_id), UInt32(wp.window_increment)))
+                self._drain_pending_data(Int(frame.stream_id))
+            except:
+                pass
+
+    def _window_update_on_closed_stream(mut self, frame: Frame, mut events: List[H2Event]):
+        """WINDOW_UPDATE, overflowing or not, on a retained closed stream: never a stream error.
+
+        A closed stream has nothing left to send, and resetting it cannot
+        stick where no mark holds, so a stream error here would answer
+        every frame with its own RST_STREAM. Recently closed, it is
+        ignored (RFC 9113 Section 5.1). Server side, older than the
+        1,024-stream locally-closed window, it closes the connection with
+        STREAM_CLOSED, the same rule as `_data_on_closed_stream`.
+        """
+        if not self._client_side and not self._locally_closed.in_window(UInt32(frame.stream_id)):
+            self._connection_error(events, H2_STREAM_CLOSED, String("WINDOW_UPDATE on a closed stream older than the tracking window"))
 
     def _handle_headers(mut self, frame: Frame, mut events: List[H2Event]):
         """Process inbound HEADERS: new stream, response, or trailers."""
@@ -1493,7 +1532,21 @@ struct H2Connection(Movable):
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Stream not found for CONTINUATION"))
 
     def _stream_error(mut self, mut events: List[H2Event], stream_id: Int, error_code: Int):
-        """Send RST_STREAM and emit StreamReset event for a single stream."""
+        """Send RST_STREAM and emit StreamReset event for a single stream.
+
+        A no-op on a retained stream we already reset: frames the peer
+        sent before seeing our RST_STREAM are ignored (RFC 9113 Section
+        5.1), so a stream earns at most one RST_STREAM even where the
+        locally-closed mark cannot hold (client side, or an id older
+        than the window).
+        """
+        var retained = self._has_stream(stream_id)
+        if retained:
+            try:
+                if self._streams[stream_id].reset_sent:
+                    return
+            except:
+                pass
         var payload = List[Byte](capacity=4)
         payload.resize(4, Byte(0))
         _ = write_u32_be_at(payload, 0, UInt32(error_code))
@@ -1501,10 +1554,11 @@ struct H2Connection(Movable):
         self._queue_frame(frame)
         self._mark_locally_closed(stream_id)
         events.append(H2Event.stream_reset(UInt32(stream_id), UInt32(error_code)))
-        if self._has_stream(stream_id):
+        if retained:
             try:
                 var stream = self._streams[stream_id].copy()
                 self._set_lifecycle(stream, STREAM_CLOSED)
+                stream.reset_sent = True
                 self._streams[stream_id] = stream^
             except:
                 pass
@@ -1513,11 +1567,13 @@ struct H2Connection(Movable):
         """DATA on a closed (or half-closed remote) stream we have not marked.
 
         Inside the locally-closed window: debit and credit back, then reset
-        with STREAM_CLOSED, which marks the stream so later frames are
-        ignored. Server side, outside the window a mark cannot hold, so
+        with STREAM_CLOSED once (`_stream_error` marks the stream and sets
+        `reset_sent`), so later frames are ignored. Server side, outside the window a mark cannot hold, so
         every frame would earn its own RST_STREAM (an unbounded reflection);
         the connection is closed with STREAM_CLOSED instead (RFC 9113
-        Section 5.1).
+        Section 5.1). This includes a long-lived half-closed (remote) stream
+        whose id has fallen more than 1,024 streams behind: its stream
+        error is escalated to a connection error, which Section 5.4.1 allows.
         """
         if not self._client_side and not self._locally_closed.in_window(UInt32(frame.stream_id)):
             self._connection_error(events, H2_STREAM_CLOSED, String("DATA on a closed stream older than the tracking window"))

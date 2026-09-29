@@ -25,6 +25,7 @@ from navette.h2.frame import (
     FRAME_GOAWAY,
     FRAME_WINDOW_UPDATE,
     FRAME_CONTINUATION,
+    FRAME_PUSH_PROMISE,
     FLAG_END_STREAM,
     FLAG_END_HEADERS,
     FLAG_PADDED,
@@ -122,6 +123,11 @@ def _conn_window_credit(frames: List[Frame]) -> Int:
     return total
 
 
+def _assert_window_conserved(srv: H2Connection, msg: String) raises:
+    """Every received byte is either still debited or queued for credit: window + pending credit == initial."""
+    assert_equal_int(srv._recv_window + srv._recv_window_consumed, 65535, "connection window conserved: " + msg)
+
+
 def _requests(events: List[H2Event]) -> Int:
     var n = 0
     for ref e in events:
@@ -142,6 +148,7 @@ def test_stream_flow_control_error_credits_connection() raises:
     var out = _frames(srv.data_to_send())
     assert_equal_int(_count(out, FRAME_RST_STREAM, 1, H2_FLOW_CONTROL_ERROR), 1, "stream-level FLOW_CONTROL_ERROR")
     assert_true(srv.window_credited_back_bytes == 1500, "the connection window gets the 1,500 bytes back")
+    _assert_window_conserved(srv, "stream FLOW_CONTROL_ERROR")
     print("PASS: test_stream_flow_control_error_credits_connection")
 
 def test_never_opened_lower_ids_are_closed() raises:
@@ -199,6 +206,7 @@ def test_data_after_our_408_and_reset_is_ignored() raises:
     assert_equal_int(_count(out, FRAME_RST_STREAM, 1, H2_STREAM_CLOSED), 0, "no RST_STREAM answer")
     assert_true(srv.ignored_frames_locally_closed == 1, "counted as ignored")
     assert_true(srv.window_credited_back_bytes == 1000, "its bytes credited back")
+    _assert_window_conserved(srv, "DATA after our reset")
     print("PASS: test_data_after_our_408_and_reset_is_ignored")
 
 def test_data_on_closed_unmarked_stream_no_window_loss() raises:
@@ -218,6 +226,7 @@ def test_data_on_closed_unmarked_stream_no_window_loss() raises:
     var out = _frames(srv.data_to_send())
     assert_equal_int(_count(out, FRAME_RST_STREAM, 1, H2_STREAM_CLOSED), 1, "one STREAM_CLOSED, then the stream is locally closed")
     assert_equal_int(_conn_window_credit(out) + srv._recv_window_consumed, 100_000, "no connection-window loss")
+    _assert_window_conserved(srv, "DATA on a closed stream")
     print("PASS: test_data_on_closed_unmarked_stream_no_window_loss")
 
 
@@ -249,6 +258,7 @@ def test_refused_stream_keeps_connection_and_hpack() raises:
     out = _frames(srv.data_to_send())
     assert_equal_int(_conn_window_credit(out), 48000, "its bytes are credited back to the connection window")
     assert_equal_int(_count(out, FRAME_RST_STREAM, 3, H2_STREAM_CLOSED), 0, "and not answered")
+    _assert_window_conserved(srv, "DATA on a refused stream")
 
     var trailers = List[Header]()
     trailers.append(Header("x-trailer", "t1"))  # new dynamic-table entry in the client encoder
@@ -348,14 +358,14 @@ def test_app_response_after_peer_reset_keeps_count() raises:
 
 
 def test_stream_count_matches_open_streams_property() raises:
-    """Random HEADERS / DATA / RST_STREAM on fresh and reused ids, both directions: the count equals the open streams."""
+    """Random HEADERS / DATA / RST_STREAM / WINDOW_UPDATE on fresh and reused ids, both directions: the count equals the open streams."""
     for seed in range(40):
         var rng = Rng(UInt64(seed) * 7919 + 1)
         var srv = _server(3)
         var enc = HpackEncoder()
         var next_id = 1
         for step in range(250):
-            var op = rng.below(7)
+            var op = rng.below(8)
             var sid = next_id if next_id > 1 and op != 0 else 1
             if next_id > 1:
                 sid = 2 * rng.below(next_id // 2) + 1
@@ -374,6 +384,9 @@ def test_stream_count_matches_open_streams_property() raises:
                     srv.send_headers(UInt32(sid), _status("200"), end_stream=rng.chance(60))
                 elif op == 5:
                     srv.send_rst_stream(UInt32(sid), UInt32(H2_NO_ERROR))
+                elif op == 6:
+                    var inc = 0x7FFFFFFF if rng.chance(50) else 1 + rng.below(1000)
+                    _ = srv.receive_data(_frame(FRAME_WINDOW_UPDATE, 0, sid, _u32(inc)))
                 else:
                     srv.send_data(UInt32(sid), List[Byte](), end_stream=True)
             except:
@@ -480,6 +493,166 @@ def test_bad_padding_on_ignored_data_is_protocol_error() raises:
     print("PASS: test_bad_padding_on_ignored_data_is_protocol_error")
 
 
+def test_stream_window_update_overflow_resets_stream() raises:
+    """A stream WINDOW_UPDATE past 2^31-1 is a stream FLOW_CONTROL_ERROR (RFC 9113 Section 6.9.1): RST sent, slot freed, stream marked."""
+    var srv = _server(10)
+    var enc = HpackEncoder()
+    _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 1, enc.encode(_req("POST", "/"))))
+    _ = srv.data_to_send()
+    _ = srv.receive_data(_frame(FRAME_WINDOW_UPDATE, 0, 1, _u32(0x7FFFFFFF)))
+    assert_true(not srv.is_closed(), "a stream error, not a connection error")
+    var out = _frames(srv.data_to_send())
+    assert_equal_int(_count(out, FRAME_RST_STREAM, 1, H2_FLOW_CONTROL_ERROR), 1, "RST_STREAM(FLOW_CONTROL_ERROR)")
+    assert_equal_int(srv.open_stream_count(), 0, "slot released")
+    var ev = srv.receive_data(_data(1, 500))
+    assert_equal_int(len(ev), 0, "later DATA is not delivered")
+    assert_true(srv.ignored_frames_locally_closed == 1, "the stream is locally closed")
+    assert_true(srv.window_credited_back_bytes == 500, "its bytes are credited back")
+    _assert_window_conserved(srv, "DATA after the overflow reset")
+    print("PASS: test_stream_window_update_overflow_resets_stream")
+
+
+def test_undelivered_burst_past_connection_window_is_flow_control_error() raises:
+    """DATA on a refused stream larger than the remaining connection window: GOAWAY(FLOW_CONTROL_ERROR), even though it is ignored."""
+    var srv = _server(1, initial_window=100_000)
+    var enc = HpackEncoder()
+    _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 1, enc.encode(_req("POST", "/"))))
+    var body = List[Byte]()
+    for _ in range(4):
+        body.extend(Span(_data(1, 15000)))
+    _ = srv.receive_data(body)  # delivered, not yet consumed: 5,535 bytes of connection window left
+    assert_true(not srv.is_closed(), "60,000 bytes fit the connection window")
+    _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 3, enc.encode(_req("POST", "/b"))))
+    assert_equal_int(_count(_frames(srv.data_to_send()), FRAME_RST_STREAM, 3, H2_REFUSED_STREAM), 1, "stream 3 refused")
+    _ = srv.receive_data(_data(3, 10000))
+    assert_true(srv.is_closed(), "an ignored burst still counts against the connection window")
+    assert_equal_int(_count(_frames(srv.data_to_send()), FRAME_GOAWAY, 0, H2_FLOW_CONTROL_ERROR), 1, "GOAWAY FLOW_CONTROL_ERROR")
+    print("PASS: test_undelivered_burst_past_connection_window_is_flow_control_error")
+
+
+def test_window_update_on_idle_stream_is_protocol_error() raises:
+    """WINDOW_UPDATE on an idle id (odd above the last, or an even id we never pushed) is a connection PROTOCOL_ERROR (RFC 9113 Section 5.1)."""
+    var srv = _server(10)
+    var enc = HpackEncoder()
+    _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 5, enc.encode(_req("POST", "/"))))
+    _ = srv.data_to_send()
+    _ = srv.receive_data(_frame(FRAME_WINDOW_UPDATE, 0, 3, _u32(100)))
+    assert_true(not srv.is_closed(), "a skipped lower id is closed, not idle: ignored")
+    _ = srv.receive_data(_frame(FRAME_WINDOW_UPDATE, 0, 5, _u32(100)))
+    assert_true(not srv.is_closed(), "an open stream takes WINDOW_UPDATE")
+    _ = srv.receive_data(_frame(FRAME_WINDOW_UPDATE, 0, 99, _u32(100)))
+    assert_true(srv.is_closed(), "odd id above the last is idle")
+    assert_equal_int(_count(_frames(srv.data_to_send()), FRAME_GOAWAY, 0, H2_PROTOCOL_ERROR), 1, "GOAWAY PROTOCOL_ERROR")
+    var srv2 = _server(10)
+    var enc2 = HpackEncoder()
+    _ = srv2.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 5, enc2.encode(_req("POST", "/"))))
+    _ = srv2.data_to_send()
+    _ = srv2.receive_data(_frame(FRAME_WINDOW_UPDATE, 0, 2, _u32(100)))
+    assert_true(srv2.is_closed(), "an even id is ours and never pushed: idle")
+    assert_equal_int(_count(_frames(srv2.data_to_send()), FRAME_GOAWAY, 0, H2_PROTOCOL_ERROR), 1, "GOAWAY PROTOCOL_ERROR")
+    print("PASS: test_window_update_on_idle_stream_is_protocol_error")
+
+
+def _push_promise(sid: Int, promised: Int, block: List[Byte]) -> List[Byte]:
+    var payload = _u32(promised)
+    payload.extend(Span(block))
+    return _frame(FRAME_PUSH_PROMISE, FLAG_END_HEADERS, sid, payload)
+
+
+def test_push_promise_is_protocol_error() raises:
+    """PUSH_PROMISE to a server, or to our client (which sends ENABLE_PUSH=0): connection PROTOCOL_ERROR (RFC 9113 Section 8.4)."""
+    var srv = _server(10)
+    var enc = HpackEncoder()
+    _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 1, enc.encode(_req("POST", "/"))))
+    _ = srv.data_to_send()
+    _ = srv.receive_data(_push_promise(1, 2, enc.encode(_req("GET", "/pushed"))))
+    assert_true(srv.is_closed(), "a client cannot push")
+    assert_equal_int(_count(_frames(srv.data_to_send()), FRAME_GOAWAY, 0, H2_PROTOCOL_ERROR), 1, "server: GOAWAY PROTOCOL_ERROR")
+
+    var cli = H2Connection(client_side=True)
+    cli.initiate_connection()
+    _ = cli.receive_data(_frame(FRAME_SETTINGS, 0, 0, List[Byte]()))
+    var sid = cli.next_stream_id()
+    cli.send_headers(sid, _req("GET", "/"), end_stream=True)
+    _ = cli.data_to_send()
+    var server_enc = HpackEncoder()
+    _ = cli.receive_data(_push_promise(Int(sid), 2, server_enc.encode(_req("GET", "/pushed"))))
+    assert_true(cli.is_closed(), "push is disabled on our client")
+    assert_equal_int(_count(_frames(cli.data_to_send()), FRAME_GOAWAY, 0, H2_PROTOCOL_ERROR), 1, "client: GOAWAY PROTOCOL_ERROR")
+    print("PASS: test_push_promise_is_protocol_error")
+
+
+def _closed_stream_1(mut srv: H2Connection, mut enc: HpackEncoder, next_sid: Int) raises:
+    """Stream 1 served and closed normally (never reset), then stream `next_sid` opened."""
+    _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS | FLAG_END_STREAM, 1, enc.encode(_req("GET", "/"))))
+    srv.send_headers(1, _status("200"), end_stream=True)
+    _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS | FLAG_END_STREAM, next_sid, enc.encode(_req("GET", "/"))))
+    _ = srv.data_to_send()
+
+
+def test_window_update_overflow_on_closed_stream_older_than_window() raises:
+    """Overflowing WINDOW_UPDATEs on a closed stream older than the 1,024-stream window close the connection once; no RST_STREAM per frame."""
+    var srv = _server(10)
+    var enc = HpackEncoder()
+    _closed_stream_1(srv, enc, 4099)
+    var wire = List[Byte]()
+    for _ in range(100):
+        wire.extend(Span(_frame(FRAME_WINDOW_UPDATE, 0, 1, _u32(0x7FFFFFFF))))
+    _ = srv.receive_data(wire)
+    assert_true(srv.is_closed(), "a closed stream outside the window is a connection error")
+    var out = _frames(srv.data_to_send())
+    assert_equal_int(_count(out, FRAME_RST_STREAM, 1, H2_FLOW_CONTROL_ERROR), 0, "no RST_STREAM flood")
+    assert_equal_int(_count(out, FRAME_GOAWAY, 0, H2_STREAM_CLOSED), 1, "one GOAWAY(STREAM_CLOSED)")
+    print("PASS: test_window_update_overflow_on_closed_stream_older_than_window")
+
+
+def test_window_update_on_recently_closed_stream_is_ignored() raises:
+    """WINDOW_UPDATE, overflowing or not, on a recently closed stream is ignored (RFC 9113 Section 5.1): no RST_STREAM, no event."""
+    var srv = _server(10)
+    var enc = HpackEncoder()
+    _closed_stream_1(srv, enc, 3)
+    var wire = List[Byte]()
+    for _ in range(100):
+        wire.extend(Span(_frame(FRAME_WINDOW_UPDATE, 0, 1, _u32(0x7FFFFFFF))))
+    wire.extend(Span(_frame(FRAME_WINDOW_UPDATE, 0, 1, _u32(100))))
+    var ev = srv.receive_data(wire)
+    assert_true(not srv.is_closed(), "the connection stays open")
+    assert_equal_int(len(ev), 0, "no event")
+    assert_equal_int(len(_frames(srv.data_to_send())), 0, "no answer")
+
+    # Client side: a closed stream it opened ignores them the same way.
+    var cli = H2Connection(client_side=True)
+    cli.initiate_connection()
+    _ = cli.receive_data(_frame(FRAME_SETTINGS, 0, 0, List[Byte]()))
+    cli.send_headers(1, _req("GET", "/"), end_stream=True)
+    var server_enc = HpackEncoder()
+    _ = cli.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS | FLAG_END_STREAM, 1, server_enc.encode(_status("200"))))
+    _ = cli.data_to_send()
+    ev = cli.receive_data(wire)
+    assert_true(not cli.is_closed(), "client: the connection stays open")
+    assert_equal_int(len(ev), 0, "client: no event")
+    assert_equal_int(len(_frames(cli.data_to_send())), 0, "client: no answer")
+    print("PASS: test_window_update_on_recently_closed_stream_is_ignored")
+
+
+def test_client_data_on_closed_stream_resets_once() raises:
+    """DATA on a stream the client already closed earns one RST_STREAM(STREAM_CLOSED), then later frames are ignored (RFC 9113 Section 5.1)."""
+    var cli = H2Connection(client_side=True)
+    cli.initiate_connection()
+    _ = cli.receive_data(_frame(FRAME_SETTINGS, 0, 0, List[Byte]()))
+    cli.send_headers(1, _req("GET", "/"), end_stream=True)
+    var server_enc = HpackEncoder()
+    _ = cli.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS | FLAG_END_STREAM, 1, server_enc.encode(_status("200"))))
+    _ = cli.data_to_send()
+    var wire = List[Byte]()
+    for _ in range(100):
+        wire.extend(Span(_data(1, 0)))
+    _ = cli.receive_data(wire)
+    assert_true(not cli.is_closed(), "a stream error, not a connection error")
+    assert_equal_int(_count(_frames(cli.data_to_send()), FRAME_RST_STREAM, 1, H2_STREAM_CLOSED), 1, "one RST_STREAM, not one per frame")
+    print("PASS: test_client_data_on_closed_stream_resets_once")
+
+
 def main() raises:
     test_stream_flow_control_error_credits_connection()
     test_never_opened_lower_ids_are_closed()
@@ -496,3 +669,10 @@ def main() raises:
     test_trailers_across_continuation_on_marked_stream()
     test_window_update_on_marked_stream_is_ignored()
     test_bad_padding_on_ignored_data_is_protocol_error()
+    test_stream_window_update_overflow_resets_stream()
+    test_undelivered_burst_past_connection_window_is_flow_control_error()
+    test_window_update_on_idle_stream_is_protocol_error()
+    test_push_promise_is_protocol_error()
+    test_window_update_overflow_on_closed_stream_older_than_window()
+    test_window_update_on_recently_closed_stream_is_ignored()
+    test_client_data_on_closed_stream_resets_once()
