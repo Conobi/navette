@@ -50,6 +50,21 @@ def test_gro_segment_is_checked_alone(lib: SharedLibrary) raises:
     print("  test_gro_segment_is_checked_alone: PASS")
 
 
+def test_fixed_bit_clear_dropped(lib: SharedLibrary) raises:
+    """RFC 9000 Section 17.2 / 17.3: a v1 packet with the fixed bit 0 is discarded (we never grease it)."""
+    var g = IngressGuard(lib)
+    assert_equal_int(g.precheck(Span(long_packet(1, 1200, first=0x83))), PRE_DROP, "v1 Initial, fixed bit 0")
+    assert_equal_int(g.precheck(Span(long_packet(1, 300, first=0xA3))), PRE_DROP, "v1 Handshake, fixed bit 0")
+    var short = short_packet(40)
+    short[0] = 0x03
+    assert_equal_int(g.precheck(Span(short)), PRE_DROP, "short header, fixed bit 0")
+    assert_equal_int(Int(g.stats.dropped_undecodable), 3, "counted as undecodable")
+    assert_equal_int(
+        g.precheck(Span(long_packet(0x1A2A3A4A, 1200, first=0x80))), PRE_VN, "unknown version: the bit is v1-only"
+    )
+    print("  test_fixed_bit_clear_dropped: PASS")
+
+
 def test_new_connection_filter(lib: SharedLibrary) raises:
     var g = IngressGuard(lib)
     assert_equal_int(g.unknown_dcid(Span(short_packet(40))), PRE_DROP, "unknown short header")
@@ -108,6 +123,7 @@ def main() raises:
     print("test_ingress_guard_precheck:")
     test_precheck_table(lib)
     test_gro_segment_is_checked_alone(lib)
+    test_fixed_bit_clear_dropped(lib)
     test_new_connection_filter(lib)
     test_vn_bucket_and_layout(lib)
     test_vn_long_cids_echoed(lib)

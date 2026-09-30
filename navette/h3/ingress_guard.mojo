@@ -140,7 +140,9 @@ struct IngressGuard(Movable):
         """Verdict on one datagram (or GRO segment) before demux; counts every drop.
 
         PRE_DROP: undecodable (truncated header, version 0, a v1 DCID over
-        20 bytes) or a v1 Initial under 1,200 bytes (RFC 9000 Section
+        20 bytes, a v1 packet with the fixed bit 0: RFC 9000 Section 17.2
+        and 17.3 allow discarding it, and we never negotiate greasing it)
+        or a v1 Initial under 1,200 bytes (RFC 9000 Section
         14.1), or an unknown version under 1,200 bytes (never answered, so
         a VN cannot amplify). PRE_VN: an unknown version at full size,
         answer with `answer_vn`. PRE_PASS: go on to demux.
@@ -151,7 +153,7 @@ struct IngressGuard(Movable):
             return PRE_DROP
         var first = seg[0]
         if (first & 0x80) == 0:
-            if n < _MIN_SHORT_LEN:
+            if n < _MIN_SHORT_LEN or (first & 0x40) == 0:
                 self.stats.dropped_undecodable += 1
                 return PRE_DROP
             return PRE_PASS
@@ -169,7 +171,7 @@ struct IngressGuard(Movable):
                 return PRE_DROP
             return PRE_VN
         var dcid_len = Int(seg[5])
-        if dcid_len > _MAX_V1_CID_LEN or n < _MIN_LONG_LEN + dcid_len:
+        if (first & 0x40) == 0 or dcid_len > _MAX_V1_CID_LEN or n < _MIN_LONG_LEN + dcid_len:
             self.stats.dropped_undecodable += 1
             return PRE_DROP
         if _is_initial(first) and n < MIN_INITIAL_PACKET_SIZE:
