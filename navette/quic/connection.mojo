@@ -2676,7 +2676,7 @@ struct QuicConnection(Movable):
         """
         if not tp.initial_scid or not self._initial_peer_scid:
             return String(_REASON_INITIAL_SCID)
-        if not _span_eq(Span(tp.initial_scid.value()), self._initial_peer_scid.value().as_span()):
+        if Span(tp.initial_scid.value()) != self._initial_peer_scid.value().as_span():
             return String(_REASON_INITIAL_SCID)
         return String()
 
@@ -2688,10 +2688,10 @@ struct QuicConnection(Movable):
         absent if we followed none: a mismatch means an attacker injected
         or replayed the Retry, or the Initial path was tampered with.
         """
-        if not tp.original_dcid or not _span_eq(Span(tp.original_dcid.value()), self.initial_dcid.as_span()):
+        if not tp.original_dcid or Span(tp.original_dcid.value()) != self.initial_dcid.as_span():
             return String(_REASON_ORIGINAL_DCID)
         if self._retry_scid:
-            if not tp.retry_scid or not _span_eq(Span(tp.retry_scid.value()), self._retry_scid.value().as_span()):
+            if not tp.retry_scid or Span(tp.retry_scid.value()) != self._retry_scid.value().as_span():
                 return String(_REASON_RETRY_SCID)
         elif tp.retry_scid:
             return String(_REASON_RETRY_SCID)
@@ -3847,12 +3847,12 @@ struct QuicConnection(Movable):
         Live means `local_cid`, the client's Initial DCID and any active
         CID we issued: the H3 server's demux keys.
         """
-        if _span_eq(dcid, self.local_cid.as_span()):
+        if dcid == self.local_cid.as_span():
             return True
-        if _span_eq(dcid, self.initial_dcid.as_span()):
+        if dcid == self.initial_dcid.as_span():
             return True
         for ref e in self.cid_mgr.local_cids:
-            if _span_eq(dcid, Span(e.cid)):
+            if dcid == Span(e.cid):
                 return True
         return False
 
@@ -4135,15 +4135,6 @@ struct QuicConnection(Movable):
 
 
 # ── Module-level helpers ─────────────────────────────────────────────
-
-
-def _span_eq(a: Span[Byte, _], b: Span[Byte, _]) -> Bool:
-    if len(a) != len(b):
-        return False
-    for i in range(len(a)):
-        if a[i] != b[i]:
-            return False
-    return True
 
 
 def _generate_random_cid() raises -> List[Byte]:

@@ -320,15 +320,6 @@ struct PathValidator(Movable):
         var budget = ANTI_AMP_FACTOR * self.pending[i].bytes_received - self.pending[i].bytes_sent
         return Int(budget) if budget > 0 else 0
 
-    def challenge_due(self, target: PathKey, now: UInt64) -> Bool:
-        """True when the challenge for `target` has an attempt left and its send time has come."""
-        var i = self._index_of(target)
-        return (
-            i >= 0
-            and self.pending[i].attempts < MAX_CHALLENGE_ATTEMPTS
-            and self.pending[i].next_send_at <= now
-        )
-
     def next_challenge_at(self, target: PathKey) -> Optional[UInt64]:
         """When the challenge for `target` is next due; None with no attempt left or nothing pending."""
         var i = self._index_of(target)
@@ -342,7 +333,8 @@ struct PathValidator(Movable):
         The next attempt is due `interval` after the first send, doubling
         each time (RFC 9000 Section 8.2.1: no more often than an Initial).
         """
-        if not self.challenge_due(target, now):
+        var at = self.next_challenge_at(target)
+        if not at or at.value() > now:
             return List[Byte]()
         var i = self._index_of(target)
         self.pending[i].next_send_at = now + (interval << UInt64(self.pending[i].attempts))
@@ -460,9 +452,8 @@ struct PathState(Movable):
 
     def challenge_due(self, now: UInt64) -> Bool:
         """True when the destination's challenge is due: challenges only travel on the path they validate (RFC 9000 Section 8.2.1)."""
-        if len(self.validator.pending) == 0:
-            return False
-        return self.validator.challenge_due(self.send_dest(), now)
+        var at = self.next_challenge_at()
+        return Bool(at) and at.value() <= now
 
     def next_challenge_at(self) -> Optional[UInt64]:
         """When the destination's challenge is next due, None if none is."""
@@ -477,8 +468,6 @@ struct PathState(Movable):
         validate it if it arrives from that address.
         """
         var out = List[Frame]()
-        if len(self.validator.pending) == 0:
-            return out^
         var token = self.validator.take_challenge(self.send_dest(), now, interval)
         if len(token) > 0:
             out.append(Frame.path_challenge(token^))
