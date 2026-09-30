@@ -207,6 +207,71 @@ def test_migration_disabled_drops_not_closes() raises:
     print("  test_migration_disabled_drops_not_closes: PASS")
 
 
+def _settle(mut p: Pair) raises:
+    """Exchange until neither side has anything left to send."""
+    for _ in range(6):
+        p.now += UInt64(30_000)
+        for ref d in p.client_datagrams():
+            p.feed_server(d, _home())
+        var s_dg = List[List[Byte]]()
+        _ = p.server.send(p.now, s_dg)
+        for ref d in s_dg:
+            try:
+                p.client.recv(Span(d), p.now)
+            except:
+                pass
+
+
+def _stream_datagrams(mut p: Pair) raises -> List[List[Byte]]:
+    """Client datagrams carrying 4 bytes on a fresh stream (non-probing, ack-eliciting)."""
+    var sid = p.client.open_stream(True)
+    p.client.send_stream_data(sid, Span(List[Byte](length=4, fill=Byte(1))), False)
+    return p.client_datagrams()
+
+
+def test_replayed_packet_is_dropped() raises:
+    """RFC 9000 Section 12.3: an already-processed packet number is discarded, from any address."""
+    var p = Pair(disable_migration=False)
+    _settle(p)
+    var dgs = _stream_datagrams(p)
+    assert_true(len(dgs) >= 1, "client produced a datagram")
+    p.feed_server(dgs[0], _home())
+    assert_true(p.server.last_datagram_authenticated, "the original authenticates")
+    var ae_before = p.server.spaces[2].ack_eliciting_since_last_ack
+    var largest_before = p.server.spaces[2].largest_recv_pn
+    p.feed_server(dgs[0], _away())
+    assert_true(not p.server.last_datagram_authenticated, "a replay does not authenticate")
+    assert_equal_int(len(p.server.path.validator.pending), 0, "a replay starts no challenge")
+    assert_equal_int(
+        p.server.spaces[2].ack_eliciting_since_last_ack, ae_before, "a replay owes no ACK"
+    )
+    assert_equal_int(p.server.spaces[2].largest_recv_pn, largest_before, "PN state unchanged")
+    assert_true(not p.server.last_datagram_may_migrate, "a replay never moves the address")
+    print("  test_replayed_packet_is_dropped: PASS")
+
+
+def test_only_newest_non_probing_may_migrate() raises:
+    """RFC 9000 Section 9.3: a probing-only packet starts validation but moves nothing; a newer non-probing one may."""
+    var p = Pair(disable_migration=False)
+    _settle(p)
+    _ = p.client.start_path_challenge(_away(), p.now)
+    var probe = p.client_datagrams()
+    assert_true(len(probe) >= 1, "client produced a probe")
+    p.feed_server(probe[0], _away())
+    assert_true(p.server.last_datagram_authenticated, "the probe authenticates")
+    assert_true(not p.server.last_datagram_may_migrate, "a probing-only packet does not migrate")
+    assert_equal_int(len(p.server.path.validator.pending), 1, "the probe starts validation")
+    # Newer, non-probing: may move. An older non-probing one held back may not.
+    var older = _stream_datagrams(p)
+    var newer = _stream_datagrams(p)
+    p.feed_server(newer[0], _away())
+    assert_true(p.server.last_datagram_may_migrate, "the newest non-probing packet may migrate")
+    p.feed_server(older[0], _home())
+    assert_true(p.server.last_datagram_authenticated, "a reordered packet is still processed")
+    assert_true(not p.server.last_datagram_may_migrate, "a reordered packet does not migrate")
+    print("  test_only_newest_non_probing_may_migrate: PASS")
+
+
 def main() raises:
     print("test_quic_path_caps:")
     test_response_ring_keeps_three_newest()
@@ -214,4 +279,6 @@ def main() raises:
     test_challenge_flood_property()
     test_unauthenticated_datagram_starts_no_challenge()
     test_migration_disabled_drops_not_closes()
+    test_replayed_packet_is_dropped()
+    test_only_newest_non_probing_may_migrate()
     print("All test_quic_path_caps tests passed.")

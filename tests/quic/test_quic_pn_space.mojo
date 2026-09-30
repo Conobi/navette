@@ -350,6 +350,24 @@ def test_duplicate_pn_ignored() raises:
     print("    PASS test_duplicate_pn_ignored")
 
 
+def test_was_received_tracks_ranges_and_window() raises:
+    """Received PNs and, once the range table is full, PNs below its oldest range count as seen."""
+    var space = PacketNumberSpace(EncryptionLevel.application())
+    _assert_false(space.was_received(UInt64(0)), "nothing received yet")
+    space.on_packet_received(UInt64(3), False)
+    _assert_true(space.was_received(UInt64(3)), "received PN")
+    _assert_false(space.was_received(UInt64(2)), "a gap below, table not full: not seen")
+    _assert_false(space.was_received(UInt64(4)), "above: not seen")
+    # Fill the table with isolated PNs (every other number), then some.
+    for i in range(100):
+        space.on_packet_received(UInt64(10 + 2 * i), False)
+    var oldest = space.ack_ranges[space.ack_ranges_len - 1].start
+    _assert_true(space.was_received(oldest - 1), "below the tracked window counts as seen")
+    _assert_true(space.was_received(UInt64(3)), "an evicted PN counts as seen")
+    _assert_false(space.was_received(UInt64(10 + 2 * 99 - 1)), "a recent gap is not seen")
+    print("    PASS test_was_received_tracks_ranges_and_window")
+
+
 def test_ack_range_merge() raises:
     """Receiving PNs that fill a gap should merge ranges."""
     var space = PacketNumberSpace(EncryptionLevel.initial())
@@ -603,6 +621,7 @@ def main() raises:
     test_space_discard()
     test_on_ack_received()
     test_duplicate_pn_ignored()
+    test_was_received_tracks_ranges_and_window()
     test_ack_range_merge()
     test_pn_space_last_ae_acked_initially_zero()
     test_pn_space_any_ae_acked_in_range_boundaries()

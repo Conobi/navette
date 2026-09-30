@@ -358,6 +358,17 @@ def _is_ack_eliciting_tid(tid: UInt64) -> Bool:
     return True
 
 
+@always_inline
+def _is_probing_tid(tid: UInt64) -> Bool:
+    """Probing frames (RFC 9000 Section 9.1): a packet of only these never moves the peer's address."""
+    return (
+        tid == FRAME_PADDING
+        or tid == FRAME_NEW_CONNECTION_ID
+        or tid == FRAME_PATH_CHALLENGE
+        or tid == FRAME_PATH_RESPONSE
+    )
+
+
 # ── SentStreamFrame ──────────────────────────────────────────────────
 #
 # Per-packet record of stream/flow-control/CID frames sent in the Application
@@ -422,6 +433,13 @@ struct QuicConnection(Movable):
     # Whether any packet of the last datagram given to `recv` decrypted:
     # path bookkeeping must act only on authenticated datagrams.
     var last_datagram_authenticated: Bool
+    # Whether the last datagram given to `recv` carried a new 1-RTT packet
+    # with a non-probing frame and the space's highest packet number yet:
+    # the only packet allowed to move the peer's address (RFC 9000
+    # Section 9.3). Implies `last_datagram_authenticated`.
+    var last_datagram_may_migrate: Bool
+    # Set by `_parse_and_dispatch_frames`: the packet held a non-probing frame.
+    var _pkt_non_probing: Bool
     # The client's original DCID on a client (it keys the Retry integrity
     # tag and must come back as original_destination_connection_id), the
     # DCID the Initial keys derive from on a server.
@@ -531,6 +549,8 @@ struct QuicConnection(Movable):
         self.peer_cid = CidBuf(copy=peer_cid)
         self._initial_peer_scid = None
         self.last_datagram_authenticated = False
+        self.last_datagram_may_migrate = False
+        self._pkt_non_probing = False
         self.initial_dcid = CidBuf(copy=initial_dcid)
         self._retry_token = List[Byte]()
         self._retry_scid = None
@@ -781,6 +801,7 @@ struct QuicConnection(Movable):
         var ph_sm = UInt64(0)
         self.bytes_received += UInt64(buf_len)
         self.last_datagram_authenticated = False
+        self.last_datagram_may_migrate = False
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
             comptime if PROFILE_ACCEPT:
                 if self.prof.ptr is not None:
@@ -849,6 +870,12 @@ struct QuicConnection(Movable):
                 ph_hp = result[1]
                 ph_ae = result[2]
                 ph_fp = result[3]
+                if result[0] < 0:
+                    # Already processed (RFC 9000 Section 12.3): dropped
+                    # unread, so it neither authenticates the datagram
+                    # nor owes an ACK.
+                    offset += pkt_len
+                    continue
                 if not closing and result[0] < lowest_recv_space:
                     lowest_recv_space = result[0]
             except:
@@ -1057,12 +1084,13 @@ struct QuicConnection(Movable):
         closing: Bool,
         now: UInt64,
     ) raises -> Bool:
-        """Parse frames via FrameCursor and dispatch each. Returns ack_eliciting."""
+        """Parse frames via FrameCursor and dispatch each. Returns ack_eliciting; sets `_pkt_non_probing`."""
         var cursor = FrameCursor(
             Span(unsafe_ptr=pkt_ptr.unsafe_offset(header_len), length=plaintext_len)
         )
         var parse_failed = False
         var ack_eliciting = False
+        self._pkt_non_probing = False
         self._current_space_idx = space_idx
         while True:
             var maybe_tid = Optional[UInt64]()
@@ -1078,6 +1106,8 @@ struct QuicConnection(Movable):
                 continue
             if _is_ack_eliciting_tid(tid):
                 ack_eliciting = True
+            if not _is_probing_tid(tid):
+                self._pkt_non_probing = True
             self._dispatch_frame(cursor, space_idx, now)
         self._current_space_idx = -1
         if parse_failed:
@@ -1150,8 +1180,12 @@ struct QuicConnection(Movable):
     ) raises -> Tuple[Int, UInt64, UInt64, UInt64]:
         """Decrypt, parse frames, dispatch, update PN/ECN state.
 
-        Returns (pn_space_idx, hp_us, aead_us, frame_parse_us).
-        Raises on decrypt failure or after close_transport.
+        Returns (pn_space_idx, hp_us, aead_us, frame_parse_us), with
+        pn_space_idx = -1 for a packet number already processed (RFC 9000
+        Section 12.3), which is dropped before the AEAD runs. Raises on
+        decrypt failure or after close_transport. Sets
+        `last_datagram_may_migrate` for a new 1-RTT packet carrying a
+        non-probing frame whose number is the space's highest yet.
         """
         var ph_hp_us = self.prof.stamp()
         var hp_result = self.protect.unprotect_header_ptr(
@@ -1171,6 +1205,9 @@ struct QuicConnection(Movable):
         if self.spaces[pn_space_idx].largest_recv_pn >= 0:
             largest = UInt64(self.spaces[pn_space_idx].largest_recv_pn)
         var full_pn = pn_decode(truncated_pn, pn_length, largest)
+        if self.spaces[pn_space_idx].was_received(full_pn):
+            return (-1, ph_hp_us, UInt64(0), UInt64(0))
+        var newest = Int(full_pn) > self.spaces[pn_space_idx].largest_recv_pn
 
         var header_len = header.pn_offset + pn_length
         var ph_aead_us = self.prof.stamp()
@@ -1206,6 +1243,8 @@ struct QuicConnection(Movable):
         )
         ph_frame_parse_us = self.prof.elapsed(ph_frame_parse_us)
 
+        if not closing and newest and self._pkt_non_probing and not header.is_long_header:
+            self.last_datagram_may_migrate = True
         if not closing:
             self.spaces[pn_space_idx].on_packet_received(
                 full_pn, ack_eliciting, now,

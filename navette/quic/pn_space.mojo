@@ -366,6 +366,22 @@ struct PacketNumberSpace(Copyable, Movable):
         elif not self.ack_deadline:
             self.ack_deadline = Optional[UInt64](now + max_ack_delay_us)
 
+    def was_received(self, pn: UInt64) -> Bool:
+        """True when `pn` was already processed, or is too old to tell (RFC 9000 Section 12.3).
+
+        A PN inside a tracked range was received. Once the range table is
+        full its oldest ranges have been evicted, so a PN below the oldest
+        tracked range counts as received: dropping a stray late packet is
+        harmless, processing a replay is not.
+        """
+        for i in range(self.ack_ranges_len):
+            if pn >= self.ack_ranges[i].start and pn <= self.ack_ranges[i].end:
+                return True
+        return (
+            self.ack_ranges_len >= MAX_ACK_RANGE_ENTRIES
+            and pn < self.ack_ranges[self.ack_ranges_len - 1].start
+        )
+
     def has_unacked_ack_eliciting(self) -> Bool:
         """True while an ack-eliciting packet received here awaits an ACK."""
         return self.ack_eliciting_since_last_ack > 0
