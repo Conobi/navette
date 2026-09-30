@@ -3683,6 +3683,29 @@ struct QuicConnection(Movable):
         self.stream_map.remove_sendable(key)
         self.stream_map.mark_reset(key)
 
+    def reset_unfinished_stream(mut self, stream_id: UInt64, error_code: UInt64):
+        """Reset our send side unless it has already ended (FIN queued or
+        reset) or does not exist; a no-op for an already-freed stream.
+
+        For an application abandoning a stream the peer reset: a send side
+        left open keeps the stream from ever being freed.
+        """
+        var p_opt = self.stream_map.try_stream_ptr(Int(stream_id))
+        if not p_opt:
+            return
+        var p = p_opt.value()
+        if not p[].send_state:
+            return
+        var ss = p[].send_state.value()
+        if ss != SendState.READY and ss != SendState.SEND:
+            return
+        if p[].send_buf and p[].send_buf.value().fin_offset:
+            return
+        try:
+            self.reset_stream(stream_id, error_code)
+        except:
+            pass  # unreachable: the stream and its send side exist
+
     def send_datagram(mut self, payload: Span[Byte, _]) raises -> Bool:
         """RFC 9221 §5 — enqueue a QUIC DATAGRAM frame for the next 1-RTT flush.
 

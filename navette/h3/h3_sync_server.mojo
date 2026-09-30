@@ -494,10 +494,12 @@ struct H3CoroServer(Movable):
         self._maybe_cleanup_stream(sid)
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
-        """STREAM_RESET: tear down the stream."""
+        """STREAM_RESET: tear down the stream and cancel any unfinished
+        response, so the QUIC stream can be freed."""
         var sid = Int(ev.stream_id)
         if not self._has_stream(sid):
             return
+        self._h3.cancel_send_side(ev.stream_id)
         var ctx_ptr = self._streams[sid].ptr()
         _ = self._streams.pop(sid)
         _free_stream(ctx_ptr)

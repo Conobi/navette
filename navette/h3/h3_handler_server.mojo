@@ -446,9 +446,12 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         ctx_ptr.unsafe_write(ctx^)
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
+        """Drop the request and cancel any unfinished response, so the QUIC
+        stream can be freed."""
         var sid = Int(ev.stream_id)
         if sid not in self._streams:
             return
+        self._h3.cancel_send_side(ev.stream_id)
         var ctx_ptr = self._streams[sid].ptr()
         # Taken out of the slot purely so it is destroyed; nothing below
         # reads it, and nothing it owns is touched before the block ends.

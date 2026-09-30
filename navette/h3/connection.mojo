@@ -45,6 +45,7 @@ from navette.h3.error import (
     H3_CLOSED_CRITICAL_STREAM,
     H3_ID_ERROR,
     H3_INTERNAL_ERROR,
+    H3_REQUEST_CANCELLED,
     QPACK_DECOMPRESSION_FAILED,
 )
 from navette.h3.qpack import (
@@ -594,6 +595,15 @@ struct H3Connection(Movable):
     def reset_stream(mut self, stream_id: UInt64, error_code: UInt64) raises:
         """Send RESET_STREAM via QUIC."""
         self._quic.reset_stream(stream_id, error_code)
+
+    def cancel_send_side(mut self, stream_id: UInt64):
+        """Reset our side of a request stream with H3_REQUEST_CANCELLED
+        unless it already ended (RFC 9114 Section 4.1.1).
+
+        Call when dropping a request the peer reset: the QUIC stream is only
+        freed once both directions are terminal.
+        """
+        self._quic.reset_unfinished_stream(stream_id, H3_REQUEST_CANCELLED)
 
     def open_bidi_stream(mut self) raises -> UInt64:
         """Open a client-initiated bidi stream."""

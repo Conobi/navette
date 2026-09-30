@@ -353,13 +353,15 @@ struct H3Session(Session):
         ctx_ptr.unsafe_write(ctx^)
 
     def _on_stream_reset(mut self, ev: H3Event) raises:
-        """STREAM_RESET: mark stream errored."""
+        """STREAM_RESET: mark stream errored and cancel any request body
+        still being sent, so the QUIC stream can be freed."""
         var sid = Int(ev.stream_id)
         var ctx_ptr: Pointer[_H3ClientCtx, MutUntrackedOrigin]
         try:
             ctx_ptr = self._streams[sid].ptr()
         except:
             return
+        self._h3.cancel_send_side(ev.stream_id)
         var ctx = ctx_ptr.unsafe_take_pointee()
         ctx.errored = True
         ctx.error_code = ev.error_code
