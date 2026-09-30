@@ -116,15 +116,7 @@ from navette.http.handler import StreamHandler
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.h3.h3_handler_server import H3HandlerServer
-from navette.h3.ingress_guard import (
-    IngressGuard,
-    PRE_PASS,
-    PRE_VN,
-    ADMIT_CREATE,
-    ADMIT_CREATE_VALIDATED,
-    ADMIT_RETRY,
-    ADMIT_CLOSE,
-)
+from navette.h3.ingress_guard import IngressGuard, ADMIT_CREATE, ADMIT_REPLY
 from navette.protect.config import ProtectionConfig, ProtectionStats
 from navette.h3.qpack import QpackCodecTables
 from navette.quic.cid import demux_key
@@ -1431,15 +1423,9 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         cmsg carries the stride; each segment gets its own DCID
         extraction and PendingDatagram entry, all sharing one buffer
         lease via a refcount in `_dgram_refcounts`.
-
-        Every datagram, or GRO segment on its own length, passes the
-        guard's `precheck` before its DCID is read: drops are counted and
-        released here, and an unknown version is answered with Version
-        Negotiation (queued straight to egress).
         """
         if self._recv_stream is None:
             return
-        var now = self._now()
 
         while True:
             var dgram_opt = self._recv_stream.value().next()
@@ -1448,7 +1434,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
             # Skip truncated datagrams.
             if dgram_opt.value().truncated():
-                self._guard.value().stats.dropped_truncated += 1
                 continue
 
             # Decode the delivery header for payload and peer address.
@@ -1499,19 +1484,12 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                     var seg_span = Span[Byte, MutUntrackedOrigin](
                         unsafe_ptr=seg_ptr, length=seg_len,
                     )
-                    var verdict = self._guard.value().precheck(seg_span)
-                    if verdict == PRE_VN:
-                        self._answer_vn(seg_span, name, now)
-                    # A dropped segment releases its share of the
-                    # refcount so the buffer can still be freed.
-                    if verdict != PRE_PASS:
-                        self._dgram_refcounts[dgram_idx] -= UInt16(1)
-                        continue
                     var dcid: CidBuf
                     try:
                         dcid = extract_dcid(seg_span)
                     except:
-                        self._guard.value().stats.dropped_undecodable += 1
+                        # Undecodable segment — release its share of
+                        # the refcount so the buffer can still be freed.
                         self._dgram_refcounts[dgram_idx] -= UInt16(1)
                         continue
 
@@ -1528,16 +1506,10 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                     )
             else:
                 # Non-GRO: single datagram, refcount 1.
-                var verdict = self._guard.value().precheck(payload)
-                if verdict == PRE_VN:
-                    self._answer_vn(payload, name, now)
-                if verdict != PRE_PASS:
-                    continue
                 var dcid: CidBuf
                 try:
                     dcid = extract_dcid(payload)
                 except:
-                    self._guard.value().stats.dropped_undecodable += 1
                     continue
 
                 self._dgram_refcounts.append(UInt16(1))
@@ -1556,14 +1528,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
                 # Keep the lease alive until _flush_ingress completes.
                 self._live_datagrams.append(dgram_opt^)
-
-    def _answer_vn(mut self, pkt: Span[Byte, _], name: Span[Byte, _], now: UInt64):
-        """Queue a Version Negotiation for a PRE_VN datagram if the guard's pacing and egress bound allow one."""
-        try:
-            if self._guard.value().answer_vn(pkt, now, len(self._egress_backlog)):
-                self._queue_stateless(name)
-        except:
-            pass
 
     def _queue_stateless(mut self, name: Span[Byte, _]):
         """Queue the guard's last stateless reply (`out`) to the raw sockaddr `name`.
@@ -1690,29 +1654,24 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     def _admit(mut self, ref pd: PendingDatagram, now: UInt64) -> Int:
         """Run a demux miss through the door; the new slot's index, or -1 (dropped or answered statelessly).
 
-        Only a v1 Initial with an 8-20 byte DCID gets past `unknown_dcid`;
-        `admit_initial` then decides Retry, a stateless close, or a new
+        `admit_initial` decides a drop, Retry, a stateless close, or a new
         connection (validated when its Retry token was), keyed by its
         Initial DCID and local CID.
         """
         var pkt = Span[Byte, MutUntrackedOrigin](unsafe_ptr=pd.payload_ptr, length=pd.payload_len)
         var name = Span[Byte, MutUntrackedOrigin](unsafe_ptr=pd.name_ptr, length=pd.name_len)
-        if self._guard.value().unknown_dcid(pkt) != PRE_PASS:
-            return -1
         var cap = self.protection.conn_cap
         var verdict: Int
         try:
             verdict = self._guard.value().admit_initial(
                 pkt, name, now,
-                self._unvalidated, len(self.conn_slots), cap,
-                cap - len(self.conn_slots), len(self._egress_backlog),
+                self._unvalidated, len(self.conn_slots), cap, len(self._egress_backlog),
             )
         except:
             return -1
-        if verdict == ADMIT_RETRY or verdict == ADMIT_CLOSE:
+        if verdict == ADMIT_REPLY:
             self._queue_stateless(name)
-            return -1
-        if verdict != ADMIT_CREATE and verdict != ADMIT_CREATE_VALIDATED:
+        if verdict != ADMIT_CREATE:
             return -1
 
         var h3_ptr: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]
@@ -1739,7 +1698,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
         # Raw sockaddr blob (16 or 28 bytes) for sendmsg routing;
         # `_set_msg_peer_raw()` parses this layout.
-        var unvalidated = verdict == ADMIT_CREATE
+        var unvalidated = len(self._guard.value().retry_scid) == 0
         self.conn_slots.append(ConnSlot[Self.H](h3_ptr, List[Byte](name), dcids^, gen, unvalidated))
         if unvalidated:
             self._unvalidated += 1

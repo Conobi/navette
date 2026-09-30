@@ -87,35 +87,25 @@ def test_small_initials_dropped() raises:
     assert_equal_int(h.slot_count(), 1, "1,200 B Initial made a slot")
     h.send_raw(sock, raw_initial(_dcid(0xA2, 8), 1199))
     _settle(h)
-    assert_equal_int(Int(h.srv[].protection_stats().dropped_initial_size), 2, "known-DCID 1,199 B dropped too")
+    assert_equal_int(Int(h.srv[].protection_stats().dropped_initial_size), 1, "the new-DCID one counted")
+    assert_equal_int(h.slot_count(), 1, "a known-DCID 1,199 B Initial is dropped by its connection")
     _ = sock^
     _ = h.slot_count()
     print("PASS: test_small_initials_dropped")
 
 
-def test_version_negotiation() raises:
+def test_unknown_version_dropped() raises:
+    """No Version Negotiation: an unknown version gets no answer and no state."""
     var h = _harness()
     var sock = h.new_socket()
     h.send_raw(sock, raw_long(0x1A2A3A4A, _dcid(0xB1, 8), 1200))
-    _settle(h)
-    var got = h.recv_raw(sock, 50)
-    assert_equal_int(len(got), 1, "one VN")
-    assert_true(_type_of(got[0]) == PacketType.version_negotiation(), "it is a VN")
-    h.send_raw(sock, raw_long(0x1A2A3A4A, _dcid(0xB2, 8), 1199))
     h.send_raw(sock, raw_long(0, _dcid(0xB3, 8), 1200))
     _settle(h)
-    assert_equal_int(len(h.recv_raw(sock, 20)), 0, "no answer to a small datagram or to version 0")
-    assert_equal_int(Int(h.srv[].protection_stats().dropped_vn_small), 1, "dropped_vn_small")
-    for i in range(6):
-        h.send_raw(sock, raw_long(0x1A2A3A4A, _dcid(0xC0 + UInt8(i), 8), 1200))
-    _settle(h)
-    var stats = h.srv[].protection_stats()
-    assert_equal_int(Int(stats.vn_sent), 4, "burst 4 at one instant")
-    assert_equal_int(Int(stats.stateless_bucket_empty_vn), 3, "the rest paced")
+    assert_equal_int(len(h.recv_raw(sock, 20)), 0, "no answer")
     assert_equal_int(h.slot_count(), 0, "no state")
     _ = sock^
     _ = h.slot_count()
-    print("PASS: test_version_negotiation")
+    print("PASS: test_unknown_version_dropped")
 
 
 def test_retry_round_trip() raises:
@@ -386,7 +376,7 @@ def test_retired_cid_no_longer_routes() raises:
 
 def main() raises:
     test_small_initials_dropped()
-    test_version_negotiation()
+    test_unknown_version_dropped()
     test_retry_round_trip()
     test_invalid_token_close_wrong_port()
     test_expired_token_close()

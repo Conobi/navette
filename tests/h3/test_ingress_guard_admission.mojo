@@ -1,20 +1,13 @@
-"""IngressGuard.admit_initial: token classes, the admission order and the stateless-reply bounds."""
+"""IngressGuard.admit_initial: the new-connection filter, token classes, the admission order and the stateless-reply bounds."""
 
 from std.collections import Span
 
 from navette.tls.lib import TlsBackend, SharedLibrary
-from navette.h3.ingress_guard import (
-    IngressGuard,
-    ADMIT_CREATE,
-    ADMIT_CREATE_VALIDATED,
-    ADMIT_RETRY,
-    ADMIT_CLOSE,
-    ADMIT_DROP,
-)
+from navette.h3.ingress_guard import IngressGuard, ADMIT_CREATE, ADMIT_REPLY, ADMIT_DROP
 from navette.quic.packet import PacketType, parse_packet_header
 from navette.quic.retry import generate_retry_token, retry_addr_hash
 from tests._test_util import assert_true, assert_equal_int
-from tests.h3._wire import filled, initial, initial_n
+from tests.h3._wire import filled, initial, initial_n, long_packet, handshake, short_packet
 from tests.protect._prop import Rng, prop_iters, sockaddr_in
 
 
@@ -61,22 +54,24 @@ def test_admission_oracle_property(lib: SharedLibrary) raises:
         var cap = 64 + rng.below(64)
         var admitted = rng.below(cap + 1)
         g.require_validation = rng.chance(10)
-        var now = UInt64(10_000_000 + i * 50_000)  # 20 closes/s: the bucket never empties here
+        var now = UInt64(10_000_000 + i * 50_000)  
         var pkt = _initial_with_token(g, rng, kind, now)
         g.begin_pass()
         var got = g.admit_initial(
-            Span(pkt), Span(_addr_a()), now, unval, admitted, cap, free_ids=cap - admitted, backlog=0
+            Span(pkt), Span(_addr_a()), now, unval, admitted, cap, backlog=0
         )
         var want: Int
         if kind == 4:
-            want = ADMIT_CLOSE
+            want = ADMIT_REPLY
         elif kind == 2:
-            want = ADMIT_CREATE_VALIDATED if admitted < cap else ADMIT_CLOSE
+            want = ADMIT_CREATE if admitted < cap else ADMIT_REPLY
         elif unval >= 256 or g.require_validation or admitted >= cap:
-            want = ADMIT_RETRY
+            want = ADMIT_REPLY
         else:
             want = ADMIT_CREATE
         assert_equal_int(got, want, "seed 0xAD17 case " + String(i) + " kind " + String(kind))
+        if got == ADMIT_CREATE:
+            assert_true((len(g.retry_scid) > 0) == (kind == 2), "validated exactly when the token was")
     print("  test_admission_oracle_property: PASS")
 
 
@@ -86,14 +81,14 @@ def test_retry_output_and_valid_round_trip(lib: SharedLibrary) raises:
     var dcid = filled(0xD1, 20)
     var pkt = initial(1200, dcid)
     g.require_validation = True
-    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), now, 0, 0, 64, free_ids=64, backlog=0), ADMIT_RETRY, "retry")
+    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), now, 0, 0, 64, backlog=0), ADMIT_REPLY, "retry")
     assert_equal_int(Int(g.stats.retry_sent), 1, "retry_sent")
     var retry = parse_packet_header(Span(g.out), 8)[0].copy()
     assert_true(retry.packet_type == PacketType.retry(), "Retry in g.out")
     var echoed = initial(1200, List[Byte](retry.scid.as_span()), List[Byte](retry.token_span()))
     assert_equal_int(
-        g.admit_initial(Span(echoed), Span(_addr_a()), now + 2_000_000, 0, 0, 64, free_ids=64, backlog=0),
-        ADMIT_CREATE_VALIDATED,
+        g.admit_initial(Span(echoed), Span(_addr_a()), now + 2_000_000, 0, 0, 64, backlog=0),
+        ADMIT_CREATE,
         "token from our Retry is VALID",
     )
     assert_true(g.orig_dcid == dcid, "original DCID recovered for the transport parameters")
@@ -104,19 +99,11 @@ def test_retry_output_and_valid_round_trip(lib: SharedLibrary) raises:
 def test_create_reports_the_packet_dcid(lib: SharedLibrary) raises:
     var g = IngressGuard(lib)
     var dcid = filled(0xD2, 12)
-    assert_equal_int(g.admit_initial(Span(initial(1200, dcid)), Span(_addr_a()), 1, 0, 0, 64, free_ids=64, backlog=0), ADMIT_CREATE, "create")
+    assert_equal_int(g.admit_initial(Span(initial(1200, dcid)), Span(_addr_a()), 1, 0, 0, 64, backlog=0), ADMIT_CREATE, "create")
     assert_true(g.orig_dcid == dcid, "orig_dcid = the Initial's DCID")
     assert_equal_int(len(g.retry_scid), 0, "no Retry, no retry_scid")
     assert_equal_int(Int(g.stats.tokens_none), 1, "tokens_none")
     print("  test_create_reports_the_packet_dcid: PASS")
-
-
-def test_oversized_foreign_token_forces_retry(lib: SharedLibrary) raises:
-    var g = IngressGuard(lib)
-    var pkt = initial(1200, filled(0xD1, 8), filled(0x01, 233))
-    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), 1_000_000, 0, 0, 64, free_ids=64, backlog=0), ADMIT_RETRY, "233 B token")
-    assert_equal_int(Int(g.stats.tokens_none), 1, "classified NONE")
-    print("  test_oversized_foreign_token_forces_retry: PASS")
 
 
 def test_token_past_the_packet_drops(lib: SharedLibrary) raises:
@@ -124,36 +111,50 @@ def test_token_past_the_packet_drops(lib: SharedLibrary) raises:
     var pkt = initial(1200, filled(0xD1, 8), filled(0x01, 100))
     pkt[1 + 4 + 1 + 8 + 1 + 8] = 0x7F  # 2-byte varint prefix 0x40..: token length 0x3FF0-ish
     pkt[1 + 4 + 1 + 8 + 1 + 8 + 1] = 0xF0
-    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), 1_000_000, 0, 0, 64, free_ids=64, backlog=0), ADMIT_DROP, "token runs past the end")
+    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), 1_000_000, 0, 0, 64, backlog=0), ADMIT_DROP, "token runs past the end")
     assert_equal_int(Int(g.stats.dropped_undecodable), 1, "counted undecodable")
     print("  test_token_past_the_packet_drops: PASS")
 
 
-def test_close_bucket_and_refuse(lib: SharedLibrary) raises:
+def test_close_and_refuse(lib: SharedLibrary) raises:
     var g = IngressGuard(lib)
     var now = UInt64(20_000_000)
     var tok = _mint(g, filled(0xD1, 8), _addr_other_port(), now - 1_000_000)
     var pkt = initial(1200, filled(0xD3, 8), tok)
-    var closes = 0
-    for _ in range(17):
-        var r = g.admit_initial(Span(pkt), Span(_addr_a()), now, 0, 0, 64, free_ids=64, backlog=0)
-        if r == ADMIT_CLOSE:
-            closes += 1
-        else:
-            assert_equal_int(r, ADMIT_DROP, "17th: dropped")
-    assert_equal_int(closes, 16, "burst 16")
-    assert_equal_int(Int(g.stats.invalid_token_closes), 16, "invalid_token_closes")
-    assert_equal_int(Int(g.stats.stateless_bucket_empty_close), 1, "bucket empty")
-    assert_equal_int(Int(g.stats.tokens_invalid), 17, "tokens_invalid")
+    for _ in range(3):
+        assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), now, 0, 0, 64, backlog=0), ADMIT_REPLY, "INVALID_TOKEN close")
+    assert_equal_int(Int(g.stats.invalid_token_closes), 3, "invalid_token_closes")
+    assert_equal_int(Int(g.stats.tokens_invalid), 3, "tokens_invalid")
     var h = parse_packet_header(Span(g.out), 8)[0].copy()
     assert_true(h.packet_type == PacketType.initial(), "close is an Initial")
-    # A VALID token with no free connection id: CONNECTION_REFUSED, from the same bucket.
+    # A VALID token at the connection cap: CONNECTION_REFUSED.
     var later = now + 1_000_000
     var good = initial(1200, filled(0xD4, 8), _mint(g, filled(0xD1, 8), _addr_a(), later))
-    assert_equal_int(g.admit_initial(Span(good), Span(_addr_a()), later, 0, 64, 64, free_ids=0, backlog=0), ADMIT_CLOSE, "refused")
+    assert_equal_int(g.admit_initial(Span(good), Span(_addr_a()), later, 0, 64, 64, backlog=0), ADMIT_REPLY, "refused")
     assert_equal_int(Int(g.stats.refused_closes), 1, "refused_closes")
     assert_equal_int(Int(g.stats.cap_rejections), 1, "cap_rejections")
-    print("  test_close_bucket_and_refuse: PASS")
+    print("  test_close_and_refuse: PASS")
+
+
+def test_new_connection_filter(lib: SharedLibrary) raises:
+    """Only a full-size v1 Initial with an 8-20 byte DCID reaches admission; the rest is dropped and counted."""
+    var g = IngressGuard(lib)
+    g.require_validation = True
+    var a = Span(_addr_a())
+    assert_equal_int(g.admit_initial(Span(short_packet(40)), a, 1, 0, 0, 64, backlog=0), ADMIT_DROP, "short header")
+    assert_equal_int(g.admit_initial(Span(handshake(300)), a, 1, 0, 0, 64, backlog=0), ADMIT_DROP, "Handshake")
+    assert_equal_int(g.admit_initial(Span(long_packet(1, 1200, first=0xD3)), a, 1, 0, 0, 64, backlog=0), ADMIT_DROP, "0-RTT")
+    assert_equal_int(g.admit_initial(Span(long_packet(1, 1200, first=0x83)), a, 1, 0, 0, 64, backlog=0), ADMIT_DROP, "fixed bit 0")
+    assert_equal_int(g.admit_initial(Span(long_packet(0x1A2A3A4A, 1200)), a, 1, 0, 0, 64, backlog=0), ADMIT_DROP, "unknown version")
+    assert_equal_int(Int(g.stats.dropped_unknown_dcid), 5, "all counted as unknown DCIDs")
+    assert_equal_int(g.admit_initial(Span(initial_n(8, 1199)), a, 1, 0, 0, 64, backlog=0), ADMIT_DROP, "1,199 B")
+    assert_equal_int(Int(g.stats.dropped_initial_size), 1, "size counted")
+    assert_equal_int(g.admit_initial(Span(initial_n(7, 1200)), a, 1, 0, 0, 64, backlog=0), ADMIT_DROP, "DCID < 8")
+    assert_equal_int(g.admit_initial(Span(initial_n(21, 1200)), a, 1, 0, 0, 64, backlog=0), ADMIT_DROP, "DCID > 20")
+    assert_equal_int(Int(g.stats.dropped_initial_dcid_len), 2, "DCID length counted")
+    assert_equal_int(Int(g.stats.retry_sent), 0, "nothing answered")
+    assert_equal_int(g.admit_initial(Span(initial_n(20, 1200)), a, 1, 0, 0, 64, backlog=0), ADMIT_REPLY, "DCID 20 admitted")
+    print("  test_new_connection_filter: PASS")
 
 
 def test_response_cap_per_pass(lib: SharedLibrary) raises:
@@ -163,16 +164,16 @@ def test_response_cap_per_pass(lib: SharedLibrary) raises:
     g.begin_pass()
     var retries = 0
     for _ in range(257):
-        var r = g.admit_initial(Span(pkt), Span(_addr_a()), 1_000_000, 0, 0, 64, free_ids=64, backlog=0)
-        if r == ADMIT_RETRY:
+        var r = g.admit_initial(Span(pkt), Span(_addr_a()), 1_000_000, 0, 0, 64, backlog=0)
+        if r == ADMIT_REPLY:
             retries += 1
         else:
             assert_equal_int(r, ADMIT_DROP, "257th: dropped")
     assert_equal_int(retries, 256, "256 per pass")
     assert_equal_int(Int(g.stats.stateless_dropped_egress), 1, "egress drop counted")
     g.begin_pass()
-    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), 1_000_000, 0, 0, 64, free_ids=64, backlog=1280), ADMIT_DROP, "backlog full")
-    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), 1_000_000, 0, 0, 64, free_ids=64, backlog=1279), ADMIT_RETRY, "below the bound")
+    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), 1_000_000, 0, 0, 64, backlog=1280), ADMIT_DROP, "backlog full")
+    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), 1_000_000, 0, 0, 64, backlog=1279), ADMIT_REPLY, "below the bound")
     print("  test_response_cap_per_pass: PASS")
 
 
@@ -180,7 +181,7 @@ def test_malformed_sockaddr_drops(lib: SharedLibrary) raises:
     var g = IngressGuard(lib)
     g.require_validation = True
     var bad = filled(0x02, 3)
-    assert_equal_int(g.admit_initial(Span(initial_n(8, 1200)), Span(bad), 1_000_000, 0, 0, 64, free_ids=64, backlog=0), ADMIT_DROP, "3-byte name")
+    assert_equal_int(g.admit_initial(Span(initial_n(8, 1200)), Span(bad), 1_000_000, 0, 0, 64, backlog=0), ADMIT_DROP, "3-byte name")
     assert_equal_int(len(g.out), 0, "nothing in g.out")
     assert_equal_int(Int(g.stats.retry_sent), 0, "no Retry")
     print("  test_malformed_sockaddr_drops: PASS")
@@ -191,7 +192,8 @@ def test_tokens_valid_admits(lib: SharedLibrary) raises:
     var g = IngressGuard(lib)
     var now = UInt64(3_000_000)
     var pkt = initial(1200, filled(0xD5, 8), _mint(g, filled(0xD1, 10), _addr_a(), now))
-    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), now, 300, 10, 64, free_ids=54, backlog=0), ADMIT_CREATE_VALIDATED, "valid")
+    assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), now, 300, 10, 64, backlog=0), ADMIT_CREATE, "valid")
+    assert_true(len(g.retry_scid) > 0, "validated")
     assert_equal_int(Int(g.stats.tokens_valid), 1, "tokens_valid")
     print("  test_tokens_valid_admits: PASS")
 
@@ -203,9 +205,9 @@ def main() raises:
     test_admission_oracle_property(lib)
     test_retry_output_and_valid_round_trip(lib)
     test_create_reports_the_packet_dcid(lib)
-    test_oversized_foreign_token_forces_retry(lib)
     test_token_past_the_packet_drops(lib)
-    test_close_bucket_and_refuse(lib)
+    test_close_and_refuse(lib)
+    test_new_connection_filter(lib)
     test_response_cap_per_pass(lib)
     test_malformed_sockaddr_drops(lib)
     test_tokens_valid_admits(lib)

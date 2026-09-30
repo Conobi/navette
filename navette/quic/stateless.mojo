@@ -1,9 +1,9 @@
-"""Packets the server sends without connection state: Retry, Version Negotiation, stateless close.
+"""Packets the server sends without connection state: Retry and stateless close.
 
 Each builder clears the caller's buffer and writes one complete datagram
-into it. None allocates beyond that buffer (the caller reserves 1,252
+into it. None allocates beyond that buffer (the caller reserves 256
 bytes), so a flood of junk Initials costs crypto work, not heap traffic.
-Pacing and admission are the caller's job; these only encode.
+Bounds and admission are the caller's job; these only encode.
 """
 
 from std.collections import InlineArray, Span
@@ -83,24 +83,6 @@ def build_retry(
     out.resize(pkt_len, Byte(0))
     for i in range(_TAG_LEN):
         out.append(tag[i])
-
-
-def build_version_negotiation(mut out: List[Byte], client_dcid: Span[Byte, _], client_scid: Span[Byte, _]) raises:
-    """Version Negotiation listing QUIC v1, echoing the client's CIDs swapped (RFC 9000 Section 17.2.1).
-
-    CIDs of an unknown version may be up to 255 bytes (RFC 8999 Section
-    5.1) and are echoed verbatim; raises only beyond that. The first
-    byte sets 0x40 as RFC 9000 Section 17.2.1 recommends, so the packet
-    looks like any long header to middleboxes.
-    """
-    if len(client_dcid) > 255 or len(client_scid) > 255:
-        raise "build_version_negotiation: connection ID longer than 255 bytes"
-    out.clear()
-    out.append(0xC0)
-    _append_u32_be(out, UInt32(0))
-    _append_cid(out, client_scid)
-    _append_cid(out, client_dcid)
-    _append_u32_be(out, _QUIC_V1)
 
 
 def build_stateless_close_initial(
