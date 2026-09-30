@@ -383,6 +383,20 @@ struct StreamMap(Movable):
         p.unsafe_deinit_pointee()
         p.unsafe_write(stream^)
 
+    def was_opened(self, stream_id: UInt64) -> Bool:
+        """True when its initiator has already opened `stream_id`, whether or
+        not it is still in the map; an absent id for which this holds was
+        closed and freed."""
+        var ordinal = stream_id // UInt64(4)
+        var bidi = stream_is_bidi(stream_id)
+        if stream_is_local(stream_id, self.is_server):
+            if bidi:
+                return ordinal < self.local_opened_bidi
+            return ordinal < self.local_opened_uni
+        if bidi:
+            return ordinal < self.peer_opened_bidi
+        return ordinal < self.peer_opened_uni
+
     def has_stream(self, stream_id: Int) -> Bool:
         """Cheaper `stream_id in self.streams` for callers about to take a ref."""
         return stream_id in self.streams

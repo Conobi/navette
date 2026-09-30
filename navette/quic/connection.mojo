@@ -132,6 +132,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_STREAM_LARGE_OFFSET,
     GUARD_TAG_CRYPTO_IN_ZERO_RTT,
     GUARD_TAG_ACK_IN_ZERO_RTT,
+    GUARD_TAG_STREAM_LOCAL_NOT_CREATED,
 )
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED, clamp_local_active_limit
 from navette.quic.path import PathValidator, PathKey, PathState
@@ -1093,7 +1094,8 @@ struct QuicConnection(Movable):
         var data_len = UInt64(len(stream_data))
         var fin = stream_frame.fin
         var key = Int(stream_id)
-        self._ensure_peer_stream_exists(key, stream_id)
+        if not self._resolve_frame_stream(stream_id):
+            return
         var p = self.stream_map.stream_ptr(key)
         if not p[].is_bidi and p[].is_local:
             raise "STREAM_STATE_ERROR: incoming STREAM frame on local uni stream"
@@ -1128,12 +1130,28 @@ struct QuicConnection(Movable):
                 if p[].recv_buf.value().is_complete(p[].fin_offset):
                     p[].recv_state = Optional[RecvState](RecvState.DATA_RECVD)
 
-    def _ensure_peer_stream_exists(mut self, key: Int, stream_id: UInt64) raises:
-        """Create a peer-initiated stream if it doesn't exist yet."""
-        if key in self.stream_map.streams:
-            return
+    def _resolve_frame_stream(mut self, stream_id: UInt64) raises -> Bool:
+        """Find, or implicitly open, the stream a STREAM, RESET_STREAM or
+        STOP_SENDING frame addresses; False means the caller drops the frame.
+
+        An absent id its initiator already opened belongs to a stream that
+        was closed and freed: late or duplicate frames for it are ignored
+        (RFC 9000 Section 3). Raising instead would discard the whole packet
+        unacknowledged, so the peer would retransmit it forever. An absent
+        locally-initiated id we never opened closes the connection with
+        STREAM_STATE_ERROR (RFC 9000 Sections 19.4, 19.5, 19.8). Raises
+        STREAM_LIMIT_ERROR when a peer id exceeds our MAX_STREAMS.
+        """
+        if Int(stream_id) in self.stream_map.streams:
+            return True
+        if self.stream_map.was_opened(stream_id):
+            return False
         if stream_is_local(stream_id, self.is_server):
-            raise "PROTOCOL_VIOLATION: frame for unknown locally-initiated stream"
+            self.close_transport(
+                UInt64(0x05), String(GUARD_TAG_STREAM_LOCAL_NOT_CREATED),
+                monotonic_us(),
+            )
+            return False
         var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
         var is_zr = (self._current_space_idx == ZERO_RTT_SPACE_IDX)
         for ref new_id in new_ids:
@@ -1141,6 +1159,7 @@ struct QuicConnection(Movable):
             var nkey = Int(new_id)
             if nkey in self.stream_map.streams:
                 self.stream_map.streams[nkey][].is_zero_rtt = is_zr
+        return True
 
     def _handle_reset_stream(mut self, reset_frame: ResetStreamFrame) raises:
         """Process an incoming RESET_STREAM frame (RFC 9000 §19.4)."""
@@ -1162,17 +1181,9 @@ struct QuicConnection(Movable):
         var final_size = reset_frame.final_size
 
         var key = Int(stream_id)
-        if key not in self.stream_map.streams:
-            if stream_is_local(stream_id, self.is_server):
-                raise "PROTOCOL_VIOLATION: RESET for unknown local stream"
-            var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
-            for ref new_id in new_ids:
-                self.events.append(QuicEvent.stream_opened(new_id))
-
-        var p_opt = self.stream_map.try_stream_ptr(key)
-        if not p_opt:
-            raise "PROTOCOL_VIOLATION: RESET for unknown stream after create"
-        var p = p_opt.value()
+        if not self._resolve_frame_stream(stream_id):
+            return
+        var p = self.stream_map.stream_ptr(key)
         if not p[].recv_state:
             raise "STREAM_STATE_ERROR: RESET on non-recv stream"
 
@@ -1233,17 +1244,9 @@ struct QuicConnection(Movable):
         var error_code = stop_frame.error_code
 
         var key = Int(stream_id)
-        if key not in self.stream_map.streams:
-            if stream_is_local(stream_id, self.is_server):
-                raise "PROTOCOL_VIOLATION: STOP_SENDING for unknown local stream"
-            var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
-            for ref new_id in new_ids:
-                self.events.append(QuicEvent.stream_opened(new_id))
-
-        var p_opt = self.stream_map.try_stream_ptr(key)
-        if not p_opt:
-            raise "PROTOCOL_VIOLATION: STOP_SENDING for unknown stream after create"
-        var p = p_opt.value()
+        if not self._resolve_frame_stream(stream_id):
+            return
+        var p = self.stream_map.stream_ptr(key)
         if not p[].send_state:
             raise "STREAM_STATE_ERROR: STOP_SENDING targets non-send side"
 
@@ -1659,6 +1662,8 @@ struct QuicConnection(Movable):
         ref msd = frame.as_max_stream_data()
         var key = Int(msd.stream_id)
         var p_opt = self.stream_map.try_stream_ptr(key)
+        if not p_opt and self.stream_map.was_opened(msd.stream_id):
+            return  # closed and freed: ignore (RFC 9000 Section 3)
         var _exists = Bool(p_opt)
         var _has_send = stream_is_bidi(msd.stream_id) or stream_is_local(
             msd.stream_id, self.is_server
@@ -1727,7 +1732,8 @@ struct QuicConnection(Movable):
         """Process STREAM frame from cursor scalars (no StreamFrame alloc)."""
         var data_len = UInt64(len(stream_data))
         var key = Int(stream_id)
-        self._ensure_peer_stream_exists(key, stream_id)
+        if not self._resolve_frame_stream(stream_id):
+            return
         var p = self.stream_map.stream_ptr(key)
         if not p[].is_bidi and p[].is_local:
             raise "STREAM_STATE_ERROR: incoming STREAM frame on local uni stream"
@@ -1816,6 +1822,8 @@ struct QuicConnection(Movable):
         """Handle MAX_STREAM_DATA from cursor scalars."""
         var key = Int(stream_id)
         var p_opt = self.stream_map.try_stream_ptr(key)
+        if not p_opt and self.stream_map.was_opened(stream_id):
+            return  # closed and freed: ignore (RFC 9000 Section 3)
         var _exists = Bool(p_opt)
         var _has_send = stream_is_bidi(stream_id) or stream_is_local(
             stream_id, self.is_server
