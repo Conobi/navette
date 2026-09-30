@@ -37,6 +37,8 @@ from navette.h3.frame import (
 )
 from navette.h3.error import (
     H3_MISSING_SETTINGS,
+    H3_SETTINGS_ERROR,
+    H3_ID_ERROR,
     H3_GENERAL_PROTOCOL_ERROR,
     H3_FRAME_UNEXPECTED,
     H3_STREAM_CREATION_ERROR,
@@ -100,6 +102,23 @@ def _is_http2_frame_type(frame_type: UInt64) -> Bool:
         frame_type == 0x02 or frame_type == 0x06
         or frame_type == 0x08 or frame_type == 0x09
     )
+
+
+def _settings_ids_invalid(settings: SettingsFrame) -> Bool:
+    """True for a repeated identifier or one reserved from HTTP/2 (0x00, 0x02-0x05): H3_SETTINGS_ERROR (RFC 9114 Sections 7.2.4, 7.2.4.1).
+
+    Quadratic in the pair count, which the 256-byte SETTINGS payload cap
+    bounds to 128.
+    """
+    var n = len(settings.pairs)
+    for i in range(n):
+        var id = settings.pairs[i].id
+        if id == 0x00 or (id >= 0x02 and id <= 0x05):
+            return True
+        for j in range(i):
+            if settings.pairs[j].id == id:
+                return True
+    return False
 
 
 def _single_varint(payload: List[Byte]) -> Optional[UInt64]:
@@ -231,6 +250,9 @@ struct H3Connection(Movable):
     var _peer_ctrl_settings:         Bool
     var _goaway_sent:                Optional[UInt64]
     var _peer_goaway_sid:            Optional[UInt64]
+    # Server: the client's MAX_PUSH_ID; None until one arrives (no push id
+    # allowed). Push is never used, it only bounds CANCEL_PUSH.
+    var _peer_max_push_id:           Optional[UInt64]
     var _enc:                        QpackEncoder
     var _dec:                        QpackDecoder
     # Per-request-stream HEADERS-seen flag, feeding the F31 (DATA-before-
@@ -285,6 +307,7 @@ struct H3Connection(Movable):
         self._peer_ctrl_settings = False
         self._goaway_sent = Optional[UInt64]()
         self._peer_goaway_sid = Optional[UInt64]()
+        self._peer_max_push_id = Optional[UInt64]()
         if codec_tables:
             self._enc = QpackEncoder(False, codec_tables.value())
             self._dec = QpackDecoder(codec_tables.value())
@@ -1166,6 +1189,9 @@ struct H3Connection(Movable):
             except:
                 self._quic.close_app(H3_FRAME_ERROR, "malformed SETTINGS", now)
                 return
+            if _settings_ids_invalid(peer_settings):
+                self._quic.close_app(H3_SETTINGS_ERROR, "duplicate or HTTP/2 SETTINGS identifier", now)
+                return
             # RFC 9297 §2.2: detect H3_DATAGRAM=1 in the peer's SETTINGS
             # so subsequent send_datagram calls can gate on the negotiated
             # flag. Values other than 0/1 are reserved but the only
@@ -1190,8 +1216,21 @@ struct H3Connection(Movable):
                 # RFC 9114 Section 7.2.7: only clients send MAX_PUSH_ID.
                 self._quic.close_app(H3_FRAME_UNEXPECTED, "MAX_PUSH_ID sent by server", now)
                 return
-            if frame.frame_type != H3_FRAME_GOAWAY:
-                return  # push is never enabled: nothing to cancel or grant
+            if frame.frame_type == _H3_FRAME_MAX_PUSH_ID:
+                # RFC 9114 Section 7.2.7: MAX_PUSH_ID never decreases.
+                if self._peer_max_push_id and value.value() < self._peer_max_push_id.value():
+                    self._quic.close_app(H3_ID_ERROR, "MAX_PUSH_ID reduced", now)
+                    return
+                self._peer_max_push_id = value
+                return
+            if frame.frame_type == H3_FRAME_CANCEL_PUSH:
+                # RFC 9114 Section 7.2.3: a push id above the allowed
+                # maximum is H3_ID_ERROR. A client never sends MAX_PUSH_ID,
+                # so none is allowed from a server.
+                var allowed = self._is_server and Bool(self._peer_max_push_id)
+                if not allowed or value.value() > self._peer_max_push_id.value():
+                    self._quic.close_app(H3_ID_ERROR, "CANCEL_PUSH above MAX_PUSH_ID", now)
+                return  # push is never used: nothing to cancel
             var last_sid = value.value()
             self._peer_goaway_sid = Optional[UInt64](last_sid)
             var h3ev = H3Event(H3Event.GOAWAY_RECEIVED)
