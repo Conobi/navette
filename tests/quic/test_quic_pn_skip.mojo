@@ -35,20 +35,19 @@ def test_skipped_pn_ack_rejected() raises:
     var s = _space(0x9E3779B97F4A7C15)
     for _ in range(600):
         _ = s.alloc_pn()
-    var skipped = s.skipped_pns()
-    assert_true(len(skipped) > 0, "600 allocations skip at least once")
+    assert_true(s.skip_hi > s.skip_lo, "600 allocations skip at least once")
     var no_ranges = List[AckRange]()
     var ok = s.on_ack_received(_ack(10, 10), Span(no_ranges))
     assert_true(not s.ack_violation, "ACK of sent PNs 0..10 accepted")
     assert_equal_int(len(ok), 0, "nothing was in flight")
-    var bad = s.on_ack_received(_ack(skipped[0], 0), Span(no_ranges))
+    var bad = s.on_ack_received(_ack(s.skip_lo, 0), Span(no_ranges))
     assert_true(s.ack_violation, "ACK of a skipped PN flagged")
     assert_equal_int(len(bad), 0, "flagged ACK acknowledges nothing")
     # The last number of a gap, reached through a second range.
     var t = _space(0x9E3779B97F4A7C15)
     for _ in range(600):
         _ = t.alloc_pn()
-    var last = t.skipped_pns()[len(t.skipped_pns()) - 1]
+    var last = t.skip_hi - 1
     var ranges = List[AckRange]()
     ranges.append(AckRange(gap=0, ack_range=0))  # covers largest - 2
     _ = t.on_ack_received(_ack(last + 2, 0), Span(ranges))

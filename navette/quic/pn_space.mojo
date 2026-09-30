@@ -124,10 +124,6 @@ struct SentPacket(Copyable, Movable):
 
 # ── PacketNumberSpace ────────────────────────────────────────────────
 
-# Gaps remembered for the skipped-PN check: at 200-499 packets per gap,
-# 8 cover the last 1,600 packets at least, beyond any ACK a live peer sends.
-comptime SKIP_HISTORY: Int = 8
-
 
 struct PacketNumberSpace(Copyable, Movable):
     """Per-encryption-level PN space with send/receive tracking."""
@@ -149,12 +145,10 @@ struct PacketNumberSpace(Copyable, Movable):
     var ect0_in_flight: UInt64    # O(1) count of in-flight ECT(0)-marked packets
     var pn_skip_rng: UInt64    # Xorshift64 state; 0 = disabled (Initial + Handshake)
     var pn_skip_next: UInt64   # PN at which the next gap is inserted
-    # The last SKIP_HISTORY gaps (first PN, length), a ring; an ACK covering
-    # any of them is an optimistic ACK (RFC 9000 Section 21.4).
-    var _skip_start: InlineArray[UInt64, SKIP_HISTORY]
-    var _skip_len: InlineArray[UInt8, SKIP_HISTORY]
-    var _skip_head: Int     # next ring slot to write
-    var _skip_count: Int
+    # The last gap skipped, [skip_lo, skip_hi) (empty until one is); an
+    # ACK covering it is an optimistic ACK (RFC 9000 Section 21.4).
+    var skip_lo: UInt64
+    var skip_hi: UInt64
     # Set by `on_ack_received` when an ACK names a skipped or never-sent
     # PN; sticky, the connection closes with PROTOCOL_VIOLATION.
     var ack_violation: Bool
@@ -198,10 +192,8 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ect0_in_flight = UInt64(0)
         self.pn_skip_rng  = UInt64(0)
         self.pn_skip_next = UInt64(0xFFFFFFFFFFFFFFFF)
-        self._skip_start = InlineArray[UInt64, SKIP_HISTORY](fill=UInt64(0))
-        self._skip_len = InlineArray[UInt8, SKIP_HISTORY](fill=UInt8(0))
-        self._skip_head = 0
-        self._skip_count = 0
+        self.skip_lo = UInt64(0)
+        self.skip_hi = UInt64(0)
         self.ack_violation = False
         self.largest_rx_pkt_time = None
         self.ack_deadline = None
@@ -231,10 +223,8 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ect0_in_flight = copy.ect0_in_flight
         self.pn_skip_rng  = copy.pn_skip_rng
         self.pn_skip_next = copy.pn_skip_next
-        self._skip_start = copy._skip_start.copy()
-        self._skip_len = copy._skip_len.copy()
-        self._skip_head = copy._skip_head
-        self._skip_count = copy._skip_count
+        self.skip_lo = copy.skip_lo
+        self.skip_hi = copy.skip_hi
         self.ack_violation = copy.ack_violation
         self.largest_rx_pkt_time = copy.largest_rx_pkt_time.copy()
         self.ack_deadline = copy.ack_deadline.copy()
@@ -262,10 +252,8 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ect0_in_flight = move.ect0_in_flight
         self.pn_skip_rng  = move.pn_skip_rng
         self.pn_skip_next = move.pn_skip_next
-        self._skip_start = move._skip_start^
-        self._skip_len = move._skip_len^
-        self._skip_head = move._skip_head
-        self._skip_count = move._skip_count
+        self.skip_lo = move.skip_lo
+        self.skip_hi = move.skip_hi
         self.ack_violation = move.ack_violation
         self.largest_rx_pkt_time = move.largest_rx_pkt_time^
         self.ack_deadline = move.ack_deadline^
@@ -283,8 +271,8 @@ struct PacketNumberSpace(Copyable, Movable):
 
         When pn_skip_rng is non-zero (Application space after handshake),
         randomly skips 1-8 PNs every 200-499 allocations via Xorshift64,
-        and remembers the last SKIP_HISTORY gaps so `on_ack_received` can
-        flag an ACK of a PN never sent (the optimistic-ACK defence of RFC
+        and remembers the last gap so `on_ack_received` can flag an ACK
+        of a PN never sent (the optimistic-ACK defence of RFC
         9000 Section 21.4; quiche CVE-2025-4820). The seed must be secret:
         the connection draws it from getrandom.
         """
@@ -294,34 +282,18 @@ struct PacketNumberSpace(Copyable, Movable):
             self.pn_skip_rng ^= self.pn_skip_rng >> 7
             self.pn_skip_rng ^= self.pn_skip_rng << 17
             var gap = (self.pn_skip_rng & 7) + 1                    # 1-8 skipped PNs
-            self._skip_start[self._skip_head] = self.next_pn
-            self._skip_len[self._skip_head] = UInt8(gap)
-            self._skip_head = (self._skip_head + 1) % SKIP_HISTORY
-            self._skip_count = min(self._skip_count + 1, SKIP_HISTORY)
+            self.skip_lo = self.next_pn
             self.next_pn += gap
+            self.skip_hi = self.next_pn
             # Schedule next gap: 200-499 packets from now
             self.pn_skip_next = self.next_pn + 200 + (self.pn_skip_rng % 300)
         var pn = self.next_pn
         self.next_pn += 1
         return pn
 
-    def skipped_pns(self) -> List[UInt64]:
-        """Every PN in the remembered gaps, oldest gap first (for tests)."""
-        var out = List[UInt64]()
-        for k in range(self._skip_count):
-            var i = (self._skip_head - self._skip_count + k + SKIP_HISTORY) % SKIP_HISTORY
-            for j in range(Int(self._skip_len[i])):
-                out.append(self._skip_start[i] + UInt64(j))
-        return out^
-
     def _covers_skipped(self, lo: UInt64, hi: UInt64) -> Bool:
-        """True when [lo, hi] overlaps a remembered gap."""
-        for i in range(self._skip_count):
-            var start = self._skip_start[i]
-            var end = start + UInt64(self._skip_len[i]) - 1
-            if lo <= end and start <= hi:
-                return True
-        return False
+        """True when [lo, hi] overlaps the last skipped gap."""
+        return lo < self.skip_hi and self.skip_lo <= hi
 
     # ── Receive tracking ─────────────────────────────────────────────
 
