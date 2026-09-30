@@ -2470,14 +2470,23 @@ struct QuicConnection(Movable):
             self.current_level = 2
 
     def _on_handshake_complete(mut self, now: UInt64) raises:
-        """Called when TLS reports handshake is complete."""
-        if (self.state & CONN_ESTABLISHED) != 0:
+        """Called when TLS reports handshake is complete.
+
+        A transport-parameter check that fails closes the connection; it
+        is then never promoted (no ESTABLISHED, no HANDSHAKE_DONE, no
+        handshake_complete event), so nothing treats a closing peer as
+        usable or validated; later calls on a closing connection return
+        at once.
+        """
+        if (self.state & (CONN_ESTABLISHED | CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
         if self.is_server:
             self.prof.record_hs_complete(now)
         self._record_handshake_profile_stats()
         self.state = self.state & ~CONN_HANDSHAKING
         self._apply_peer_transport_params(now)
+        if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
+            return
         # Seed Application-space PN skip RNG from local_cid.
         var pn_skip_seed = UInt64(0)
         var local_cid_span = self.local_cid.as_span()

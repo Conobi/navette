@@ -134,6 +134,7 @@ def test_handshake_without_retry_checks_original_dcid() raises:
     var bad = g.server(_bytes(0x77, 8), g.orig(), List[Byte]())
     _pump(g.client, bad, g.now, g.first)
     assert_equal_int(_client_close_code(g.client), 0x08, "wrong original_destination_connection_id")
+    assert_true(not g.client.is_established(), "a client closing on its peer's parameters is never established")
     print("  test_handshake_without_retry_checks_original_dcid: PASS")
 
 
@@ -184,6 +185,7 @@ def test_retry_scid_mismatch_closes_client() raises:
     var server = f.server(orig, rscid, _bytes(0x5B, 8))
     _pump(f.client, server, f.now, _send_all(f.client, f.now))
     assert_equal_int(_client_close_code(f.client), 0x08, "retry_source_connection_id mismatch")
+    assert_true(not f.client.is_established(), "not established after a failed parameter check")
     print("  test_retry_scid_mismatch_closes_client: PASS")
 
 
