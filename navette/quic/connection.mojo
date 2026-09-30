@@ -3724,7 +3724,10 @@ struct QuicConnection(Movable):
         reset) or does not exist; a no-op for an already-freed stream.
 
         For an application abandoning a stream the peer reset: a send side
-        left open keeps the stream from ever being freed.
+        left open keeps the stream from ever being freed. A FIN counts as
+        queued from the moment the application asks for it, framed or not
+        and even if lost: a complete response must still be delivered
+        (RFC 9114 Section 4.1.2).
         """
         var p_opt = self.stream_map.try_stream_ptr(Int(stream_id))
         if not p_opt:
@@ -3735,7 +3738,9 @@ struct QuicConnection(Movable):
         var ss = p[].send_state.value()
         if ss != SendState.READY and ss != SendState.SEND:
             return
-        if p[].send_buf and p[].send_buf.value().fin_offset:
+        # `fin`, not `fin_offset`: the latter is only set once the FIN is
+        # framed and is cleared again when that frame is lost.
+        if p[].send_buf and p[].send_buf.value().fin:
             return
         try:
             self.reset_stream(stream_id, error_code)
