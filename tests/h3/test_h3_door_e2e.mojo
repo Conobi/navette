@@ -9,12 +9,14 @@ from std.collections import Span
 
 from navette.protect.config import ProtectionConfig
 from navette.quic.cid import demux_key
+from navette.quic.cid_buf import CidBuf
+from navette.h3.conn_table import KEYS_PER_CONN
 from navette.quic.event import QuicEvent, ConnectionClosedPayload
 from navette.quic.packet import PacketType, parse_packet_header
 
 from tests._test_util import assert_true, assert_equal_int
 from tests.h3._udp_server_harness import UdpServerHarness, HarnessClient, raw_initial, raw_long
-from tests.h3.test_h3_udp_server import StubHandler, make_stub_handler, _params
+from tests.h3.test_h3_udp_server import StubHandler, make_stub_handler, _params, _send_partial_request
 
 
 def _harness(protection: ProtectionConfig = ProtectionConfig()) raises -> UdpServerHarness[StubHandler]:
@@ -254,6 +256,7 @@ def test_handshake_timeout_frees_unvalidated() raises:
     _settle(h, 1)
     assert_equal_int(h.slot_count(), 0, "abandoned 10 s after creation")
     assert_equal_int(h.srv[].unvalidated_handshaking(), 0, "count back to 0")
+    assert_equal_int(Int(h.srv[].protection_stats().handshake_timeouts), 3, "3 handshake timeouts counted")
     assert_equal_int(len(h.recv_raw(sock, 20)), 0, "nothing sent to an unvalidated peer")
     _ = sock^
     _ = h.slot_count()
@@ -306,6 +309,102 @@ def test_quic_leak_single_slot() raises:
     print("PASS: test_quic_leak_single_slot")
 
 
+def _remote_cid(mut c: HarnessClient, seq: UInt64) raises -> List[Byte]:
+    """The server-issued CID the client holds under `seq`."""
+    for ref e in c.h3._quic.cid_mgr.remote_cids:
+        if e.sequence == seq:
+            return e.cid.copy()
+    raise Error("client holds no remote CID with seq " + String(seq))
+
+
+def _cid_harness() raises -> UdpServerHarness[StubHandler]:
+    """A harness whose client accepts 4 active CIDs, so the server issues seq 1 to 3 at once."""
+    var cp = _params()
+    cp.active_connection_id_limit = 4
+    return UdpServerHarness[StubHandler](make_stub_handler, _params(), cp^)
+
+
+def _established_with_cids(mut h: UdpServerHarness[StubHandler]) raises -> HarnessClient:
+    """A handshaken client that has received the server's NEW_CONNECTION_ID frames for seq 1 and 2."""
+    var c = h.new_client()
+    assert_true(h.handshake(c), "handshake")
+    for _ in range(3):
+        _ = h.pump(c)
+    _ = _remote_cid(c, 1)
+    _ = _remote_cid(c, 2)
+    return c^
+
+
+def _switch_and_send(mut h: UdpServerHarness[StubHandler], mut c: HarnessClient, seq: UInt64) raises -> Bool:
+    """Point the client's DCID at the CID issued under `seq`, send one ack-eliciting packet; True when it reached slot 0."""
+    c.h3._quic.peer_cid = CidBuf.from_span(Span(_remote_cid(c, seq)))
+    var before = h.server_conn(0)[]._h3._quic.bytes_received
+    _ = _send_partial_request(c)
+    _ = h.pump(c)
+    return h.server_conn(0)[]._h3._quic.bytes_received > before
+
+
+def _raw_short(dcid: List[Byte], total_len: Int) -> List[Byte]:
+    """A `total_len`-byte short-header packet for `dcid`, zero-filled (never decrypts)."""
+    var p = List[Byte](capacity=total_len)
+    p.append(0x43)
+    for b in dcid:
+        p.append(b)
+    while len(p) < total_len:
+        p.append(0x00)
+    return p^
+
+
+def test_client_rotates_to_issued_cids() raises:
+    var h = _cid_harness()
+    var c = _established_with_cids(h)
+    for seq in range(1, 3):
+        assert_true(_switch_and_send(h, c, UInt64(seq)), "seq " + String(seq) + " reaches the connection")
+    assert_equal_int(h.slot_count(), 1, "no new slot")
+    _ = c^
+    _ = h.slot_count()
+    print("PASS: test_client_rotates_to_issued_cids")
+
+
+def test_retired_cid_no_longer_routes() raises:
+    var h = _cid_harness()
+    var c = _established_with_cids(h)
+    assert_true(_switch_and_send(h, c, 1), "seq 1 routes")
+    var retired = _remote_cid(c, 1)
+    assert_true(c.h3._quic.cid_mgr.retire_remote(1), "client queues RETIRE_CONNECTION_ID for seq 1")
+    assert_true(_switch_and_send(h, c, 2), "seq 2 routes and carries the retirement")
+    _ = h.pump(c)
+    var dropped = h.srv[].protection_stats().dropped_unknown_dcid
+    h.send_raw(c.sock, _raw_short(retired, 60))
+    _settle(h, 1)
+    assert_equal_int(
+        Int(h.srv[].protection_stats().dropped_unknown_dcid), Int(dropped) + 1, "retired CID dropped as unknown"
+    )
+    assert_true(_switch_and_send(h, c, 2), "the live CID still routes")
+    assert_equal_int(h.slot_count(), 1, "no new slot")
+    _ = c^
+    _ = h.slot_count()
+    print("PASS: test_retired_cid_no_longer_routes")
+
+
+def test_initial_dcid_key_removed_after_handshake() raises:
+    var h = _cid_harness()
+    var c = _established_with_cids(h)
+    var orig = List[Byte](c.h3._quic.initial_dcid.as_span())
+    ref table = h.srv[]._table
+    assert_true(table.key_count(h.srv[].conn_slots[0].id) <= KEYS_PER_CONN, "keys within the per-connection bound")
+    assert_equal_int(
+        h.srv[]._find_conn_by_dcid(demux_key(Span(orig), h.srv[]._demux_sip)), -1, "Initial DCID no longer routes"
+    )
+    h.send_raw(c.sock, raw_initial(orig, 1200))
+    _settle(h, 1)
+    assert_equal_int(h.slot_count(), 2, "a fresh Initial for the old DCID makes a new slot")
+    assert_equal_int(h.srv[]._table.invariant_violation().byte_length(), 0, "table invariants hold")
+    _ = c^
+    _ = h.slot_count()
+    print("PASS: test_initial_dcid_key_removed_after_handshake")
+
+
 def main() raises:
     test_small_initials_dropped()
     test_version_negotiation()
@@ -319,3 +418,6 @@ def main() raises:
     test_handshake_timeout_frees_unvalidated()
     test_refused_when_no_free_id()
     test_quic_leak_single_slot()
+    test_client_rotates_to_issued_cids()
+    test_retired_cid_no_longer_routes()
+    test_initial_dcid_key_removed_after_handshake()

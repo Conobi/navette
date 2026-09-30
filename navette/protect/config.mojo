@@ -151,6 +151,7 @@ struct ProtectionStats(Copyable, Movable):
     var purged_before_dispatch: UInt64
     # H3.
     var h3_churn_closes: UInt64
+    var handshake_timeouts: UInt64  # handshakes abandoned, silently, at the handshake deadline
     var regrant_holds: UInt64
     # Egress.
     var egress_fallback_datagrams: UInt64
@@ -210,5 +211,6 @@ struct ProtectionStats(Copyable, Movable):
         self.refused_lifetime_closes = 0
         self.purged_before_dispatch = 0
         self.h3_churn_closes = 0
+        self.handshake_timeouts = 0
         self.regrant_holds = 0
         self.egress_fallback_datagrams = 0

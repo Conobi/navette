@@ -115,7 +115,7 @@ from navette.tls.early_data_filter import EarlyDataPredicateFn, IdempotentOnlyFi
 from navette.http.handler import StreamHandler
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
-from navette.h3.conn_table import ConnTable
+from navette.h3.conn_table import ConnTable, KEYS_PER_CONN
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.h3.ingress_guard import (
     IngressGuard,
@@ -482,6 +482,11 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     established; while set, the slot is abandoned `HANDSHAKE_TIMEOUT_US`
     after `created_us`.
 
+    `cid_epoch_seen` and `initial_key_live` record the local CID set
+    (`CidManager.cid_epoch`) and the handshake-confirmation state the
+    table's demux keys last reflected; `_sync_cid_keys` compares them to
+    skip the resync when neither moved.
+
     `next_deadline_us` caches the connection's earliest deadline as of
     `deadline_refreshed_at_us` (`now` while egress is capped, `timeout()`
     otherwise, capped by the handshake deadline, `NO_DEADLINE_US` for
@@ -502,6 +507,8 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     var id: Int
     var created_us: UInt64
     var handshaking: Bool
+    var cid_epoch_seen: UInt64
+    var initial_key_live: Bool
     var next_deadline_us: UInt64
     var deadline_refreshed_at_us: UInt64
     var dirty_pass: UInt64
@@ -518,6 +525,8 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.id = id
         self.created_us = created_us
         self.handshaking = True
+        self.cid_epoch_seen = UInt64(0)
+        self.initial_key_live = True
         self.next_deadline_us = NO_DEADLINE_US
         self.deadline_refreshed_at_us = UInt64(0)
         self.dirty_pass = UInt64(0)
@@ -528,6 +537,8 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.id = copy.id
         self.created_us = copy.created_us
         self.handshaking = copy.handshaking
+        self.cid_epoch_seen = copy.cid_epoch_seen
+        self.initial_key_live = copy.initial_key_live
         self.next_deadline_us = copy.next_deadline_us
         self.deadline_refreshed_at_us = copy.deadline_refreshed_at_us
         self.dirty_pass = copy.dirty_pass
@@ -574,7 +585,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
     # Per-conn book-keeping. `_table` gives each connection a stable id
     # and routes every DCID demux key it owns (the client's Initial DCID
-    # and our local CID) to the id's current slot; it is sized from
+    # until confirmation, our first SCID and every CID we issued, kept in
+    # step by `_sync_cid_keys`) to the id's current slot; it is sized from
     # `protection.conn_cap` in start().
     var conn_slots: List[ConnSlot[Self.H]]
     var _table: ConnTable
@@ -693,6 +705,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     # drawn from getrandom(2) in start(), before any DCID is keyed with
     # it, and never exposed.
     var _demux_sip: SipKey
+    # `_sync_cid_keys` reports a demux-key clash only once.
+    var _cid_clash_logged: Bool
 
     # Per-pass cap on queued recv-stream deliveries (see `ingest_more`).
     var ingest_budget: Int
@@ -782,6 +796,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self._test_fail_start_after_recv = False
         self._started = False
         self._demux_sip = SipKey(k0=UInt64(0), k1=UInt64(0))
+        self._cid_clash_logged = False
         self.ingest_budget = INGEST_BUDGET_DATAGRAMS
         self._dirty_conns = List[Int]()
         self._ingress_pass = UInt64(0)
@@ -1190,7 +1205,11 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             if self.conn_slots[i].next_deadline_us > now:
                 continue
             if _handshake_deadline(self.conn_slots[i]) <= now:
-                self.conn_slots[i].h3[]._h3._quic.abandon()
+                ref quic = self.conn_slots[i].h3[]._h3._quic
+                if not quic.is_closed():
+                    quic.abandon()
+                    if self._guard:
+                        self._guard.value().stats.handshake_timeouts += 1
             try:
                 self._drain_and_send(i, now)
             # Silent on purpose: a slot whose send() raises persistently stays due on
@@ -1988,7 +2007,61 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             # A raise above (drain, anti-amp accounting) still leaves a
             # fresh cache: the PTO armed by the dropped datagrams must be
             # visible to the timer before the caller's `except` runs.
+            self._sync_cid_keys(conn_idx)
             self._refresh_deadline(conn_idx, now)
+
+    def _sync_cid_keys(mut self, conn_idx: Int):
+        """Make the table route exactly the connection's live DCIDs.
+
+        Those are every active CID we issued, the first server SCID
+        (`quic.local_cid`, kept for the connection's life because
+        `caps.conn_id` names the connection through it) and the client's
+        Initial DCID until the handshake is confirmed (RFC 9000 Section
+        7.2: the client drops it after the first server Initial). Called at
+        the end of every drain, before its egress is submitted, so a new
+        CID routes before the NEW_CONNECTION_ID announcing it leaves, and a
+        retired one stops routing in the pass that processed the
+        RETIRE_CONNECTION_ID. Two compares when nothing changed. A key
+        owned by another connection (a raw 8-byte CID clash) leaves that
+        CID unroutable; it is logged once per server.
+        """
+        ref slot = self.conn_slots[conn_idx]
+        ref quic = slot.h3[]._h3._quic
+        var confirmed = quic.handshake_confirmed
+        if quic.cid_mgr.cid_epoch == slot.cid_epoch_seen and slot.initial_key_live != confirmed:
+            return
+        var want = InlineArray[UInt64, KEYS_PER_CONN + 1](fill=UInt64(0))
+        var n = 0
+        want[n] = demux_key(quic.local_cid.as_span(), self._demux_sip)
+        n += 1
+        if not confirmed:
+            want[n] = demux_key(quic.initial_dcid.as_span(), self._demux_sip)
+            n += 1
+        for ref e in quic.cid_mgr.local_cids:
+            if n == len(want):
+                break
+            want[n] = demux_key(Span(e.cid), self._demux_sip)
+            n += 1
+        var id = slot.id
+        # Backwards: `remove_key` moves the last key into the hole, and
+        # every key after `i` has already been kept.
+        var i = self._table.key_count(id) - 1
+        while i >= 0:
+            var key = self._table.key_at(id, i)
+            var keep = False
+            for j in range(n):
+                if want[j] == key:
+                    keep = True
+                    break
+            if not keep:
+                self._table.remove_key(id, key)
+            i -= 1
+        for j in range(n):
+            if not self._table.add_key(id, want[j]) and not self._cid_clash_logged:
+                self._cid_clash_logged = True
+                print("H3UdpServer: an issued CID's demux key is taken; that CID stays unroutable")
+        slot.cid_epoch_seen = quic.cid_mgr.cid_epoch
+        slot.initial_key_live = not confirmed
 
     # ── Out-of-band response injection (cross-transport wake) ─────
 
@@ -2073,6 +2146,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             # runs when `h3[].inject_response` raised before mutating
             # anything: one spurious refresh, accepted over a second
             # try/except just to skip it.
+            self._sync_cid_keys(conn_idx)
             self._refresh_deadline(conn_idx, now)
 
 

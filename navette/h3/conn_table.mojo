@@ -156,6 +156,10 @@ struct ConnTable(Movable):
     def key_count(self, id: Int) -> Int:
         return Int(self._nkeys[id])
 
+    def key_at(self, id: Int, i: Int) -> UInt64:
+        """The `i`-th key `id` owns, `i < key_count(id)`; order changes on `remove_key`."""
+        return self._keys[id * KEYS_PER_CONN + i]
+
     @always_inline
     def _tag(self, id: Int) -> UInt64:
         return (UInt64(self._gen[id]) << 32) | UInt64(id)
