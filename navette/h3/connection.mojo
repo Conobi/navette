@@ -782,9 +782,9 @@ struct H3Connection(Movable):
         try:
             recv_result = self._quic.recv_stream_data(stream_id)
         except:
-            # QUIC already reaped the stream: a RESET_STREAM processed after
-            # this readable event was queued. Its STREAM_RESET event
-            # releases the H3 state.
+            # QUIC already reaped the stream, so an earlier event for it
+            # released the H3 state too: a delivered STREAM_RESET, or a
+            # drain that read through FIN once our side had finished.
             return
         comptime if PROFILE_ACCEPT:
             if self.profile_ptr is not None:

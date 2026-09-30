@@ -3373,7 +3373,12 @@ struct QuicConnection(Movable):
 
     def poll(mut self) -> Optional[QuicEvent]:
         """Next pending event in append order; O(1) via a head index, the
-        list is reset (not rebuilt) once drained."""
+        list is reset (not rebuilt) once drained.
+
+        Handing out a STREAM_RESET event is what informs the application
+        of the reset, so the stream's receive side moves to Reset Read
+        here and the stream is reaped if its send side is done too.
+        """
         if self._events_head >= len(self.events):
             if len(self.events) > 0:
                 self.events.clear()
@@ -3385,7 +3390,34 @@ struct QuicConnection(Movable):
         if self._events_head >= len(self.events):
             self.events.clear()
             self._events_head = 0
+        if ev.type_id == QuicEvent.STREAM_RESET:
+            self._on_reset_delivered(
+                ev.payload.unsafe_get[StreamResetPayload]().stream_id
+            )
         return ev^
+
+    def _on_reset_delivered(mut self, stream_id: UInt64):
+        """Reset Recvd -> Reset Read (RFC 9000 Section 3.2), then reap.
+
+        Without this a peer-reset stream never reaches a terminal receive
+        state: it is never freed and its MAX_STREAMS credit never returns.
+        A stream already reaped, or whose data was fully received before
+        the reset (it stays Data Recvd), is left alone.
+        """
+        var key = Int(stream_id)
+        var p_opt = self.stream_map.try_stream_ptr(key)
+        if not p_opt:
+            return
+        var p = p_opt.value()
+        if not p[].recv_state or p[].recv_state.value() != RecvState.RESET_RECVD:
+            return
+        p[].recv_state = Optional[RecvState](RecvState.RESET_READ)
+        try:
+            _ = self.stream_map.maybe_cleanup(key)
+        except:
+            # Only the sendable-set bookkeeping can raise; the stream stays
+            # terminal and is reaped when its send side finishes.
+            pass
 
     def close_transport(mut self, error_code: UInt64, reason: String, now: UInt64):
         """Initiate a graceful CONNECTION_CLOSE (RFC 9000 §19.19 frame type 0x1c).
