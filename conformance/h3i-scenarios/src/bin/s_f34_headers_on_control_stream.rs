@@ -2,7 +2,7 @@
 //! HEADERS frame on a control stream MUST be H3_FRAME_UNEXPECTED.
 //!
 //! GUARD-TAG: [H3-HEADERS-ON-CTRL]
-//! Expected close: application, H3_FRAME_UNEXPECTED (0x0103).
+//! Expected close: application, H3_FRAME_UNEXPECTED (0x0105).
 
 use h3i::actions::h3::send_headers_frame;
 use h3i::actions::h3::Action;
@@ -11,7 +11,7 @@ use h3i::quiche::h3::frame::Frame;
 use h3i::quiche::h3::Header;
 use h3i_scenarios::loopback_config;
 
-const H3_FRAME_UNEXPECTED: u64 = 0x0103;
+const H3_FRAME_UNEXPECTED: u64 = 0x0105;
 const CLIENT_CONTROL_STREAM_ID: u64 = 2;
 const STREAM_TYPE_CONTROL: u64 = 0x00;
 const EXPECTED_REASON_SUBSTRING: &str = "[H3-HEADERS-ON-CTRL]";
@@ -75,7 +75,7 @@ fn main() {
         }
         Some(err) => {
             eprintln!(
-                "s_f34: FAIL got code=0x{:x} is_app={}, expected H3_FRAME_UNEXPECTED (0x0103) app",
+                "s_f34: FAIL got code=0x{:x} is_app={}, expected H3_FRAME_UNEXPECTED (0x0105) app",
                 err.error_code, err.is_app
             );
             std::process::exit(1);

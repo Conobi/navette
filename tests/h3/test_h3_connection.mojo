@@ -350,7 +350,7 @@ def test_predicate_f31_positive() raises:
     var v = predicate_f31_data_before_headers(UInt64(0x00), ctx)
     assert_true(v.__bool__(), "F31 positive must return Some")
     var verdict = v.value().copy()
-    assert_equal_int(Int(verdict.error_code), 0x0103, "F31 H3_FRAME_UNEXPECTED")
+    assert_equal_int(Int(verdict.error_code), 0x0105, "F31 H3_FRAME_UNEXPECTED")
     assert_true(verdict.tag == "[H3-DATA-BEFORE-HEADERS]", "F31 tag matches")
     print("  test_predicate_f31_positive: PASS")
 
@@ -428,7 +428,7 @@ def test_predicate_f33_positive() raises:
     var v = predicate_f33_data_on_control(UInt64(0x00), ctx)
     assert_true(v.__bool__(), "F33 positive must return Some")
     var verdict = v.value().copy()
-    assert_equal_int(Int(verdict.error_code), 0x0103, "F33 H3_FRAME_UNEXPECTED")
+    assert_equal_int(Int(verdict.error_code), 0x0105, "F33 H3_FRAME_UNEXPECTED")
     assert_true(verdict.tag == "[H3-DATA-ON-CTRL]", "F33 tag matches")
     print("  test_predicate_f33_positive: PASS")
 
@@ -464,7 +464,7 @@ def test_predicate_f34_positive() raises:
     var v = predicate_f34_headers_on_control(UInt64(0x01), ctx)
     assert_true(v.__bool__(), "F34 positive must return Some")
     var verdict = v.value().copy()
-    assert_equal_int(Int(verdict.error_code), 0x0103, "F34 H3_FRAME_UNEXPECTED")
+    assert_equal_int(Int(verdict.error_code), 0x0105, "F34 H3_FRAME_UNEXPECTED")
     assert_true(verdict.tag == "[H3-HEADERS-ON-CTRL]", "F34 tag matches")
     print("  test_predicate_f34_positive: PASS")
 
@@ -500,7 +500,7 @@ def test_predicate_f35_positive() raises:
     var v = predicate_f35_second_settings(UInt64(0x04), ctx)
     assert_true(v.__bool__(), "F35 positive must return Some")
     var verdict = v.value().copy()
-    assert_equal_int(Int(verdict.error_code), 0x0103, "F35 H3_FRAME_UNEXPECTED")
+    assert_equal_int(Int(verdict.error_code), 0x0105, "F35 H3_FRAME_UNEXPECTED")
     assert_true(verdict.tag == "[H3-SECOND-SETTINGS]", "F35 tag matches")
     print("  test_predicate_f35_positive: PASS")
 
@@ -533,7 +533,7 @@ def test_predicate_f36_positive() raises:
     var v = predicate_f36_cancel_push_on_request(UInt64(0x03), ctx)
     assert_true(v.__bool__(), "F36 positive must return Some")
     var verdict = v.value().copy()
-    assert_equal_int(Int(verdict.error_code), 0x0103, "F36 H3_FRAME_UNEXPECTED")
+    assert_equal_int(Int(verdict.error_code), 0x0105, "F36 H3_FRAME_UNEXPECTED")
     assert_true(verdict.tag == "[H3-CANCEL-PUSH-REQ]", "F36 tag matches")
     print("  test_predicate_f36_positive: PASS")
 

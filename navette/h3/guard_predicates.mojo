@@ -59,7 +59,7 @@ def predicate_f31_data_before_headers(frame_type: UInt64, ctx: H3StreamCtx) -> O
     if ctx.headers_seen:
         return Optional[GuardVerdict]()
     return Optional[GuardVerdict](GuardVerdict(
-        error_code=UInt64(0x0103),  # H3_FRAME_UNEXPECTED
+        error_code=UInt64(0x0105),  # H3_FRAME_UNEXPECTED
         tag=String(GUARD_TAG_DATA_BEFORE_HEADERS),
     ))
 
@@ -102,7 +102,7 @@ def predicate_f33_data_on_control(frame_type: UInt64, ctx: H3StreamCtx) -> Optio
     if frame_type != UInt64(0x00):  # 0x00 = DATA
         return Optional[GuardVerdict]()
     return Optional[GuardVerdict](GuardVerdict(
-        error_code=UInt64(0x0103),  # H3_FRAME_UNEXPECTED
+        error_code=UInt64(0x0105),  # H3_FRAME_UNEXPECTED
         tag=String(GUARD_TAG_DATA_ON_CTRL),
     ))
 
@@ -121,7 +121,7 @@ def predicate_f34_headers_on_control(frame_type: UInt64, ctx: H3StreamCtx) -> Op
     if frame_type != UInt64(0x01):  # 0x01 = HEADERS
         return Optional[GuardVerdict]()
     return Optional[GuardVerdict](GuardVerdict(
-        error_code=UInt64(0x0103),  # H3_FRAME_UNEXPECTED
+        error_code=UInt64(0x0105),  # H3_FRAME_UNEXPECTED
         tag=String(GUARD_TAG_HEADERS_ON_CTRL),
     ))
 
@@ -136,7 +136,7 @@ def predicate_f35_second_settings(frame_type: UInt64, ctx: H3StreamCtx) -> Optio
     if not ctx.settings_seen:
         return Optional[GuardVerdict]()
     return Optional[GuardVerdict](GuardVerdict(
-        error_code=UInt64(0x0103),  # H3_FRAME_UNEXPECTED
+        error_code=UInt64(0x0105),  # H3_FRAME_UNEXPECTED
         tag=String(GUARD_TAG_SECOND_SETTINGS),
     ))
 
@@ -149,6 +149,6 @@ def predicate_f36_cancel_push_on_request(frame_type: UInt64, ctx: H3StreamCtx) -
     if frame_type != UInt64(0x03):  # 0x03 = CANCEL_PUSH
         return Optional[GuardVerdict]()
     return Optional[GuardVerdict](GuardVerdict(
-        error_code=UInt64(0x0103),  # H3_FRAME_UNEXPECTED
+        error_code=UInt64(0x0105),  # H3_FRAME_UNEXPECTED
         tag=String(GUARD_TAG_CANCEL_PUSH_REQ),
     ))
