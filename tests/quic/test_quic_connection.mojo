@@ -1955,7 +1955,7 @@ def test_cid_retire_triggers_reissue() raises:
 
     # Retire it: CidManager marks it CID_RETIRED and issues a replacement
     # (advertised=False) if active count drops below peer_active_limit.
-    server.cid_mgr.on_retire_connection_id(to_retire_seq)
+    _ = server.cid_mgr.on_retire_connection_id(to_retire_seq)
 
     # The replacement must be in pending_new_cid_entries() (advertised=False).
     var pending = server.cid_mgr.pending_new_cid_entries()
@@ -2190,7 +2190,7 @@ def test_m3c_frames_retransmit_on_loss() raises:
 
     # Retire a non-primary CID → CidManager issues a replacement.
     var seq_c = _pick_non_primary_cid_seq(server_c)
-    server_c.cid_mgr.on_retire_connection_id(seq_c)
+    _ = server_c.cid_mgr.on_retire_connection_id(seq_c)
 
     # Build server packet; should include the NEW_CONNECTION_ID replacement.
     now_c += UInt64(10_000)
@@ -4040,8 +4040,7 @@ def test_initial_new_cid_burst_after_handshake_complete() raises:
     # Crank the peer's CID limit up so the burst issues more than the
     # constructor's default. We use 4 so the burst must issue at least 3
     # additional CIDs (seq=0 is already advertised at construction).
-    server.cid_mgr.peer_active_limit = UInt64(4)
-    server.cid_mgr.retire_queue_cap = Int(server.cid_mgr.peer_active_limit) * 8
+    server.cid_mgr.set_peer_active_limit(UInt64(4))
 
     # Pre-conditions: only the initial CID (seq=0) exists and is advertised;
     # the initial-burst guard has not yet fired.
@@ -4107,7 +4106,7 @@ def test_initial_new_cid_burst_default_limit() raises:
     exactly one NEW_CID (seq=1) — seq=0 was advertised in the handshake."""
     var server = _build_server_for_rx_test()
     assert_equal_int(
-        Int(server.cid_mgr.peer_active_limit), 2, "default peer_active_limit is 2"
+        Int(server.cid_mgr.peer_active_limit()), 2, "default peer_active_limit is 2"
     )
     assert_false(
         server.initial_cids_emitted, "burst guard starts False"
@@ -4224,7 +4223,7 @@ def _seed_spare_remote_cid(mut conn: QuicConnection, seq: UInt64) raises:
     var tok = List[Byte](capacity=16)
     for i in range(16):
         tok.append(UInt8(0xD0 + i))
-    conn.cid_mgr.on_new_connection_id(
+    _ = conn.cid_mgr.on_new_connection_id(
         seq, UInt64(0), cid^, tok^
     )
 

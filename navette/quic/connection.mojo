@@ -453,6 +453,9 @@ struct QuicConnection(Movable):
     # use this field to index `self.spaces[]` (which has 3 entries; see
     # `feedback_zero_rtt_space_idx_vs_pn_space.md`).
     var _current_space_idx: Int
+    # DCID of the packet being dispatched, so RETIRE_CONNECTION_ID can
+    # refuse to retire the CID it arrived on (RFC 9000 Section 19.16).
+    var _current_dcid: CidBuf
 
     # Pre-allocated scratch buffers reused across send()/loss calls to
     # avoid per-call heap allocations; .clear()'d before use.
@@ -546,6 +549,7 @@ struct QuicConnection(Movable):
         # so 0-RTT-origin tagging fires only for streams created from
         # actual 0-RTT-decrypted packets (RFC 9001 §4.6).
         self._current_space_idx = -1
+        self._current_dcid = CidBuf.empty()
         self._scratch_lost_pns = List[Int](capacity=64)
         self._scratch_frames = List[Frame](capacity=8)
         self._scratch_sent_records = List[SentStreamFrame](capacity=8)
@@ -568,7 +572,7 @@ struct QuicConnection(Movable):
             lib=self._lib,
             initial_local_cid=List[Byte](local_cid.as_span()),
             initial_remote_cid=List[Byte](peer_cid.as_span()),
-            local_active_limit=UInt64(2),
+            local_active_limit=local_params.active_connection_id_limit,
             peer_active_limit=UInt64(2),
         )
         self.path = PathState(
@@ -1037,6 +1041,7 @@ struct QuicConnection(Movable):
             self.state = self.state | CONN_ADDR_VALIDATED
 
         var ph_frame_parse_us = self.prof.stamp()
+        self._current_dcid = header.dcid.copy()
         var ack_eliciting = self._parse_and_dispatch_frames(
             pkt_ptr, header_len, plaintext_len, space_idx, closing, now,
         )
@@ -1314,9 +1319,9 @@ struct QuicConnection(Movable):
 
         Walks `cid_mgr.remote_cids` for an Active entry whose sequence
         differs from the currently-active one. On success, updates
-        `remote_active_cid_seq` and re-queues the previous sequence via
-        `requeue_retire` (which respects `retire_queue_cap`). Returns
-        True iff a spare was found.
+        `remote_active_cid_seq` and retires the previous CID via
+        `retire_remote`. Returns False when no spare exists or the retire
+        backlog is full.
 
         Caller: `on_path_response_received` after a verified match.
         """
@@ -1324,10 +1329,12 @@ struct QuicConnection(Movable):
         for i in range(len(self.cid_mgr.remote_cids)):
             ref entry = self.cid_mgr.remote_cids[i]
             if entry.state == CID_ACTIVE and entry.sequence != current_seq:
-                self.cid_mgr.remote_active_cid_seq = entry.sequence
+                var next_seq = entry.sequence
                 # Queue RETIRE_CONNECTION_ID for the OLD seq so the peer
-                # can free the slot. requeue_retire respects the cap.
-                self.cid_mgr.requeue_retire(current_seq)
+                # can free the slot; a full retire backlog defers rotation.
+                if not self.cid_mgr.retire_remote(current_seq):
+                    return False
+                self.cid_mgr.remote_active_cid_seq = next_seq
                 return True
         return False
 
@@ -1485,7 +1492,7 @@ struct QuicConnection(Movable):
             )
             return
         if tid == FRAME_RETIRE_CONNECTION_ID:
-            self.cid_mgr.on_retire_connection_id(cursor.sequence); return
+            self._on_retire_cid(cursor.sequence, now); return
         if tid >= FRAME_STREAM_BASE and tid <= FRAME_STREAM_BASE + UInt64(7):
             var data_span = cursor.byte_data_span()
             self._handle_stream_frame_from_cursor(
@@ -1613,12 +1620,15 @@ struct QuicConnection(Movable):
             var _vv2 = _v_cid_len.take()
             self.close_transport(_vv2.error_code, _vv2.tag, now)
             return
-        self.cid_mgr.on_new_connection_id(
+        var _v_cid = self.cid_mgr.on_new_connection_id(
             nc.sequence,
             nc.retire_prior_to,
             List[Byte](nc.cid.as_span()),
             List[Byte](nc.stateless_reset_token.as_span()),
         )
+        if _v_cid:
+            var _vv3 = _v_cid.take()
+            self.close_transport(_vv3.error_code, _vv3.tag, now)
 
     def _on_max_stream_data(
         mut self, ref frame: Frame, now: UInt64
@@ -1755,12 +1765,24 @@ struct QuicConnection(Movable):
             return
         var cid_span = data[:cid_len]
         var token_span = data[cid_len:]
-        self.cid_mgr.on_new_connection_id(
+        var _v_cid = self.cid_mgr.on_new_connection_id(
             sequence,
             retire_prior_to,
             List[Byte](cid_span),
             List[Byte](token_span),
         )
+        if _v_cid:
+            var _vv3 = _v_cid.take()
+            self.close_transport(_vv3.error_code, _vv3.tag, now)
+
+    def _on_retire_cid(mut self, sequence: UInt64, now: UInt64) raises:
+        """Handle RETIRE_CONNECTION_ID; closes on a PROTOCOL_VIOLATION verdict."""
+        var _v_ret = self.cid_mgr.on_retire_connection_id(
+            sequence, self._current_dcid.as_span()
+        )
+        if _v_ret:
+            var _vv = _v_ret.take()
+            self.close_transport(_vv.error_code, _vv.tag, now)
 
     @always_inline
     def _on_max_stream_data_from_cursor(
@@ -3092,7 +3114,9 @@ struct QuicConnection(Movable):
             return
         var records = self.app_frames_sent.pop(pn)
         for ref rec in records:
-            if rec.kind == SSF_STREAM:
+            if rec.kind == SSF_RETIRE_CID:
+                self.cid_mgr.on_retire_acked(rec.cid_seq)
+            elif rec.kind == SSF_STREAM:
                 var key = Int(rec.stream_id)
                 var p = self.stream_map.try_stream_ptr(key)
                 if not p:
@@ -3167,7 +3191,7 @@ struct QuicConnection(Movable):
                 # NEW_CONNECTION_ID frame on the next send opportunity.
                 self.cid_mgr.clear_advertised(rec.cid_seq)
             elif rec.kind == SSF_RETIRE_CID:
-                # Re-queue the retirement if possible (respects cap).
+                # Re-queue unless the retirement was acked meanwhile.
                 self.cid_mgr.requeue_retire(rec.cid_seq)
 
     # ── Timers ───────────────────────────────────────────────────────

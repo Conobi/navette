@@ -12,9 +12,8 @@ from navette.quic.cid import (
     CidEntry,
     CidManager,
     CID_ACTIVE,
-    CID_PENDING_RETIRE,
-    CID_RETIRED,
 )
+from navette.quic.error import CONNECTION_ID_LIMIT_ERROR
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -191,7 +190,7 @@ def test_on_new_connection_id_basic(lib: SharedLibrary) raises:
 
     var new_cid = _make_cid(UInt8(0xCC))
     var new_tok = _make_token()
-    mgr.on_new_connection_id(UInt64(1), UInt64(0), new_cid, new_tok)
+    assert_true(not mgr.on_new_connection_id(UInt64(1), UInt64(0), new_cid, new_tok), "accepted")
 
     assert_equal_int(len(mgr.remote_cids), 2, "remote count = 2 after new CID")
     assert_equal_int(Int(mgr.remote_cids[1].sequence), 1, "new remote CID has seq=1")
@@ -209,26 +208,23 @@ def test_retire_prior_to(lib: SharedLibrary) raises:
     # Add remote CID seq=1 first
     var cid1 = _make_cid(UInt8(0xC1))
     var tok1 = _make_token()
-    mgr.on_new_connection_id(UInt64(1), UInt64(0), cid1, tok1)
+    assert_true(not mgr.on_new_connection_id(UInt64(1), UInt64(0), cid1, tok1), "seq=1")
 
     # Now receive NEW_CONNECTION_ID with retire_prior_to=1
     # This should queue retirement of seq=0
     var cid2 = _make_cid(UInt8(0xC2))
     var tok2 = _make_token()
-    mgr.on_new_connection_id(UInt64(2), UInt64(1), cid2, tok2)
+    assert_true(not mgr.on_new_connection_id(UInt64(2), UInt64(1), cid2, tok2), "seq=2")
 
     # retire_queue should contain seq=0
     var queue = mgr.pending_retire_frames()
     assert_equal_int(len(queue), 1, "retire queue has 1 entry")
     assert_equal_int(Int(queue[0]), 0, "queued seq=0 for retirement")
 
-    # remote CID seq=0 should be PendingRetire
-    var found_seq0_pending = False
+    # Retired remote CID seq=0 is dropped once its RETIRE is queued.
     for i in range(len(mgr.remote_cids)):
-        if mgr.remote_cids[i].sequence == UInt64(0):
-            if mgr.remote_cids[i].state == CID_PENDING_RETIRE:
-                found_seq0_pending = True
-    assert_true(found_seq0_pending, "remote seq=0 should be PendingRetire")
+        assert_true(mgr.remote_cids[i].sequence != UInt64(0), "remote seq=0 dropped")
+    assert_equal_int(len(mgr.remote_cids), 2, "seq=1 and seq=2 remain")
 
     print("  test_retire_prior_to: PASS")
 
@@ -237,38 +233,27 @@ def test_retire_prior_to(lib: SharedLibrary) raises:
 
 
 def test_retirement_queue_cap(lib: SharedLibrary) raises:
-    # peer_active_limit=2 → retire_queue_cap = 2 * 8 = 16
+    # The cap counts unacknowledged retirements and follows OUR limit:
+    # local_active_limit=2 → cap = 2 * 3 = 6.
     var local_cid = _make_cid(UInt8(0xAA))
     var remote_cid = _make_cid(UInt8(0xBB))
     var mgr = CidManager(lib, local_cid, remote_cid, UInt64(2), UInt64(2))
+    assert_equal_int(mgr.retire_queue_cap, 6, "cap = local limit * 3")
 
-    # Add retire_queue_cap + 1 sequences to overflow the queue.
-    # Cap = peer_active_limit * 8 = 16.
-    # We'll add many remote CIDs first, then trigger retire_prior_to for all.
-    # Simpler: just add more items to the retire queue than the cap allows.
-    # We can do this by sending retire_prior_to > highest_retire_prior_to many times.
-
-    # Add 17 remote CIDs (seq 1..17) each with retire_prior_to pointing to previous
-    # so all previous get queued. We need to exceed cap=16.
-    # Strategy: receive seq=1..17, each with retire_prior_to=0.
-    # Then receive seq=18 with retire_prior_to=18 → tries to retire all 17 → overflow.
-
-    for i in range(1, 18):
-        var c = _make_cid(UInt8(i))
-        var t = _make_token()
-        mgr.on_new_connection_id(UInt64(i), UInt64(0), c, t)
-
-    # Now retire all 17 (seq 0..16) by setting retire_prior_to=17
-    var caught = False
-    try:
-        var c18 = _make_cid(UInt8(18))
-        var t18 = _make_token()
-        mgr.on_new_connection_id(UInt64(18), UInt64(17), c18, t18)
-    except e:
-        if "PROTOCOL_VIOLATION" in String(e):
-            caught = True
-
-    assert_true(caught, "overflow of retire_queue_cap should raise PROTOCOL_VIOLATION")
+    # Each frame retires the previous CID; RETIREs are sent, never acked.
+    var refused_at = -1
+    for i in range(1, 20):
+        var v = mgr.on_new_connection_id(
+            UInt64(i), UInt64(i), _make_cid(UInt8(i)), _make_token()
+        )
+        _ = mgr.pending_retire_frames()
+        if v and refused_at < 0:
+            refused_at = i
+            assert_equal_int(
+                Int(v.value().error_code), Int(CONNECTION_ID_LIMIT_ERROR),
+                "backlog overflow is CONNECTION_ID_LIMIT_ERROR",
+            )
+    assert_equal_int(refused_at, 7, "7th unacked retirement exceeds cap 6")
     print("  test_retirement_queue_cap: PASS")
 
 
@@ -281,22 +266,22 @@ def test_late_arriving_cid(lib: SharedLibrary) raises:
     # Advance highest_retire_prior_to to 3 via a CID that says retire_prior_to=3
     var cid3 = _make_cid(UInt8(0xD0))
     var tok3 = _make_token()
-    mgr.on_new_connection_id(UInt64(5), UInt64(3), cid3, tok3)
+    _ = mgr.on_new_connection_id(UInt64(5), UInt64(3), cid3, tok3)
+    _ = mgr.pending_retire_frames()
 
-    # Now a "late" CID arrives with seq=2 (< highest_retire_prior_to=3)
-    # It should be stored as PendingRetire and its seq added to retire_queue
+    # A "late" CID with seq=2 (< highest_retire_prior_to=3) is retired at
+    # once: not stored, its RETIRE queued.
     var late_cid = _make_cid(UInt8(0xDE))
     var late_tok = _make_token()
-    mgr.on_new_connection_id(UInt64(2), UInt64(0), late_cid, late_tok)
-
-    # Find the late CID entry
-    var found_pending = False
+    assert_true(
+        not mgr.on_new_connection_id(UInt64(2), UInt64(0), late_cid, late_tok),
+        "late arrival is not an error",
+    )
     for i in range(len(mgr.remote_cids)):
-        if mgr.remote_cids[i].sequence == UInt64(2):
-            if mgr.remote_cids[i].state == CID_PENDING_RETIRE:
-                found_pending = True
-
-    assert_true(found_pending, "late CID (seq<highest_retire_prior_to) should be PendingRetire")
+        assert_true(mgr.remote_cids[i].sequence != UInt64(2), "late CID not stored")
+    var queue = mgr.pending_retire_frames()
+    assert_equal_int(len(queue), 1, "one RETIRE for the late CID")
+    assert_equal_int(Int(queue[0]), 2, "RETIRE seq=2")
 
     print("  test_late_arriving_cid: PASS")
 
@@ -312,16 +297,11 @@ def test_on_retire_connection_id(lib: SharedLibrary) raises:
     assert_equal_int(mgr.active_local_count(), 2, "2 active local CIDs before retire")
 
     # Peer retires our seq=0 local CID
-    mgr.on_retire_connection_id(UInt64(0))
+    assert_true(not mgr.on_retire_connection_id(UInt64(0)), "retire seq=0 accepted")
 
-    # Find seq=0 in local_cids, it should be Retired
-    var found_retired = False
+    # The retired entry is dropped from local_cids.
     for i in range(len(mgr.local_cids)):
-        if mgr.local_cids[i].sequence == UInt64(0):
-            if mgr.local_cids[i].state == CID_RETIRED:
-                found_retired = True
-
-    assert_true(found_retired, "local seq=0 should be Retired after RETIRE_CONNECTION_ID")
+        assert_true(mgr.local_cids[i].sequence != UInt64(0), "local seq=0 dropped")
 
     print("  test_on_retire_connection_id: PASS")
 
@@ -340,7 +320,7 @@ def test_retire_triggers_replacement(lib: SharedLibrary) raises:
     assert_equal_int(mgr.active_local_count(), 2, "2 active before retire")
 
     # Peer retires seq=0 → active drops to 1 (< 2) → replacement seq=2 issued
-    mgr.on_retire_connection_id(UInt64(0))
+    _ = mgr.on_retire_connection_id(UInt64(0))
 
     assert_equal_int(mgr.active_local_count(), 2, "active count restored to 2 after replacement")
     assert_equal_int(Int(mgr.local_next_seq), 3, "local_next_seq advanced to 3")

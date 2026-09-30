@@ -3,9 +3,8 @@
 # Connection ID management for QUIC — RFC 9000 §5.
 #
 # Handles issuance of local CIDs (with HMAC-SHA256 reset tokens),
-# tracking remote CIDs received via NEW_CONNECTION_ID frames,
-# retirement via RETIRE_CONNECTION_ID, and stuffing-defense via
-# a bounded retire_queue.
+# tracking remote CIDs received via NEW_CONNECTION_ID frames and
+# retirement via RETIRE_CONNECTION_ID, with every per-peer list bounded.
 
 from std.ffi import external_call
 from std.memory import Pointer
@@ -14,6 +13,8 @@ from std.memory.alloc import unsafe_alloc as _cid_alloc
 
 from navette.tls.lib import SharedLibrary
 from navette.util.siphash import SipKey, siphash13
+from navette.quic.error import CONNECTION_ID_LIMIT_ERROR, PROTOCOL_VIOLATION
+from navette.quic.guard_predicates import GuardVerdict
 
 
 # ── CID state constants ────────────────────────────────────────────────────────
@@ -28,6 +29,19 @@ comptime CID_RETIRED: UInt8 = 2
 # ngtcp2 8, quiche min(peer, 2). Without it one handshake drives an
 # unbounded issuance loop (getrandom + HMAC + allocation per CID).
 comptime MAX_ISSUED_CIDS = 4
+
+# Outstanding (unacknowledged) retirements of the peer's CIDs allowed per
+# CID we let the peer keep active; quiche's RETIRED_CONN_ID_LIMIT_MULTIPLIER.
+comptime RETIRE_QUEUE_MULTIPLIER = 3
+# Hard ceiling on outstanding retirements, whatever our own limit is.
+comptime MAX_RETIRE_QUEUE = 64
+
+# Close reasons for CID frame violations.
+comptime CID_REASON_LIMIT = "NEW_CONNECTION_ID exceeds active_connection_id_limit"
+comptime CID_REASON_RETIRE_BACKLOG = "too many unacknowledged RETIRE_CONNECTION_ID"
+comptime CID_REASON_CONFLICT = "NEW_CONNECTION_ID conflicts with a known sequence or CID"
+comptime CID_REASON_RETIRE_UNISSUED = "RETIRE_CONNECTION_ID for a sequence never issued"
+comptime CID_REASON_RETIRE_OWN_DCID = "RETIRE_CONNECTION_ID retires the packet's own DCID"
 
 
 # ── CidEntry ──────────────────────────────────────────────────────────────────
@@ -72,17 +86,25 @@ struct CidManager(Movable):
 
     Local CIDs: issued by us, used by the peer as their DCID.
     Remote CIDs: provided by the peer, used by us as our DCID.
+
+    Both lists hold only live entries: a retired CID is removed at once
+    (remote: once its RETIRE_CONNECTION_ID is queued; local: when the
+    peer retires it), so memory is bounded by `local_active_limit`
+    remote and `MAX_ISSUED_CIDS` local entries whatever the peer sends.
+    Frame handlers return a `GuardVerdict` instead of raising; the
+    connection closes with it.
     """
 
-    var local_cids: List[CidEntry]         # CIDs we issued
+    var local_cids: List[CidEntry]         # CIDs we issued, all Active
     var local_next_seq: UInt64             # next sequence number for local CIDs
     var local_retire_prior_to: UInt64      # our retire_prior_to for outgoing NEW_CID
-    var remote_cids: List[CidEntry]        # peer's CIDs
+    var remote_cids: List[CidEntry]        # peer's CIDs, all Active
     var remote_active_cid_seq: UInt64      # seq of CID we're currently using
     var local_active_limit: UInt64         # our active_connection_id_limit
-    var peer_active_limit: UInt64          # peer's active_connection_id_limit, unclamped
-    var retire_queue: List[UInt64]         # seq numbers to RETIRE_CONNECTION_ID for
-    var retire_queue_cap: Int              # max queue depth (issue_limit() * 8)
+    var _peer_active_limit: UInt64         # peer's limit, unclamped; set via set_peer_active_limit
+    var retire_queue: List[UInt64]         # seqs whose RETIRE_CONNECTION_ID is still unsent
+    var _retire_unacked: List[UInt64]      # seqs retired but not yet acknowledged (superset of retire_queue)
+    var retire_queue_cap: Int              # max len(_retire_unacked), from local_active_limit
     var highest_retire_prior_to: UInt64    # highest retire_prior_to from peer
     var _lib: SharedLibrary                # ref-counted RustlsLibrary for HMAC-SHA256
     var server_secret: List[Byte]         # 32-byte key for HMAC-SHA256 reset tokens
@@ -101,7 +123,8 @@ struct CidManager(Movable):
             lib: SharedLibrary handle (refcount is incremented).
             initial_local_cid:  The CID we present as SCID in Initial packets.
             initial_remote_cid: The peer's initial CID (their SCID / our DCID).
-            local_active_limit: Our active_connection_id_limit transport parameter.
+            local_active_limit: The active_connection_id_limit we advertise;
+                bounds the peer CIDs we store and the retire backlog.
             peer_active_limit:  Peer's active_connection_id_limit transport
                 parameter; issuance is clamped to MAX_ISSUED_CIDS.
         """
@@ -141,25 +164,32 @@ struct CidManager(Movable):
         self.remote_active_cid_seq = UInt64(0)
 
         self.local_active_limit = local_active_limit
-        self.peer_active_limit = UInt64(0)
+        self._peer_active_limit = UInt64(0)
         self.retire_queue = List[UInt64]()
-        self.retire_queue_cap = 0
+        self._retire_unacked = List[UInt64]()
+        var scaled = min(local_active_limit, UInt64(MAX_RETIRE_QUEUE)) * UInt64(
+            RETIRE_QUEUE_MULTIPLIER
+        )
+        self.retire_queue_cap = Int(min(scaled, UInt64(MAX_RETIRE_QUEUE)))
         self.highest_retire_prior_to = UInt64(0)
         self.set_peer_active_limit(peer_active_limit)
 
     def set_peer_active_limit(mut self, limit: UInt64):
-        """Record the peer's limit and size the retire queue from the clamped value.
+        """Record the peer's limit; the only writer of `_peer_active_limit`.
 
         `limit` is untrusted (up to 2^62-1): every derived quantity goes
         through `issue_limit()` so no arithmetic sees the raw value.
         """
-        self.peer_active_limit = limit
-        self.retire_queue_cap = self.issue_limit() * 8
+        self._peer_active_limit = limit
+
+    def peer_active_limit(self) -> UInt64:
+        """The peer's advertised limit, unclamped."""
+        return self._peer_active_limit
 
     def issue_limit(self) -> Int:
         """Active local CIDs we keep: min(peer limit, MAX_ISSUED_CIDS)."""
-        if self.peer_active_limit < UInt64(MAX_ISSUED_CIDS):
-            return Int(self.peer_active_limit)
+        if self._peer_active_limit < UInt64(MAX_ISSUED_CIDS):
+            return Int(self._peer_active_limit)
         return MAX_ISSUED_CIDS
 
     # ── CID generation ────────────────────────────────────────────────────────
@@ -204,88 +234,168 @@ struct CidManager(Movable):
         retire_prior_to: UInt64,
         cid: List[Byte],
         reset_token: List[Byte],
-    ) raises:
-        """Process an incoming NEW_CONNECTION_ID frame from the peer.
+    ) -> Optional[GuardVerdict]:
+        """Process a NEW_CONNECTION_ID frame (RFC 9000 Sections 5.1.1, 19.15).
 
-        Queues retirements for any remote CIDs with sequence < retire_prior_to,
-        then stores the new CID (Active or PendingRetire depending on whether
-        it arrives after a higher retire_prior_to has been seen).
+        The caller has already checked `retire_prior_to <= seq` and the CID
+        length. Outcomes:
+        - exact repeat of a stored (seq, CID, token): ignored;
+        - seq or CID matching a stored entry otherwise: PROTOCOL_VIOLATION;
+        - seq below the highest retire_prior_to seen: not stored, one
+          RETIRE_CONNECTION_ID queued (none while one is outstanding);
+        - a retire_prior_to increase drops every older entry and queues its
+          retirement, moving `remote_active_cid_seq` off a retired CID;
+        - storing it would exceed `local_active_limit`, or the retirements
+          would exceed `retire_queue_cap` unacknowledged:
+          CONNECTION_ID_LIMIT_ERROR (quiche's IdLimit, same cap rule).
 
-        Raises PROTOCOL_VIOLATION if the retirement queue would overflow.
+        Returns the verdict to close with, or None.
         """
-        # Step 1: update highest_retire_prior_to and queue retirements.
+        if seq < self.highest_retire_prior_to:
+            if not self._queue_retirement(seq):
+                return _verdict(CONNECTION_ID_LIMIT_ERROR, CID_REASON_RETIRE_BACKLOG)
+            return None
+
+        for ref e in self.remote_cids:
+            var same_seq = e.sequence == seq
+            var same_cid = _bytes_eq(Span(e.cid), Span(cid))
+            if same_seq or same_cid:
+                if same_seq and same_cid and _bytes_eq(
+                    Span(e.reset_token), Span(reset_token)
+                ):
+                    return None
+                return _verdict(PROTOCOL_VIOLATION, CID_REASON_CONFLICT)
+
+        var backlog_full = False
         if retire_prior_to > self.highest_retire_prior_to:
             self.highest_retire_prior_to = retire_prior_to
-            # Queue retirement for all remote CIDs with seq < retire_prior_to.
-            for i in range(len(self.remote_cids)):
+            var i = 0
+            while i < len(self.remote_cids):
                 if self.remote_cids[i].sequence < retire_prior_to:
-                    if self.remote_cids[i].state == CID_ACTIVE:
-                        # Check cap before adding.
-                        if len(self.retire_queue) >= self.retire_queue_cap:
-                            raise "PROTOCOL_VIOLATION: retirement queue overflow"
-                        self.remote_cids[i].state = CID_PENDING_RETIRE
-                        self.retire_queue.append(self.remote_cids[i].sequence)
+                    if not self._queue_retirement(self.remote_cids[i].sequence):
+                        backlog_full = True
+                    _ = self.remote_cids.pop(i)
+                else:
+                    i += 1
 
-        # Step 2: check cap (accounting for any additions above).
-        if len(self.retire_queue) > self.retire_queue_cap:
-            raise "PROTOCOL_VIOLATION: retirement queue overflow"
+        if UInt64(len(self.remote_cids)) >= self.local_active_limit:
+            return _verdict(CONNECTION_ID_LIMIT_ERROR, CID_REASON_LIMIT)
 
-        # Step 3: decide whether this new CID is already obsolete.
-        var state: UInt8
-        if seq < self.highest_retire_prior_to:
-            # Late arrival: should be immediately retired.
-            state = CID_PENDING_RETIRE
-            if len(self.retire_queue) >= self.retire_queue_cap:
-                raise "PROTOCOL_VIOLATION: retirement queue overflow"
-            self.retire_queue.append(seq)
-        else:
-            state = CID_ACTIVE
-
-        # Step 4: store the new CID.
-        var entry = CidEntry(
-            List[Byte](copy=cid), seq, List[Byte](copy=reset_token), state
+        self.remote_cids.append(
+            CidEntry(List[Byte](copy=cid), seq, List[Byte](copy=reset_token), CID_ACTIVE)
         )
-        self.remote_cids.append(entry^)
+        if self.remote_active_cid_seq < self.highest_retire_prior_to:
+            var lowest = seq
+            for ref e in self.remote_cids:
+                lowest = min(lowest, e.sequence)
+            self.remote_active_cid_seq = lowest
+
+        if backlog_full:
+            return _verdict(CONNECTION_ID_LIMIT_ERROR, CID_REASON_RETIRE_BACKLOG)
+        return None
+
+    def retire_remote(mut self, seq: UInt64) -> Bool:
+        """Retire one of the peer's CIDs on our own initiative (e.g. migration).
+
+        Drops the entry and queues its RETIRE_CONNECTION_ID. Returns False,
+        changing nothing, when the retire backlog is full.
+        """
+        if not self._queue_retirement(seq):
+            return False
+        for i in range(len(self.remote_cids)):
+            if self.remote_cids[i].sequence == seq:
+                _ = self.remote_cids.pop(i)
+                break
+        return True
+
+    def _queue_retirement(mut self, seq: UInt64) -> Bool:
+        """Owe the peer a RETIRE_CONNECTION_ID for `seq`.
+
+        A seq already outstanding is not queued twice (RFC 9000 Section
+        19.15: "unless it has already done so"). Returns False when
+        `retire_queue_cap` retirements are already unacknowledged: a peer
+        that keeps retiring CIDs without acknowledging ours would otherwise
+        grow this backlog at line rate.
+        """
+        for ref s in self._retire_unacked:
+            if s == seq:
+                return True
+        if len(self._retire_unacked) >= self.retire_queue_cap:
+            return False
+        self._retire_unacked.append(seq)
+        self.retire_queue.append(seq)
+        return True
 
     # ── Loss-recovery re-queue ────────────────────────────────────────────────
 
-    def requeue_retire(mut self, sequence: UInt64) raises:
-        """Re-queue a lost RETIRE_CONNECTION_ID. Respects retire_queue_cap."""
+    def requeue_retire(mut self, sequence: UInt64):
+        """Re-queue an unsent or lost RETIRE_CONNECTION_ID.
+
+        Skips a seq already queued or already acknowledged, so the queue
+        stays a subset of the outstanding retirements and within
+        `retire_queue_cap`.
+        """
         if len(self.retire_queue) >= self.retire_queue_cap:
-            raise "PROTOCOL_VIOLATION: retire_queue cap exceeded on re-queue"
-        self.retire_queue.append(sequence)
+            return
+        for ref s in self.retire_queue:
+            if s == sequence:
+                return
+        for ref s in self._retire_unacked:
+            if s == sequence:
+                self.retire_queue.append(sequence)
+                return
+
+    def on_retire_acked(mut self, sequence: UInt64):
+        """The RETIRE_CONNECTION_ID for `sequence` was acknowledged; free its slot."""
+        for i in range(len(self._retire_unacked)):
+            if self._retire_unacked[i] == sequence:
+                _ = self._retire_unacked.pop(i)
+                return
 
     # ── Local CID retirement (peer sends RETIRE_CONNECTION_ID) ────────────────
 
-    def on_retire_connection_id(mut self, sequence: UInt64) raises:
-        """Handle a RETIRE_CONNECTION_ID frame from the peer.
+    def on_retire_connection_id(
+        mut self, sequence: UInt64, packet_dcid: Span[Byte, _]
+    ) raises -> Optional[GuardVerdict]:
+        """Handle a RETIRE_CONNECTION_ID frame (RFC 9000 Section 19.16).
 
-        Marks the identified local CID as Retired.  Per RFC 9000 §5.1.1, if
-        the number of active local CIDs then drops below `issue_limit()`, a
-        replacement CID is issued automatically so the connection layer can
-        advertise it in a NEW_CONNECTION_ID frame.
-
-        Raises if the sequence number is not found.
+        `packet_dcid` is the DCID of the packet carrying the frame (empty
+        when unknown). A sequence never issued, or one naming
+        `packet_dcid`, is a PROTOCOL_VIOLATION; a sequence already retired
+        is ignored. The retired entry is dropped from `local_cids` (the
+        place to unregister it from server demux, once issued CIDs are
+        registered there) and a replacement is issued if the active count
+        fell below `issue_limit()`.
         """
-        var found = False
+        if sequence >= self.local_next_seq:
+            return _verdict(PROTOCOL_VIOLATION, CID_REASON_RETIRE_UNISSUED)
         for i in range(len(self.local_cids)):
             if self.local_cids[i].sequence == sequence:
-                self.local_cids[i].state = CID_RETIRED
-                found = True
-                break
-        if not found:
-            raise "RETIRE_CONNECTION_ID: unknown sequence " + String(Int(sequence))
+                if len(packet_dcid) > 0 and _bytes_eq(
+                    Span(self.local_cids[i].cid), packet_dcid
+                ):
+                    return _verdict(PROTOCOL_VIOLATION, CID_REASON_RETIRE_OWN_DCID)
+                _ = self.local_cids.pop(i)
+                if self.active_local_count() < self.issue_limit():
+                    _ = self.issue_new_cid()
+                return None
+        return None
 
-        # Replace the retired CID if the active count dropped below the limit.
-        if self.active_local_count() < self.issue_limit():
-            _ = self.issue_new_cid()
+    def on_retire_connection_id(
+        mut self, sequence: UInt64
+    ) raises -> Optional[GuardVerdict]:
+        """`on_retire_connection_id` without the carrying packet's DCID check."""
+        return self.on_retire_connection_id(
+            sequence, Span[Byte, ImmStaticOrigin]()
+        )
 
     # ── Drain retirement queue ────────────────────────────────────────────────
 
     def pending_retire_frames(mut self) -> List[UInt64]:
-        """Drain and return all sequence numbers that need RETIRE_CONNECTION_ID frames.
+        """Drain the unsent retirements; they stay outstanding until acked.
 
-        The caller is responsible for building the actual frames.
+        The caller builds the frames and reports each one's fate through
+        `on_retire_acked` or `requeue_retire`.
         """
         var result = self.retire_queue^
         self.retire_queue = List[UInt64]()
@@ -344,13 +454,24 @@ struct CidManager(Movable):
                 return
 
     def clear_advertised(mut self, sequence: UInt64):
-        """Clear the advertised flag for a local CID, allowing retransmission on loss."""
+        """Clear the advertised flag so a lost NEW_CONNECTION_ID is resent; no-op once retired."""
         for i in range(len(self.local_cids)):
             if self.local_cids[i].sequence == sequence:
-                # Only clear if still Active (not retired)
-                if self.local_cids[i].state == CID_ACTIVE:
-                    self.local_cids[i].advertised = False
+                self.local_cids[i].advertised = False
                 return
+
+
+def _verdict(code: UInt64, reason: StaticString) -> Optional[GuardVerdict]:
+    return Optional[GuardVerdict](GuardVerdict(error_code=code, tag=String(reason)))
+
+
+def _bytes_eq(a: Span[Byte, _], b: Span[Byte, _]) -> Bool:
+    if len(a) != len(b):
+        return False
+    for i in range(len(a)):
+        if a[i] != b[i]:
+            return False
+    return True
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────

@@ -42,8 +42,7 @@ def test_huge_peer_limit_ctor(lib: SharedLibrary) raises:
     assert_equal_int(issued, MAX_ISSUED_CIDS - 1, "seq=0 plus cap-1 issued")
     assert_true(not mgr.needs_new_cid(), "no more issuance wanted at cap")
     assert_equal_int(
-        mgr.retire_queue_cap, MAX_ISSUED_CIDS * 8,
-        "retire_queue_cap derived from the clamped limit (no overflow)",
+        mgr.retire_queue_cap, 6, "retire_queue_cap follows our limit (2 * 3)"
     )
     print("  test_huge_peer_limit_ctor: PASS")
 
@@ -55,14 +54,15 @@ def test_huge_peer_limit_setter(lib: SharedLibrary) raises:
     )
     mgr.set_peer_active_limit(_HUGE_LIMIT)
     assert_equal_int(
-        mgr.retire_queue_cap, MAX_ISSUED_CIDS * 8, "setter clamps retire cap"
+        Int(mgr.peer_active_limit()), Int(_HUGE_LIMIT), "raw value recorded"
     )
+    assert_equal_int(mgr.retire_queue_cap, 6, "peer limit leaves retire cap alone")
     _ = _issue_until_refused(mgr)
     assert_equal_int(
         mgr.active_local_count(), MAX_ISSUED_CIDS, "setter clamps issuance"
     )
     # Retiring one CID issues a single replacement, never more.
-    mgr.on_retire_connection_id(UInt64(0))
+    assert_true(not mgr.on_retire_connection_id(UInt64(0)), "retire accepted")
     assert_equal_int(
         mgr.active_local_count(), MAX_ISSUED_CIDS, "replacement stays at cap"
     )
@@ -76,7 +76,7 @@ def test_small_peer_limit_respected(lib: SharedLibrary) raises:
     mgr.set_peer_active_limit(UInt64(2))
     _ = _issue_until_refused(mgr)
     assert_equal_int(mgr.active_local_count(), 2, "peer limit 2 honoured")
-    assert_equal_int(mgr.retire_queue_cap, 16, "retire cap 2 * 8")
+    assert_equal_int(mgr.retire_queue_cap, 6, "retire cap 2 * 3")
     assert_equal_int(mgr.issue_limit(), 2, "issue_limit = min(peer, cap)")
     print("  test_small_peer_limit_respected: PASS")
 
