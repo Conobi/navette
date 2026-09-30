@@ -491,9 +491,11 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     after `created_us`.
 
     `cid_epoch_seen` and `initial_key_live` record the local CID set
-    (`CidManager.cid_epoch`) and the handshake-confirmation state the
-    table's demux keys last reflected; `_sync_cid_keys` compares them to
-    skip the resync when neither moved.
+    (`CidManager.cid_epoch`) and whether the client's Initial DCID was
+    routed when the table's demux keys were last synced;
+    `_sync_cid_keys` compares them to skip the resync when neither moved.
+    `initial_key_until_us` is when that Initial DCID stops routing: set
+    to 3 PTOs past the first sync that saw the handshake confirmed.
 
     `next_deadline_us` caches the connection's earliest deadline as of
     `deadline_refreshed_at_us` (`now` while egress is capped, `timeout()`
@@ -524,6 +526,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     var handshaking: Bool
     var cid_epoch_seen: UInt64
     var initial_key_live: Bool
+    var initial_key_until_us: Optional[UInt64]
     var next_deadline_us: UInt64
     var deadline_refreshed_at_us: UInt64
     var dirty_pass: UInt64
@@ -543,6 +546,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.handshaking = True
         self.cid_epoch_seen = UInt64(0)
         self.initial_key_live = True
+        self.initial_key_until_us = None
         self.next_deadline_us = NO_DEADLINE_US
         self.deadline_refreshed_at_us = UInt64(0)
         self.dirty_pass = UInt64(0)
@@ -556,6 +560,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.handshaking = copy.handshaking
         self.cid_epoch_seen = copy.cid_epoch_seen
         self.initial_key_live = copy.initial_key_live
+        self.initial_key_until_us = copy.initial_key_until_us
         self.next_deadline_us = copy.next_deadline_us
         self.deadline_refreshed_at_us = copy.deadline_refreshed_at_us
         self.dirty_pass = copy.dirty_pass
@@ -2032,17 +2037,21 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             # A raise above (drain, anti-amp accounting) still leaves a
             # fresh cache: the PTO armed by the dropped datagrams must be
             # visible to the timer before the caller's `except` runs.
-            self._sync_cid_keys(conn_idx)
+            self._sync_cid_keys(conn_idx, now)
             self._refresh_deadline(conn_idx, now)
 
-    def _sync_cid_keys(mut self, conn_idx: Int):
+    def _sync_cid_keys(mut self, conn_idx: Int, now: UInt64):
         """Make the table route exactly the connection's live DCIDs.
 
         Those are every active CID we issued, the first server SCID
         (`quic.local_cid`, kept for the connection's life because
         `caps.conn_id` names the connection through it) and the client's
-        Initial DCID until the handshake is confirmed (RFC 9000 Section
-        7.2: the client drops it after the first server Initial). Called at
+        Initial DCID until 3 PTOs after the handshake is confirmed (RFC
+        9000 Section 7.2: the client drops it after the first server
+        Initial). The grace period, as in quic-go, lets a reordered or
+        duplicated original Initial reach this connection, which drops
+        it, instead of opening a zombie one; the key is removed at the
+        first drain past it. Called at
         the end of every drain, before its egress is submitted, so a new
         CID routes before the NEW_CONNECTION_ID announcing it leaves, and a
         retired one stops routing in the pass that processed the
@@ -2052,14 +2061,18 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         """
         ref slot = self.conn_slots[conn_idx]
         ref quic = slot.h3[]._h3._quic
-        var confirmed = quic.handshake_confirmed
-        if quic.cid_mgr.cid_epoch == slot.cid_epoch_seen and slot.initial_key_live != confirmed:
+        var keep_initial = True
+        if quic.handshake_confirmed:
+            if not slot.initial_key_until_us:
+                slot.initial_key_until_us = Optional[UInt64](now + UInt64(3) * quic._pto_interval())
+            keep_initial = now < slot.initial_key_until_us.value()
+        if quic.cid_mgr.cid_epoch == slot.cid_epoch_seen and slot.initial_key_live == keep_initial:
             return
         var want = InlineArray[UInt64, KEYS_PER_CONN + 1](fill=UInt64(0))
         var n = 0
         want[n] = demux_key(quic.local_cid.as_span(), self._demux_sip)
         n += 1
-        if not confirmed:
+        if keep_initial:
             want[n] = demux_key(quic.initial_dcid.as_span(), self._demux_sip)
             n += 1
         for ref e in quic.cid_mgr.local_cids:
@@ -2086,7 +2099,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 self._cid_clash_logged = True
                 print("H3UdpServer: an issued CID's demux key is taken; that CID stays unroutable")
         slot.cid_epoch_seen = quic.cid_mgr.cid_epoch
-        slot.initial_key_live = not confirmed
+        slot.initial_key_live = keep_initial
 
     # ── Out-of-band response injection (cross-transport wake) ─────
 
@@ -2171,7 +2184,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             # runs when `h3[].inject_response` raised before mutating
             # anything: one spurious refresh, accepted over a second
             # try/except just to skip it.
-            self._sync_cid_keys(conn_idx)
+            self._sync_cid_keys(conn_idx, now)
             self._refresh_deadline(conn_idx, now)
 
 

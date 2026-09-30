@@ -391,6 +391,9 @@ def test_initial_dcid_key_removed_after_handshake() raises:
     var h = _cid_harness()
     var c = _established_with_cids(h)
     var orig = List[Byte](c.h3._quic.initial_dcid.as_span())
+    # The key outlives confirmation by 3 PTOs, then goes at the next drain.
+    h.advance(UInt64(5_000_000))
+    _ = h.pump(c)
     ref table = h.srv[]._table
     assert_true(table.key_count(h.srv[].conn_slots[0].id) <= KEYS_PER_CONN, "keys within the per-connection bound")
     assert_equal_int(
