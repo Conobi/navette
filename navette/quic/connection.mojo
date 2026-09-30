@@ -400,6 +400,8 @@ struct QuicConnection(Movable):
     var peer_params: Optional[TransportParams]
     var local_cid: CidBuf
     var peer_cid: CidBuf
+    # The SCID of the first Initial that authenticated; None until then.
+    var _initial_peer_scid: Optional[CidBuf]
     var initial_dcid: CidBuf
     var bytes_received: UInt64
     var bytes_sent: UInt64
@@ -499,6 +501,7 @@ struct QuicConnection(Movable):
         self.peer_params = None
         self.local_cid = CidBuf(copy=local_cid)
         self.peer_cid = CidBuf(copy=peer_cid)
+        self._initial_peer_scid = None
         self.initial_dcid = CidBuf(copy=initial_dcid)
         self.bytes_received = UInt64(0)
         self.bytes_sent = UInt64(0)
@@ -778,6 +781,9 @@ struct QuicConnection(Movable):
             var space_idx = classify[1]
             var key_slot = classify[2]
             var pkt_len = classify[3]
+            if self._is_initial_from_other_scid(header):
+                offset += pkt_len
+                continue
             var decrypt_ok = True
             try:
                 var result = self._decrypt_and_dispatch_packet(
@@ -798,11 +804,13 @@ struct QuicConnection(Movable):
                 decrypt_ok = False
             if not decrypt_ok:
                 break
-            # Adopt the peer's SCID only from an Initial that authenticated:
-            # a forged or corrupt one must not redirect our packets.
-            if header.is_long_header and len(header.scid) > 0:
-                if header.packet_type == PacketType.initial():
-                    self.peer_cid = CidBuf(copy=header.scid)
+            if (
+                not self._initial_peer_scid
+                and header.is_long_header
+                and header.packet_type == PacketType.initial()
+                and len(header.scid) > 0
+            ):
+                self._adopt_initial_peer_scid(header.scid)
             if not closing:
                 ph_sm = self.prof.stamp()
                 self._drive_handshake(now)
@@ -814,6 +822,35 @@ struct QuicConnection(Movable):
         comptime if PROFILE_ACCEPT:
             if self.prof.ptr is not None:
                 self.prof.ptr.value()[].call_tracker.record(CallId.RECV_FROM_BUFFER, rdtsc() - _ct_start)
+
+    @always_inline
+    def _is_initial_from_other_scid(self, ref header: PacketHeader) -> Bool:
+        """True for an Initial whose SCID differs from the one we adopted;
+        such packets are discarded unprocessed (RFC 9000 Section 7.2)."""
+        if not self._initial_peer_scid:
+            return False
+        if not header.is_long_header or header.packet_type != PacketType.initial():
+            return False
+        return header.scid != self._initial_peer_scid.value()
+
+    def _adopt_initial_peer_scid(mut self, scid: CidBuf):
+        """Address the peer by the SCID of its first authenticated Initial.
+
+        Called only after the packet decrypted, so random corruption or an
+        off-path sender cannot redirect our packets; an on-path attacker
+        can still forge one, since Initial keys derive from the DCID in
+        clear. The sequence-0 remote CID is overwritten too: it was seeded
+        with a placeholder (our Initial DCID on the client, the client's
+        original DCID on the server), and must hold the CID the peer
+        actually chose so a later `_sync_peer_cid` back to it, or its
+        retirement, names the right CID.
+        """
+        self._initial_peer_scid = Optional[CidBuf](CidBuf(copy=scid))
+        self.peer_cid = CidBuf(copy=scid)
+        for ref e in self.cid_mgr.remote_cids:
+            if e.sequence == UInt64(0):
+                e.cid = List[Byte](scid.as_span())
+                break
 
     def _classify_recv_packet(
         mut self,
@@ -1349,10 +1386,9 @@ struct QuicConnection(Movable):
 
         Call whenever `cid_mgr.remote_active_cid_seq` changes: packets are
         built from `peer_cid`, and RFC 9000 Section 5.1.2 forbids sending
-        to a CID once we have retired it. Only call it on a change: on the
-        client the sequence-0 entry still holds the pre-handshake DCID,
-        not the server's SCID that `peer_cid` adopted (the active
-        sequence never returns to 0 once it leaves it).
+        to a CID once we have retired it. Safe in both roles: the
+        sequence-0 entry holds the SCID adopted from the peer's first
+        Initial, the same CID `peer_cid` was set to.
         """
         var seq = self.cid_mgr.remote_active_cid_seq
         for ref e in self.cid_mgr.remote_cids:

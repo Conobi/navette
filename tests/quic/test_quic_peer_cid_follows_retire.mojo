@@ -5,8 +5,13 @@
 # active remote CID whenever retire_prior_to or a path rotation moves it.
 
 from std.collections import Span
-from tests._test_util import assert_true, assert_equal_int
-from tests.h3._h3_raw_pair import RawPair
+from navette.quic.connection import QuicConnection
+from navette.tls.config import QuicServerConfig, QuicClientConfig
+from navette.tls.lib import TlsBackend
+from tests._test_util import (
+    assert_true, assert_equal_int, load_test_cert, load_test_ca,
+)
+from tests.h3._h3_raw_pair import RawPair, raw_params
 
 
 def _cid_and_token(tag: UInt8) -> List[Byte]:
@@ -106,9 +111,92 @@ def _eq(a: Span[Byte, _], b: Span[Byte, _]) -> Bool:
     return True
 
 
+def _seq0_cid(ref q: QuicConnection) -> List[Byte]:
+    """The CID recorded for the peer's sequence number 0 (empty if gone)."""
+    for ref e in q.cid_mgr.remote_cids:
+        if e.sequence == UInt64(0):
+            return e.cid.copy()
+    return List[Byte]()
+
+
+def test_seq0_holds_the_adopted_scid() raises:
+    var p = RawPair()
+    assert_true(
+        _eq(Span(_seq0_cid(p.cli)), p.srv._quic.local_cid.as_span()),
+        "client: seq 0 is the server's SCID",
+    )
+    assert_true(
+        _eq(Span(_seq0_cid(p.srv._quic)), p.cli.local_cid.as_span()),
+        "server: seq 0 is the client's SCID",
+    )
+    assert_true(
+        _eq(p.cli.peer_cid.as_span(), p.srv._quic.local_cid.as_span()),
+        "client addresses the server's SCID",
+    )
+    assert_true(
+        _eq(p.srv._quic.peer_cid.as_span(), p.cli.local_cid.as_span()),
+        "server addresses the client's SCID",
+    )
+    print("  test_seq0_holds_the_adopted_scid: PASS")
+
+
+def test_second_initial_with_other_scid_is_discarded() raises:
+    """Two servers answer the same client Initial (same Initial keys,
+    different SCIDs): only the first to arrive is adopted."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = load_test_cert()
+    var cert = ck[0].copy()
+    var key = ck[1].copy()
+    var ca = load_test_ca()
+    var srv_cfg = QuicServerConfig(tls.shared(), Span(cert), Span(key))
+    var cli_cfg = QuicClientConfig.with_ca(tls.shared(), Span(ca))
+    var now = UInt64(1_000_000)
+    var cli = QuicConnection.client(
+        tls.shared(), cli_cfg, "localhost", raw_params(), now
+    )
+    var odcid = List[Byte](cli.initial_dcid.as_span())
+    var cdcid = List[Byte](cli.initial_dcid.as_span())
+    var s1 = QuicConnection.server(
+        tls.shared(), srv_cfg, raw_params(), Span(odcid), Span(cdcid), now,
+    )
+    var s2 = QuicConnection.server(
+        tls.shared(), srv_cfg, raw_params(), Span(odcid), Span(cdcid), now,
+    )
+    var out = List[List[Byte]](capacity=1)
+    var n = cli.send(now, out)
+    assert_true(n > 0, "client Initial")
+    for i in range(n):
+        s1.recv(Span(out[i]), now)
+        s2.recv(Span(out[i]), now)
+    var from_s1 = List[List[Byte]](capacity=1)
+    var from_s2 = List[List[Byte]](capacity=1)
+    assert_true(s1.send(now, from_s1) > 0, "s1 answers")
+    assert_true(s2.send(now, from_s2) > 0, "s2 answers")
+    cli.recv(Span(from_s1[0]), now)
+    assert_true(
+        _eq(cli.peer_cid.as_span(), s1.local_cid.as_span()), "adopted s1's SCID"
+    )
+    try:
+        cli.recv(Span(from_s2[0]), now)
+    except:
+        pass
+    assert_true(
+        _eq(cli.peer_cid.as_span(), s1.local_cid.as_span()),
+        "a later Initial with another SCID must not redirect us",
+    )
+    assert_true(
+        _eq(Span(_seq0_cid(cli)), s1.local_cid.as_span()), "seq 0 unchanged"
+    )
+    _ = s2.local_cid
+    _ = tls^
+    print("  test_second_initial_with_other_scid_is_discarded: PASS")
+
+
 def main() raises:
     print("test_quic_peer_cid_follows_retire:")
     test_retire_prior_to_moves_outgoing_dcid()
     test_rotation_moves_outgoing_dcid()
     test_unauthenticated_initial_does_not_redirect()
+    test_seq0_holds_the_adopted_scid()
+    test_second_initial_with_other_scid_is_discarded()
     print("All test_quic_peer_cid_follows_retire tests passed.")
