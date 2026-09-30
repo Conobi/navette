@@ -46,30 +46,35 @@ struct PathKey(Copyable, Movable):
     """Canonical comparable identifier for a peer (family, addr, port).
 
     Holds family + 16-byte address buffer (IPv4 lives in the last 4 bytes,
-    IPv6 fills all 16) + port. Equality is byte-exact across all three
-    fields, so PATH_RESPONSE matching by-path is a single struct compare
-    regardless of address family.
+    IPv6 fills all 16) + port + IPv6 scope id. Equality is byte-exact
+    across all fields, so PATH_RESPONSE matching by-path is a single
+    struct compare regardless of address family. The kernel reports a
+    nonzero scope id only for scoped (link-local) peers, where the same
+    address on two interfaces is two paths; flowinfo is not kept.
     """
 
     var family: Int32
     var addr: InlineArray[UInt8, 16]
     var port: UInt16
+    var scope_id: UInt32
 
-    def __init__(out self, family: Int32, var addr: InlineArray[UInt8, 16], port: UInt16):
+    def __init__(out self, family: Int32, var addr: InlineArray[UInt8, 16], port: UInt16, scope_id: UInt32 = 0):
         """Construct from explicit family + 16-byte addr + port."""
         self.family = family
         self.addr = addr^
         self.port = port
+        self.scope_id = scope_id
 
     def __init__(out self, *, copy: Self):
         """Copy constructor."""
         self.family = copy.family
         self.addr = InlineArray[UInt8, 16](copy=copy.addr)
         self.port = copy.port
+        self.scope_id = copy.scope_id
 
     def __eq__(self, other: Self) -> Bool:
-        """Byte-exact equality across family, addr, port."""
-        if self.family != other.family or self.port != other.port:
+        """Byte-exact equality across family, addr, port, scope id."""
+        if self.family != other.family or self.port != other.port or self.scope_id != other.scope_id:
             return False
         for i in range(16):
             if self.addr[i] != other.addr[i]:

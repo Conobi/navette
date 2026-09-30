@@ -233,8 +233,7 @@ def _timer_arm_ms(deadline: Optional[UInt64], now: UInt64) -> UInt64:
 def _path_key_to_sockaddr(key: PathKey) -> List[Byte]:
     """The Linux sockaddr_in / sockaddr_in6 blob for `key`, the inverse of `_sockaddr_to_path_key`.
 
-    IPv6 flowinfo and scope id are zero, so a link-local peer is not
-    reachable through it.
+    IPv6 flowinfo is zero; the scope id is kept so link-local peers route.
     """
     var v6 = key.family == Int32(10)
     var out = List[Byte](length=28 if v6 else 16, fill=Byte(0))
@@ -243,6 +242,8 @@ def _path_key_to_sockaddr(key: PathKey) -> List[Byte]:
     out[3] = UInt8(key.port & 0xFF)
     for i in range(16 if v6 else 4):
         out[(8 + i) if v6 else (4 + i)] = key.addr[i if v6 else 12 + i]
+    for i in range(4 if v6 else 0):  # sin6_scope_id, host order (LE)
+        out[24 + i] = UInt8((key.scope_id >> UInt32(8 * i)) & 0xFF)
     return out^
 
 
@@ -266,7 +267,7 @@ def _sockaddr_to_path_key(
         [2..4)  sin6_port (BE)
         [4..8)  sin6_flowinfo          (ignored)
         [8..24) sin6_addr (16 B, BE)
-        [24..28) sin6_scope_id         (ignored)
+        [24..28) sin6_scope_id (LE)    (kept when addr_len >= 28)
 
     The returned `PathKey.addr` is always 16 bytes. IPv4 zero-pads the
     high 12 bytes (matches `PathKey.from_v4`). Unknown family / short
@@ -304,7 +305,10 @@ def _sockaddr_to_path_key(
         var addr = InlineArray[UInt8, 16](fill=Byte(0))
         for i in range(16):
             addr[i] = buf_ptr[unsafe_offset=addr_offset + 8 + i]
-        return PathKey(Int32(10), addr^, port)
+        var scope = UInt32(0)
+        for i in range(4 if addr_len >= 28 else 0):
+            scope |= UInt32(buf_ptr[unsafe_offset=addr_offset + 24 + i]) << UInt32(8 * i)
+        return PathKey(Int32(10), addr^, port, scope)
     else:
         return PathKey.zero()
 
