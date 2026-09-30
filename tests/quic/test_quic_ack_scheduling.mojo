@@ -13,6 +13,7 @@ from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import (
     QuicConnection, QuicEvent,
     CONN_ADDR_VALIDATED, CONN_ESTABLISHED, CONN_CLOSING, CONN_HANDSHAKING,
+    HANDSHAKE_TIMEOUT_US,
 )
 from navette.quic.packet_builder import (
     SentStreamFrame, SSF_STREAM,
@@ -490,7 +491,7 @@ def test_pto_armed_only_with_ae_in_flight() raises:
     """`pto-armed-only-with-ae-in-flight`: an idle established server has no
     PTO deadline and emits nothing across ten PTO intervals; an
     amplification-limited server with its CRYPTO flight outstanding reports
-    only its idle deadline and sends nothing."""
+    only its idle or handshake deadline (never a PTO) and sends nothing."""
     var now = UInt64(1_000_000)
     var no_idle = _default_params()
     no_idle.max_idle_timeout = UInt64(0)
@@ -520,12 +521,16 @@ def test_pto_armed_only_with_ae_in_flight() raises:
     assert_true(sent >= 1, "server emitted its first flight")
     assert_true((q.server.state & CONN_ADDR_VALIDATED) == 0, "server still amplification-limited")
     var idle_deadline = q.server.idle_timer + UInt64(30_000_000)
+    var handshake_deadline = q.server.created_us + HANDSHAKE_TIMEOUT_US
     var q_buf = List[List[Byte]](capacity=1)
     for _ in range(10):
         now2 += q.server._pto_interval() + UInt64(1)
         assert_equal_int(q.server.send(now2, q_buf), 0, "amp-limited server sends nothing more")
         var t = q.server.timeout(now2)
-        assert_true(Bool(t) and t.value() == idle_deadline, "only the idle deadline is reported")
+        assert_true(
+            Bool(t) and (t.value() == idle_deadline or t.value() == handshake_deadline),
+            "only the idle or handshake deadline is reported",
+        )
     assert_equal_int(q.server.recovery.pto_count, 0, "no PTO fired while amplification-limited")
     print("  test_pto_armed_only_with_ae_in_flight: PASS")
 
