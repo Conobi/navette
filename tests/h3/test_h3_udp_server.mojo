@@ -23,11 +23,11 @@ from navette.h3.h3_udp_server import (
     TIMER_FLOOR_MS,
     TIMER_CEILING_MS,
     SERVER_DEFAULT_IDLE_TIMEOUT_MS,
-    HANDSHAKE_TIMEOUT_US,
     _earliest_cached_deadline,
     _timer_arm_ms,
 )
 from navette.h3.h3_handler_server import H3HandlerServer
+from navette.quic.connection import HANDSHAKE_TIMEOUT_US
 from navette.util.null_ptr import null_ptr
 from navette.h3.connection import MAX_DATAGRAMS_PER_DRAIN
 from navette.h3.qpack import QpackHeaderField
@@ -555,7 +555,7 @@ def test_idle_reaps_abandoned_handshake() raises:
 
     The handshake deadline (`HANDSHAKE_TIMEOUT_US` after the slot was
     created) comes well before the idle timeout, so it is what reaps an
-    abandoned handshake; it does so silently and counts it.
+    abandoned handshake; it does so silently.
     """
     var h = UdpServerHarness[StubHandler](
         make_stub_handler, default_transport_params(), _params(),
@@ -567,7 +567,7 @@ def test_idle_reaps_abandoned_handshake() raises:
         HANDSHAKE_TIMEOUT_US < SERVER_DEFAULT_IDLE_TIMEOUT_MS * UInt64(1000),
         "the handshake deadline comes first",
     )
-    var created = h.srv[].conn_slots[0].created_us
+    var created = h.srv[].conn_slots[0].h3[]._h3._quic.created_us
 
     # Just short of the handshake deadline: still there.
     h.advance(created + HANDSHAKE_TIMEOUT_US - UInt64(5000) - h.now())
@@ -578,7 +578,6 @@ def test_idle_reaps_abandoned_handshake() raises:
     h.advance(UInt64(10_000))
     h.flush()
     assert_equal_int(h.slot_count(), 0, "slot reaped once the handshake deadline passed")
-    assert_equal_int(Int(h.srv[].protection_stats().handshake_timeouts), 1, "counted as a handshake timeout")
     print("PASS: test_idle_reaps_abandoned_handshake")
 
 
@@ -1456,9 +1455,7 @@ def _slot_with(deadline: UInt64) -> ConnSlot[StubHandler]:
         null_ptr[H3HandlerServer[StubHandler], MutUntrackedOrigin](),
         List[Byte](),
         0,
-        UInt64(0),
     )
-    s.handshaking = False
     s.next_deadline_us = deadline
     return s^
 

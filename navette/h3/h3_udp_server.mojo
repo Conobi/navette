@@ -204,17 +204,6 @@ comptime SERVER_DEFAULT_IDLE_TIMEOUT_MS: UInt64 = 30_000
 # constructor and by `_refresh_deadline` when `timeout()` returns None.
 comptime NO_DEADLINE_US: UInt64 = UInt64.MAX
 
-# A connection not established this long after its first Initial is
-# dropped silently (no CONNECTION_CLOSE: its peer may be spoofed).
-comptime HANDSHAKE_TIMEOUT_US: UInt64 = 10_000_000
-
-
-def _handshake_deadline[H: StreamHandler](ref slot: ConnSlot[H]) -> UInt64:
-    """When a still-handshaking slot is abandoned; `NO_DEADLINE_US` once established."""
-    if slot.handshaking:
-        return slot.created_us + HANDSHAKE_TIMEOUT_US
-    return NO_DEADLINE_US
-
 
 def _earliest_cached_deadline[H: StreamHandler](
     slots: List[ConnSlot[H]],
@@ -487,8 +476,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     `id` is the connection's stable `ConnTable` id: the slot index moves
     on swap-and-pop, the id and its demux keys do not. `handshaking` is
     set at creation and cleared once, when the connection is first seen
-    established; while set, the slot is abandoned `HANDSHAKE_TIMEOUT_US`
-    after `created_us`.
+    established.
 
     `cid_epoch_seen` and `initial_key_live` record the local CID set
     (`CidManager.cid_epoch`) and whether the client's Initial DCID was
@@ -499,8 +487,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
 
     `next_deadline_us` caches the connection's earliest deadline as of
     `deadline_refreshed_at_us` (`now` while egress is capped, `timeout()`
-    otherwise, capped by the handshake deadline, `NO_DEADLINE_US` for
-    none); after construction only the creation-time write and
+    otherwise, `NO_DEADLINE_US` for none); after construction only the creation-time write and
     `_refresh_deadline` may change it, and the timer scan reads it without
     touching `h3`.
 
@@ -522,7 +509,6 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     var addr: List[Byte]
     var validated_addr: List[Byte]
     var id: Int
-    var created_us: UInt64
     var handshaking: Bool
     var cid_epoch_seen: UInt64
     var initial_key_live: Bool
@@ -536,13 +522,11 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         h3: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin],
         var addr: List[Byte],
         id: Int,
-        created_us: UInt64,
     ):
         self.h3 = h3
         self.validated_addr = List[Byte](copy=addr)
         self.addr = addr^
         self.id = id
-        self.created_us = created_us
         self.handshaking = True
         self.cid_epoch_seen = UInt64(0)
         self.initial_key_live = True
@@ -556,7 +540,6 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         self.addr = List[Byte](copy=copy.addr)
         self.validated_addr = List[Byte](copy=copy.validated_addr)
         self.id = copy.id
-        self.created_us = copy.created_us
         self.handshaking = copy.handshaking
         self.cid_epoch_seen = copy.cid_epoch_seen
         self.initial_key_live = copy.initial_key_live
@@ -1133,13 +1116,12 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             else:
                 var d = slot.h3[].timeout(t)
                 expect = d.value() if d else NO_DEADLINE_US
-            expect = min(expect, _handshake_deadline(slot))
             if slot.next_deadline_us != expect:
                 return False
         return True
 
     def _refresh_deadline(mut self, idx: Int, now: UInt64):
-        """Recompute slot `idx`'s cached deadline: `now` while egress is capped, else `timeout(now)`, capped by the handshake deadline.
+        """Recompute slot `idx`'s cached deadline: `now` while egress is capped, else `timeout(now)`.
 
         The only production writer of the cache; every server path that
         mutates a connection reaches it before the next reader runs.
@@ -1147,13 +1129,11 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self._deadline_refresh_count += 1
         ref slot = self.conn_slots[idx]
         slot.deadline_refreshed_at_us = now
-        var d: UInt64
         if slot.h3[].has_pending_egress():
-            d = now
-        else:
-            var t = slot.h3[].timeout(now)
-            d = t.value() if t else NO_DEADLINE_US
-        slot.next_deadline_us = min(d, _handshake_deadline(slot))
+            slot.next_deadline_us = now
+            return
+        var t = slot.h3[].timeout(now)
+        slot.next_deadline_us = t.value() if t else NO_DEADLINE_US
 
     def _timer_pass_due(self, now: UInt64) -> Bool:
         """Pass gate: no live timer, or the minimum cached deadline has passed."""
@@ -1211,19 +1191,11 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         pass. Each drained slot either advances its deadline, becomes CLOSED,
         or is still capped (progress by construction), so no slot is drained
         on consecutive passes without progress. Only the drained slots are
-        recomputed; the loop itself is an O(N) integer compare. A slot
-        still handshaking past its handshake deadline is abandoned
-        (closed without a CONNECTION_CLOSE) and reaped.
+        recomputed; the loop itself is an O(N) integer compare.
         """
         for i in range(len(self.conn_slots)):
             if self.conn_slots[i].next_deadline_us > now:
                 continue
-            if _handshake_deadline(self.conn_slots[i]) <= now:
-                ref quic = self.conn_slots[i].h3[]._h3._quic
-                if not quic.is_closed():
-                    quic.abandon()
-                    if self._guard:
-                        self._guard.value().stats.handshake_timeouts += 1
             try:
                 self._drain_and_send(i, now)
             # Silent on purpose: a slot whose send() raises persistently stays due on
@@ -1753,7 +1725,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
         # Raw sockaddr blob (16 or 28 bytes) for sendmsg routing;
         # `_set_msg_peer_raw()` parses this layout.
-        self.conn_slots.append(ConnSlot[Self.H](h3_ptr, List[Byte](name), id, now))
+        self.conn_slots.append(ConnSlot[Self.H](h3_ptr, List[Byte](name), id))
         self._handshaking += 1
         ref stats = self._guard.value().stats
         stats.handshaking_peak = max(stats.handshaking_peak, UInt64(self._handshaking))

@@ -206,6 +206,10 @@ comptime CONN_CLOSED: UInt8 = 0x80
 
 comptime _WRITE_HS_BUF_SIZE: Int = 4096
 comptime _TP_BUF_SIZE: Int = 1024
+# A server connection not established this long after it was created is
+# dropped silently: a spoofer can keep the idle timer alive by trickling
+# Initials, so idle alone does not bound an abandoned handshake.
+comptime HANDSHAKE_TIMEOUT_US: UInt64 = 10_000_000
 # Close reasons for a server's CID transport parameters that fail RFC 9000
 # Section 7.3 on a client.
 comptime _REASON_ORIGINAL_DCID = "original_destination_connection_id does not match our first DCID"
@@ -460,6 +464,7 @@ struct QuicConnection(Movable):
     var _events_head: Int
     var close: CloseState
     var idle_timer: UInt64
+    var created_us: UInt64
     var handshake_confirmed: Bool
     var current_level: Int
     var send_handshake_done: Bool
@@ -570,6 +575,7 @@ struct QuicConnection(Movable):
             drain_timer=UInt64(0),
         )
         self.idle_timer = now
+        self.created_us = now
         self.handshake_confirmed = False
         self.current_level = 0
         self.send_handshake_done = False
@@ -3605,8 +3611,9 @@ struct QuicConnection(Movable):
     def timeout(self, now: UInt64) -> Optional[UInt64]:
         """Earliest deadline the caller must wake `send()` for, or None.
 
-        Sources: per-space PTO and ACK deadlines and path-validation
-        expiry (omitted while closing/draining/closed), idle, close and drain timers, and, on an
+        Sources: per-space PTO and ACK deadlines, path-validation expiry
+        and a server's handshake deadline (omitted while
+        closing/draining/closed), idle, close and drain timers, and, on an
         established non-terminal connection, the pacer wait — folded only
         when it is earlier than the rest and Application data is actually
         waiting, so the stream walk is skipped otherwise.
@@ -3622,6 +3629,8 @@ struct QuicConnection(Movable):
                 _min_deadline(earliest, self._pto_deadline(s))
                 _min_deadline(earliest, self.spaces[s].ack_deadline)
             _min_deadline(earliest, self.path.validator.next_expiry(self._path_validation_pto()))
+            if self.is_server and not self.is_established():
+                _min_deadline(earliest, Optional[UInt64](self.created_us + HANDSHAKE_TIMEOUT_US))
             # A challenge that came due but could not go out (congestion or
             # anti-amplification limited) waits for the ACK or datagram that
             # lifts the limit, not for a timer that would spin.
@@ -3693,6 +3702,13 @@ struct QuicConnection(Movable):
                 return
 
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
+            return
+
+        # An expired server handshake closes silently: no closing state and
+        # no CONNECTION_CLOSE toward an address that may be spoofed (RFC
+        # 9000 Section 10.2).
+        if self.is_server and not self.is_established() and now >= self.created_us + HANDSHAKE_TIMEOUT_US:
+            self.state = self.state | CONN_CLOSED
             return
 
         # Abandon path validations older than 3 PTOs (RFC 9000 Section
@@ -3806,19 +3822,6 @@ struct QuicConnection(Movable):
         `close_transport` instead.
         """
         self._close_impl(error_code, reason, now, is_app=True)
-
-    def abandon(mut self):
-        """Drop the connection silently: CLOSED at once, no CONNECTION_CLOSE, no closing or draining period.
-
-        For a server giving up on a handshake: an endpoint without
-        established state does not enter the closing state (RFC 9000
-        Section 10.2), and answering a peer whose address is not validated
-        would only reflect traffic. Any queued close is discarded; `send`
-        emits nothing afterwards.
-        """
-        self.state = self.state | CONN_CLOSED
-        self.close.pending = None
-        self.close.owed = False
 
     def _close_impl(mut self, error_code: UInt64, reason: String, now: UInt64, is_app: Bool):
         """Shared implementation for `close_transport` and `close_app`.

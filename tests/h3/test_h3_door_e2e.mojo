@@ -256,7 +256,6 @@ def test_handshake_timeout_frees_unvalidated() raises:
     _settle(h, 1)
     assert_equal_int(h.slot_count(), 0, "abandoned 10 s after creation")
     assert_equal_int(h.srv[].unvalidated_handshaking(), 0, "count back to 0")
-    assert_equal_int(Int(h.srv[].protection_stats().handshake_timeouts), 3, "3 handshake timeouts counted")
     assert_equal_int(len(h.recv_raw(sock, 20)), 0, "nothing sent to an unvalidated peer")
     _ = sock^
     _ = h.slot_count()
