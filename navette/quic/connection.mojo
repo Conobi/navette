@@ -1234,49 +1234,11 @@ struct QuicConnection(Movable):
 
     # ── Stream frame handlers ────────────────────────────────────────
 
-    @always_inline
     def _handle_stream_frame(mut self, ref stream_frame: StreamFrame, stream_data: Span[Byte, _]) raises:
-        """Process an incoming STREAM frame."""
-        var stream_id = stream_frame.stream_id
-        var offset = stream_frame.offset
-        var data_len = UInt64(len(stream_data))
-        var fin = stream_frame.fin
-        var key = Int(stream_id)
-        if not self._resolve_frame_stream(stream_id):
-            return
-        var p = self.stream_map.stream_ptr(key)
-        if not p[].is_bidi and p[].is_local:
-            raise "STREAM_STATE_ERROR: incoming STREAM frame on local uni stream"
-        if not p[].recv_state:
-            raise "STREAM_STATE_ERROR: no recv state"
-        var rs = p[].recv_state.value()
-        if rs != RecvState.RECV and rs != RecvState.SIZE_KNOWN:
-            return
-        if not p[].fc_recv:
-            raise "internal: missing fc_recv"
-        if stream_offset_exceeds_fc(offset, data_len, p[].fc_recv.value().limit):
-            self.close_transport(UInt64(0x03), String(GUARD_TAG_STREAM_LARGE_OFFSET), monotonic_us())
-            return
-        if not p[].recv_buf:
-            raise "internal: missing recv_buf"
-        var new_bytes = p[].recv_buf.value().write(
-            offset, stream_data, fin, p[].fin_offset
+        """`_handle_stream_frame_from_cursor` for a decoded `StreamFrame` (tests drive this entry)."""
+        self._handle_stream_frame_from_cursor(
+            stream_frame.stream_id, stream_frame.offset, stream_frame.fin, stream_data
         )
-        if offset + data_len > p[].recv_highest_offset:
-            p[].recv_highest_offset = offset + data_len
-        if not self.stream_map.conn_fc_recv.check_limit(new_bytes):
-            raise "FLOW_CONTROL_ERROR: connection FC exceeded"
-        p[].fc_recv.value().add_received(new_bytes)
-        self.stream_map.conn_fc_recv.add_received(new_bytes)
-        if p[].recv_buf.value().has_readable():
-            self.events.append(QuicEvent.stream_readable(stream_id))
-        if fin:
-            if rs == RecvState.RECV:
-                p[].recv_state = Optional[RecvState](RecvState.SIZE_KNOWN)
-                rs = RecvState.SIZE_KNOWN
-            if rs == RecvState.SIZE_KNOWN:
-                if p[].recv_buf.value().is_complete(p[].fin_offset):
-                    p[].recv_state = Optional[RecvState](RecvState.DATA_RECVD)
 
     def _resolve_frame_stream(mut self, stream_id: UInt64) raises -> Bool:
         """Find, or implicitly open, the stream a STREAM, RESET_STREAM or
@@ -1903,8 +1865,7 @@ struct QuicConnection(Movable):
             raise "FLOW_CONTROL_ERROR: connection FC exceeded"
         p[].fc_recv.value().add_received(new_bytes)
         self.stream_map.conn_fc_recv.add_received(new_bytes)
-        if p[].recv_buf.value().has_readable():
-            self.events.append(QuicEvent.stream_readable(stream_id))
+        var readable = p[].recv_buf.value().has_readable()
         if fin:
             if rs == RecvState.RECV:
                 p[].recv_state = Optional[RecvState](RecvState.SIZE_KNOWN)
@@ -1912,6 +1873,14 @@ struct QuicConnection(Movable):
             if rs == RecvState.SIZE_KNOWN:
                 if p[].recv_buf.value().is_complete(p[].fin_offset):
                     p[].recv_state = Optional[RecvState](RecvState.DATA_RECVD)
+                    # The stream's end is news even with no new bytes (a
+                    # bare FIN after the data was read): without an event
+                    # the application never learns the stream ended. Once
+                    # DATA_RECVD, later frames return above, so this fires
+                    # once.
+                    readable = True
+        if readable:
+            self.events.append(QuicEvent.stream_readable(stream_id))
 
     @always_inline
     def _on_new_cid_from_cursor(
