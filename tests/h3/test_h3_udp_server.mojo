@@ -1453,7 +1453,6 @@ def _slot_with(deadline: UInt64) -> ConnSlot[StubHandler]:
     """A `ConnSlot` around a null `h3` pointer carrying one cached deadline."""
     var s = ConnSlot[StubHandler](
         null_ptr[H3HandlerServer[StubHandler], MutUntrackedOrigin](),
-        List[Byte](),
         List[UInt64](),
         UInt64(0),
     )
