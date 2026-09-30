@@ -374,16 +374,19 @@ struct H3Connection(Movable):
 
     # --- Path-validation pass-through (RFC 9000 §8 + §9) ---------------------
 
-    def on_ingress_from(
+    def should_drop_from(self, from_addr: PathKey) -> Bool:
+        """`QuicConnection.should_drop_from`: call before feeding the datagram."""
+        return self._quic.should_drop_from(from_addr)
+
+    def note_authenticated_ingress(
         mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
     ) raises:
-        """Forward per-datagram path-change + anti-amp credit to the QUIC layer.
+        """`QuicConnection.note_authenticated_ingress`: call after the feed, only when it authenticated."""
+        self._quic.note_authenticated_ingress(from_addr^, datagram_len, now)
 
-        See `QuicConnection.on_ingress_from` for the contract. Exposed at
-        the H3 boundary so the UDP server can drive it without depending
-        on the inner QuicConnection field. Called BEFORE `feed_datagram*`.
-        """
-        self._quic.on_ingress_from(from_addr^, datagram_len, now)
+    def last_datagram_authenticated(self) -> Bool:
+        """True when a packet of the last datagram fed decrypted."""
+        return self._quic.last_datagram_authenticated
 
     def set_current_recv_addr(mut self, var addr: PathKey):
         """Stamp the per-receive source-addr cursor on the QUIC layer."""

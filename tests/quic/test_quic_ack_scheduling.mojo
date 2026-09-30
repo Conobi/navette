@@ -751,7 +751,7 @@ def test_bundle_predicate_sound() raises:
             p.server.stream_map.needs_max_streams_bidi = True
         elif k == 3:
             var d = _bytes(8)
-            p.server.path.pending_responses.append(d^)
+            p.server.path.on_challenge_received(Span(d))
         elif k == 4:
             p.server.cid_mgr.requeue_retire(UInt64(rng.below(4)))
         elif k == 5:

@@ -26,6 +26,15 @@ comptime MAX_CHALLENGE_ATTEMPTS: UInt8 = 3
 comptime ANTI_AMP_FACTOR: Int64 = 3
 # RFC 9000 §8.2: PATH_CHALLENGE / PATH_RESPONSE data is exactly 8 bytes.
 comptime PATH_TOKEN_LEN: Int = 8
+# Our own challenges in flight at once. Each is started by an
+# authenticated datagram from a new address; without a cap a peer rotating
+# source addresses grows the list (and its getrandom calls) at line rate.
+comptime MAX_PENDING_CHALLENGES: Int = 4
+# Peer challenges waiting for their PATH_RESPONSE; the oldest is dropped
+# when full (quiche's DEFAULT_MAX_PATH_CHALLENGE_RX_QUEUE_LEN, the
+# quic-go CVE-2023-49295 fix). RFC 9000 Section 9.3.3 lets an endpoint
+# answer only the latest challenge.
+comptime MAX_PENDING_RESPONSES: Int = 3
 
 
 # ── PathKey — canonical comparable identifier for a peer 4-tuple ──────────────
@@ -189,7 +198,7 @@ struct PathValidator(Movable):
     """
 
     var current: Optional[ValidatedPath]      # active validated path (or None)
-    var pending: List[PathChallenge]          # challenges in flight
+    var pending: List[PathChallenge]          # challenges in flight, at most MAX_PENDING_CHALLENGES
 
     def __init__(out self):
         """Start with no validated path and no pending challenges."""
@@ -206,12 +215,14 @@ struct PathValidator(Movable):
         var target: PathKey,
         now_ns: UInt64,
     ) raises -> List[Byte]:
-        """Generate an 8-byte random token, queue a PathChallenge, return the token.
+        """Queue a challenge for `target` and return its 8-byte getrandom(2) token.
 
-        Returns the 8-byte token so the caller can wrap it in a
-        PATH_CHALLENGE frame and emit it. The token is drawn from
-        getrandom(2) — same primitive used by CidManager.generate_cid.
+        Returns an empty list, drawing no randomness, when
+        `MAX_PENDING_CHALLENGES` are already pending: validation of that
+        address is simply not attempted until one completes or expires.
         """
+        if len(self.pending) >= MAX_PENDING_CHALLENGES:
+            return List[Byte]()
         var buf = _pv_alloc[UInt8](PATH_TOKEN_LEN)
         _ = external_call["getrandom", Int](buf, UInt64(PATH_TOKEN_LEN), UInt32(0))
         var token = List[Byte](capacity=PATH_TOKEN_LEN)
@@ -333,29 +344,64 @@ struct PathValidator(Movable):
 # ── PathState ──────────────────────────────────────────────────────────
 
 
-@fieldwise_init
 struct PathState(Movable):
-    """Per-connection path validation and address tracking state."""
+    """Per-connection path validation and address tracking state.
+
+    Peer challenges awaiting a PATH_RESPONSE sit in a ring of
+    `MAX_PENDING_RESPONSES` (oldest overwritten), so a PATH_CHALLENGE
+    flood costs a fixed 24 bytes of state.
+    """
 
     var validator: PathValidator
-    var pending_responses: List[List[Byte]]
+    var _responses: InlineArray[InlineArray[UInt8, PATH_TOKEN_LEN], MAX_PENDING_RESPONSES]
+    var _resp_head: Int  # index of the oldest queued response
+    var _resp_count: Int
     var peer_addr: PathKey
     var current_recv_addr: PathKey
 
-    def on_challenge_received(mut self, data: Span[Byte, _]):
-        """Stash an 8-byte PATH_CHALLENGE token for echo as PATH_RESPONSE."""
-        var copy = List[Byte](capacity=len(data))
-        for ref byte in data:
-            copy.append(byte)
-        self.pending_responses.append(copy^)
+    def __init__(out self):
+        """No validated path, nothing pending; `peer_addr` is the zero sentinel until seeded."""
+        self.validator = PathValidator()
+        self._responses = InlineArray[InlineArray[UInt8, PATH_TOKEN_LEN], MAX_PENDING_RESPONSES](
+            fill=InlineArray[UInt8, PATH_TOKEN_LEN](fill=UInt8(0))
+        )
+        self._resp_head = 0
+        self._resp_count = 0
+        self.peer_addr = PathKey.zero()
+        self.current_recv_addr = PathKey.zero()
 
-    def emit_response_frames(mut self) raises -> List[Frame]:
-        """Drain pending PATH_RESPONSE frames."""
+    def on_challenge_received(mut self, data: Span[Byte, _]):
+        """Queue a PATH_CHALLENGE's data for echo; drops the oldest queued one when full.
+
+        `data` is the frame's 8 bytes (the parser guarantees the length;
+        extra bytes are ignored, missing ones read as zero).
+        """
+        if self._resp_count == MAX_PENDING_RESPONSES:
+            self._resp_head = (self._resp_head + 1) % MAX_PENDING_RESPONSES
+            self._resp_count -= 1
+        var at = (self._resp_head + self._resp_count) % MAX_PENDING_RESPONSES
+        for k in range(PATH_TOKEN_LEN):
+            self._responses[at][k] = data[k] if k < len(data) else UInt8(0)
+        self._resp_count += 1
+
+    def pending_response_count(self) -> Int:
+        return self._resp_count
+
+    def pending_response(self, i: Int) -> List[Byte]:
+        """Copy of the `i`-th queued response data, oldest first; `i < pending_response_count()`."""
+        ref slot = self._responses[(self._resp_head + i) % MAX_PENDING_RESPONSES]
+        var out = List[Byte](capacity=PATH_TOKEN_LEN)
+        for k in range(PATH_TOKEN_LEN):
+            out.append(slot[k])
+        return out^
+
+    def emit_response_frames(mut self, max_n: Int = MAX_PENDING_RESPONSES) raises -> List[Frame]:
+        """Dequeue up to `max_n` PATH_RESPONSE frames, oldest first; the rest stay queued."""
         var out = List[Frame]()
-        for ref resp in self.pending_responses:
-            var data = List[Byte](copy=resp)
-            out.append(Frame.path_response(data^))
-        self.pending_responses = List[List[Byte]]()
+        while self._resp_count > 0 and len(out) < max_n:
+            out.append(Frame.path_response(self.pending_response(0)))
+            self._resp_head = (self._resp_head + 1) % MAX_PENDING_RESPONSES
+            self._resp_count -= 1
         return out^
 
     def emit_challenge_frames(mut self) raises -> List[Frame]:
@@ -366,9 +412,9 @@ struct PathState(Movable):
             out.append(Frame.path_challenge(token^))
         return out^
 
-    def begin_challenge(mut self, var target: PathKey, now: UInt64) raises:
-        """Begin path validation for `target`."""
-        _ = self.validator.start_challenge(target^, now)
+    def begin_challenge(mut self, var target: PathKey, now: UInt64) raises -> Bool:
+        """Begin path validation for `target`; False when `MAX_PENDING_CHALLENGES` are pending."""
+        return Bool(self.validator.start_challenge(target^, now))
 
     def has_pending_challenge(self, target: PathKey) -> Bool:
         """True iff a challenge for `target` is already pending."""

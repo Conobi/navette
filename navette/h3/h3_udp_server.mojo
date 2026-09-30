@@ -1829,17 +1829,11 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 pd.name_ptr, 0, pd.name_len
             )
 
-            # Detect path change vs the validated peer_addr.
-            # On migration-disabled, close_transport(0x0A) — the
-            # connection-close frame goes out in the next flush. On
-            # migration-allowed mismatch, kick off PATH_CHALLENGE. Always
-            # credits per-path bytes_received for the unvalidated case.
-            try:
-                self.conn_slots[conn_idx].h3[].on_ingress_from(
-                    PathKey(copy=from_path), pd.payload_len, now
-                )
-            except e:
-                print("H3UdpServer: on_ingress_from error:", e)
+            # A connection that disabled migration drops a new source
+            # address unread (RFC 9000 Section 9); no state is touched.
+            if self.conn_slots[conn_idx].h3[].should_drop_from(from_path):
+                self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
+                continue
 
             # Stamp the receive-addr cursor so the inner
             # _dispatch_frame can match an incoming PATH_RESPONSE against
@@ -1867,28 +1861,32 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 self._handshaking -= 1
                 self._table.validate(self.conn_slots[conn_idx].id)
 
-            # Refresh the raw sockaddr blob used by sendmsg routing. The
-            # `conn_slots[i].addr` blob targets the most-recent observed
-            # source addr regardless of validation state — sendmsg uses
-            # it as the destination of every outbound datagram. Path
-            # validation gates whether OUTBOUND traffic is allowed
-            # (anti-amp + close on migration-disabled); it does NOT
-            # influence where the datagram is delivered (the peer
-            # decides where to listen). Two exceptions: the blob is only
-            # rebuilt when the bytes differ, and it is frozen once the
-            # connection is closing (checked AFTER the feed, so the very
-            # datagram that triggers the close cannot move it): path
-            # validation is suppressed in those states, so a spoofed
-            # source with a valid DCID would otherwise redirect the
-            # reflected CONNECTION_CLOSE to an unvalidated address.
-            if not self.conn_slots[conn_idx].h3[].is_closing_or_draining():
-                if not _sockaddr_matches(
-                    self.conn_slots[conn_idx].addr, pd.name_ptr, pd.name_len
-                ):
-                    var addr_update = List[Byte](capacity=pd.name_len)
-                    for j in range(pd.name_len):
-                        addr_update.append(pd.name_ptr[unsafe_offset=j])
-                    self.conn_slots[conn_idx].addr = addr_update^
+            # Path bookkeeping and the sendmsg destination move only on a
+            # datagram that decrypted: a spoofed source with a valid DCID
+            # and garbage payload must neither start a PATH_CHALLENGE nor
+            # redirect our traffic. On an authenticated one, a new address
+            # starts path validation and earns anti-amplification credit;
+            # `conn_slots[i].addr` then follows the latest source (the
+            # peer decides where it listens; validation only gates how much
+            # we send there). The blob is frozen once the connection is
+            # closing (checked AFTER the feed, so the datagram that
+            # triggers the close cannot move it), and only rebuilt when
+            # the bytes differ.
+            if self.conn_slots[conn_idx].h3[].last_datagram_authenticated():
+                try:
+                    self.conn_slots[conn_idx].h3[].note_authenticated_ingress(
+                        PathKey(copy=from_path), pd.payload_len, now
+                    )
+                except e:
+                    print("H3UdpServer: path bookkeeping error:", e)
+                if not self.conn_slots[conn_idx].h3[].is_closing_or_draining():
+                    if not _sockaddr_matches(
+                        self.conn_slots[conn_idx].addr, pd.name_ptr, pd.name_len
+                    ):
+                        var addr_update = List[Byte](capacity=pd.name_len)
+                        for j in range(pd.name_len):
+                            addr_update.append(pd.name_ptr[unsafe_offset=j])
+                        self.conn_slots[conn_idx].addr = addr_update^
 
             # Egress is deferred to `_drain_dirty`: list the slot once.
             if self.conn_slots[conn_idx].dirty_pass != pass_id:

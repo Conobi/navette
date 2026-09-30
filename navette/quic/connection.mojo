@@ -129,7 +129,6 @@ from navette.quic.guard_tags import (
     GUARD_TAG_UNKNOWN_FRAME,
     GUARD_TAG_PATH_CHALLENGE_HS,
     GUARD_TAG_DATAGRAM_HS,
-    GUARD_TAG_MIGRATION_DISABLED,
     GUARD_TAG_NEW_TOKEN_SERVER,
     GUARD_TAG_HANDSHAKE_DONE_SERVER,
     GUARD_TAG_STREAM_LARGE_OFFSET,
@@ -602,12 +601,7 @@ struct QuicConnection(Movable):
             local_active_limit=local_params.active_connection_id_limit,
             peer_active_limit=UInt64(2),
         )
-        self.path = PathState(
-            validator=PathValidator(),
-            pending_responses=List[List[Byte]](),
-            peer_addr=PathKey.zero(),
-            current_recv_addr=PathKey.zero(),
-        )
+        self.path = PathState()
         self.pending_outbound_datagrams = List[List[Byte]]()
         self._outbound_dg_head = 0
         self.initial_cids_emitted = False
@@ -1551,9 +1545,9 @@ struct QuicConnection(Movable):
 
     def start_path_challenge(
         mut self, var target: PathKey, now: UInt64
-    ) raises:
-        """Begin path validation for `target`."""
-        self.path.begin_challenge(target^, now)
+    ) raises -> Bool:
+        """Begin path validation for `target`; False when `MAX_PENDING_CHALLENGES` are pending."""
+        return self.path.begin_challenge(target^, now)
 
     def has_pending_path_challenge(self, target: PathKey) -> Bool:
         """True iff a challenge for `target` is already pending."""
@@ -1563,76 +1557,45 @@ struct QuicConnection(Movable):
         """Stamp the per-receive source-address cursor."""
         self.path.stamp_recv_addr(addr^)
 
-    def on_ingress_from(
+    def should_drop_from(self, from_addr: PathKey) -> Bool:
+        """True when a datagram from `from_addr` must be dropped unread: side-effect free.
+
+        That is an established connection that advertised
+        `disable_active_migration` receiving from an address other than
+        `peer_addr`. RFC 9000 Section 9 lets it drop such packets; closing
+        instead would let anyone who can spoof a source address with a
+        valid DCID (or a NAT rebinding) kill the connection. The check
+        runs before the datagram is decrypted, so it must not change any
+        state.
+        """
+        if (self.state & CONN_ESTABLISHED) == 0:
+            return False
+        if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
+            return False
+        return self.local_params.disable_active_migration and not (from_addr == self.path.peer_addr)
+
+    def note_authenticated_ingress(
         mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
     ) raises:
-        """Handle the per-datagram address-change + anti-amp bookkeeping.
+        """Path bookkeeping for a datagram that authenticated (`last_datagram_authenticated`).
 
-        Called by the bench receive site BEFORE feeding the datagram into
-        `recv_from_buffer`. Three responsibilities:
-
-          1. **Path-change detection** (RFC 9000 §9). If the source addr
-             differs from the currently validated `peer_addr` AND the
-             server advertised `disable_active_migration=True`, close
-             with PROTOCOL_VIOLATION per §9 ¶last (no silent drop — that
-             strands the connection on a dead path).
-
-          2. **Path-challenge initiation**. If migration is allowed and
-             no challenge is already pending for this addr, generate one;
-             the next 1-RTT flush emits the PATH_CHALLENGE.
-
-          3. **Per-path anti-amp accounting** (RFC 9000 §8.1). If this
-             addr has a pending challenge, credit the received bytes to
-             its `bytes_received` so subsequent sends can stay within the
-             3× budget. (The validated path has no per-path counter.)
-
-        `set_current_recv_addr` must be called separately so the inner
-        `_dispatch_frame` can match PATH_RESPONSE arrivals; this method
-        focuses on the ingress-side bookkeeping that runs before recv.
-
-        Returns immediately if the connection is already closing /
-        draining / closed (no point starting a new challenge on a dying
-        conn).
+        Call it only after the datagram decrypted: an unauthenticated
+        datagram must not start a challenge or credit a path. On an
+        established connection an address other than `peer_addr` starts
+        path validation (RFC 9000 Section 9), unless a challenge for it is
+        pending or `MAX_PENDING_CHALLENGES` already are; the datagram's
+        bytes are credited to that address's anti-amplification budget
+        (RFC 9000 Section 8.1; a no-op for the validated path). Before
+        establishment the address is not tracked here: the server seeds it
+        with `bootstrap_peer_addr`. No-op once closing, draining or closed.
         """
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
-
-        # 1. Address change vs the currently validated path. The sentinel
-        # zero PathKey (family=0) never matches a real peer (family=2 or
-        # 10), so the very first ingress from a fresh server connection
-        # looks like an address change. To avoid spurious challenges
-        # mid-handshake, we only honour migration after CONN_ESTABLISHED
-        # (per spec non-goal: mid-handshake migration drops to current
-        # behaviour). Before establishment the bench server stamps the
-        # peer addr directly via `bootstrap_peer_addr` instead.
-        if not (from_addr == self.path.peer_addr):
-            if (self.state & CONN_ESTABLISHED) == 0:
-                # Pre-handshake: silently track the addr via the cursor
-                # only. `bootstrap_peer_addr` is what promotes it.
-                pass
-            elif self.local_params.disable_active_migration:
-                # RFC 9000 §9 ¶last: any address change on a connection
-                # that advertised `disable_active_migration=True` is a
-                # PROTOCOL_VIOLATION (0x0A). Close instead of silently
-                # dropping (which would strand the connection on a dead
-                # path).
-                self.close_transport(
-                    UInt64(0x0A),
-                    String(GUARD_TAG_MIGRATION_DISABLED),
-                    now,
-                )
-                return
-            else:
-                # Active migration allowed: initiate path validation for
-                # the new addr unless we already have a challenge in
-                # flight for it.
-                var probe = PathKey(copy=from_addr)
-                if not self.has_pending_path_challenge(probe):
-                    self.start_path_challenge(probe^, now)
-
-        # 2. Per-path anti-amp credit. record_received_bytes is a no-op
-        # if `from_addr` has no pending challenge (i.e. it IS the
-        # validated path); the validated path is not anti-amp constrained.
+        if (self.state & CONN_ESTABLISHED) != 0 and not (from_addr == self.path.peer_addr):
+            if self.local_params.disable_active_migration:
+                return  # `should_drop_from` refused it already; never migrate
+            if not self.has_pending_path_challenge(from_addr):
+                _ = self.start_path_challenge(PathKey(copy=from_addr), now)
         self.path.validator.record_received_bytes(from_addr, datagram_len)
 
     def bootstrap_peer_addr(mut self, var addr: PathKey):
@@ -3129,7 +3092,7 @@ struct QuicConnection(Movable):
                 or len(self.stream_map.control_reset) > 0
                 or len(self.stream_map.control_stop_sending) > 0):
             return True
-        if len(self.path.pending_responses) > 0 or len(self.path.validator.pending) > 0:
+        if self.path.pending_response_count() > 0 or len(self.path.validator.pending) > 0:
             return True
         if self._outbound_dg_head < len(self.pending_outbound_datagrams):
             return True
@@ -3216,13 +3179,16 @@ struct QuicConnection(Movable):
     def _build_path_and_datagram_frames(
         mut self, mut frames: List[Frame], mut used: Int, budget: Int, now: UInt64,
     ) raises:
-        """Append PATH_RESPONSE, PATH_CHALLENGE, and DATAGRAM frames."""
-        var n_resp = len(self.path.pending_responses)
-        if n_resp > 0 and used + 9 * n_resp <= budget:
-            var path_responses = self.emit_path_response_frames()
+        """Append PATH_RESPONSE, PATH_CHALLENGE, and DATAGRAM frames.
+
+        PATH_RESPONSEs go out as many as fit (9 bytes each); the rest stay
+        queued for the next packet.
+        """
+        if self.path.pending_response_count() > 0 and budget - used >= 9:
+            var path_responses = self.path.emit_response_frames((budget - used) // 9)
             for ref pr in path_responses:
                 frames.append(pr.copy())
-            used += 9 * n_resp
+            used += 9 * len(path_responses)
         var n_chal = len(self.path.validator.pending)
         if n_chal > 0 and used + 9 * n_chal <= budget:
             var path_challenges = self.emit_path_challenge_frames(now)

@@ -254,11 +254,19 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     # --- Path-validation pass-through (RFC 9000 §8 + §9) ---------------------
 
-    def on_ingress_from(
+    def should_drop_from(self, from_addr: PathKey) -> Bool:
+        """`QuicConnection.should_drop_from`: call before feeding the datagram."""
+        return self._h3.should_drop_from(from_addr)
+
+    def note_authenticated_ingress(
         mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
     ) raises:
-        """Forward per-datagram path-change + anti-amp credit to the H3 layer."""
-        self._h3.on_ingress_from(from_addr^, datagram_len, now)
+        """`QuicConnection.note_authenticated_ingress`: call after the feed, only when it authenticated."""
+        self._h3.note_authenticated_ingress(from_addr^, datagram_len, now)
+
+    def last_datagram_authenticated(self) -> Bool:
+        """True when a packet of the last datagram fed decrypted."""
+        return self._h3.last_datagram_authenticated()
 
     def set_current_recv_addr(mut self, var addr: PathKey):
         """Stamp the per-receive source-addr cursor on the QUIC layer."""

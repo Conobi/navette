@@ -50,7 +50,6 @@ from navette.quic.guard_predicates import (
 )
 from navette.quic.guard_tags import (
     GUARD_TAG_TP_ORIGINAL_DCID_FORBIDDEN,
-    GUARD_TAG_MIGRATION_DISABLED,
     GUARD_TAG_CRYPTO_IN_ZERO_RTT,
 )
 from navette.tls.guard_tags import (
@@ -3878,7 +3877,7 @@ def _build_server_for_rx_test() raises -> QuicConnection:
 
     Reuses the same factory path the established tests rely on, but does
     not drive a handshake — the RX handlers exercised here only touch
-    `path.pending_responses` and `path.validator`, so the handshake state
+    the PATH_RESPONSE queue and `path.validator`, so the handshake state
     is irrelevant.
     """
     var tls = TlsBackend("lib/librustls_mojo.so")
@@ -3914,19 +3913,19 @@ def test_path_challenge_recorded_for_response() raises:
         data.append(UInt8(0x10 + i))
     conn.on_path_challenge_received(Span(data), UInt64(1000))
     assert_equal_int(
-        len(conn.path.pending_responses),
+        conn.path.pending_response_count(),
         1,
         "expected exactly one pending PATH_RESPONSE",
     )
     assert_equal_int(
-        len(conn.path.pending_responses[0]),
+        len(conn.path.pending_response(0)),
         8,
         "expected pending PATH_RESPONSE token to be 8 bytes",
     )
     # Verify exact bytes preserved.
     for i in range(8):
         assert_equal_int(
-            Int(conn.path.pending_responses[0][i]),
+            Int(conn.path.pending_response(0)[i]),
             Int(UInt8(0x10 + i)),
             "PATH_RESPONSE token byte mismatch at index " + String(i),
         )
@@ -3953,9 +3952,9 @@ def test_path_response_handler_no_op_without_pending_challenge() raises:
         "path.validator.pending must stay empty (no challenges started yet)",
     )
     assert_equal_int(
-        len(conn.path.pending_responses),
+        conn.path.pending_response_count(),
         0,
-        "path.pending_responses must stay empty when handling a response",
+        "queued PATH_RESPONSEs must stay empty when handling a response",
     )
     print("  test_path_response_handler_no_op_without_pending_challenge: PASS")
 
@@ -3968,7 +3967,7 @@ def test_emit_path_response_drains_pending() raises:
         data.append(UInt8(0x55))
     conn.on_path_challenge_received(Span(data), UInt64(1000))
     assert_equal_int(
-        len(conn.path.pending_responses),
+        conn.path.pending_response_count(),
         1,
         "expected one pending PATH_RESPONSE after challenge RX",
     )
@@ -3979,9 +3978,9 @@ def test_emit_path_response_drains_pending() raises:
         "emitted frame must be PATH_RESPONSE",
     )
     assert_equal_int(
-        len(conn.path.pending_responses),
+        conn.path.pending_response_count(),
         0,
-        "path.pending_responses must be drained after emit",
+        "queued PATH_RESPONSEs must be drained after emit",
     )
     print("  test_emit_path_response_drains_pending: PASS")
 
@@ -4405,77 +4404,6 @@ def test_path_validation_defers_without_spare_cid() raises:
         "validator marks the path validated even when conn defers promotion",
     )
     print("  test_path_validation_defers_without_spare_cid: PASS")
-
-
-def test_disable_active_migration_triggers_close() raises:
-    """AC9: `disable_active_migration=True` + addr change → close_transport(0x0A).
-
-    Per RFC 9000 §9 ¶last, when the server advertised
-    `disable_active_migration`, any client-side 4-tuple change is a
-    PROTOCOL_VIOLATION. Asserts the reason tag is
-    `GUARD_TAG_MIGRATION_DISABLED` so log scrapers / coverage tools
-    can identify the close cause.
-    """
-    var conn = _build_server_for_rx_test()
-    # Flip the TP and re-bootstrap the addr so the addr-change branch
-    # has something concrete to diverge from.
-    conn.local_params.disable_active_migration = True
-    var addr_a = PathKey.from_v4(
-        UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
-    )
-    var addr_b = PathKey.from_v4(
-        UInt8(10), UInt8(0), UInt8(0), UInt8(2), UInt16(6000)
-    )
-    conn.bootstrap_peer_addr(addr_a^)
-    # Force ESTABLISHED so the post-handshake migration check runs.
-    conn.state = conn.state | CONN_ESTABLISHED
-
-    # Pre-condition: not closing yet.
-    assert_equal_int(
-        Int(conn.state & CONN_CLOSING), 0,
-        "connection not closing before the ingress arrives",
-    )
-
-    conn.on_ingress_from(PathKey(copy=addr_b), 1200, UInt64(2000))
-
-    # Post-condition: CLOSING set, close.pending holds the right tag.
-    assert_true(
-        (conn.state & CONN_CLOSING) != 0,
-        "CONN_CLOSING set after migration-disabled violation",
-    )
-    assert_true(
-        Bool(conn.close.pending),
-        "pending CONNECTION_CLOSE frame queued",
-    )
-    var cc = conn.close.pending.value().copy()
-    assert_true(
-        cc.is_transport,
-        "close uses transport namespace (PROTOCOL_VIOLATION)",
-    )
-    assert_equal_int(
-        Int(cc.error_code), 0x0A,
-        "error_code == PROTOCOL_VIOLATION (0x0A)",
-    )
-    # Reason tag check — bytes carry the exact GUARD_TAG_MIGRATION_DISABLED.
-    var expected_tag = String(GUARD_TAG_MIGRATION_DISABLED)
-    var expected_bytes = expected_tag.as_bytes()
-    assert_equal_int(
-        len(cc.reason), len(expected_bytes),
-        "reason length matches GUARD_TAG_MIGRATION_DISABLED",
-    )
-    for i in range(len(expected_bytes)):
-        assert_equal_int(
-            Int(cc.reason[i]), Int(expected_bytes[i]),
-            "reason byte mismatch at index " + String(i),
-        )
-
-    # No PATH_CHALLENGE was queued on the disabled connection — the
-    # close pre-empts validation entirely.
-    assert_equal_int(
-        len(conn.path.validator.pending), 0,
-        "no PATH_CHALLENGE emitted when migration is disabled",
-    )
-    print("  test_disable_active_migration_triggers_close: PASS")
 
 
 def test_is_closing_reflects_bitfield() raises:
@@ -4993,7 +4921,6 @@ def main() raises:
     test_path_validation_full_round_trip()
     test_path_validation_rejects_wrong_addr()
     test_path_validation_defers_without_spare_cid()
-    test_disable_active_migration_triggers_close()
     test_is_closing_reflects_bitfield()
     test_anti_amp_per_path_in_flusher()
     test_send_datagram_refused_when_peer_disabled()
