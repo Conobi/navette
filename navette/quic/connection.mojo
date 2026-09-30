@@ -914,7 +914,9 @@ struct QuicConnection(Movable):
         authenticated yet, it is addressed to our SCID, it carries a token,
         its SCID differs from our original DCID, and its integrity tag
         verifies under that DCID (RFC 9001 Section 5.8): anything else is
-        stale, duplicated or forged. Packets already sent in the Initial
+        stale, duplicated or forged. A Retry whose CRYPTO data cannot be
+        rewound, or whose keys cannot be derived, is ignored with no state
+        changed. Packets already sent in the Initial
         space are forgotten, not declared lost (the server discarded them
         unread), and their CRYPTO data is queued again from offset 0 under
         Initial keys derived from the new DCID. Packet numbers keep
@@ -936,6 +938,28 @@ struct QuicConnection(Movable):
             diff |= tag[i] ^ want[i]
         if diff != 0:
             return
+        # Everything that can fail runs before anything is changed: the
+        # CRYPTO rewind goes into a copy and the new Initial keys are
+        # derived first, so a Retry that cannot be followed is ignored
+        # whole instead of leaving the handshake half-restarted.
+        var pns = List[Int](capacity=len(self.spaces[0].sent_packets))
+        for pn in self.spaces[0].sent_packets.keys():
+            pns.append(pn)
+        sort(pns)
+        var crypto = List[CryptoFrame]()
+        for pn in pns:
+            var pkt = self.spaces[0].sent_packets.find(pn)
+            if not pkt:
+                continue
+            for ref frame in pkt.value().frames:
+                if frame.is_crypto():
+                    crypto.append(frame.as_crypto().copy())
+        var rewound = self.crypto_streams[0].copy()
+        try:
+            rewound.rewind(crypto)
+            self.protect.derive_initial_keys(header.scid.as_span(), is_client=True)
+        except:
+            return
         self._retry_token = List[Byte](packet[Int(header.token_offset) : Int(header.token_offset) + Int(header.token_len)])
         self._retry_scid = Optional[CidBuf](CidBuf(copy=header.scid))
         self.peer_cid = CidBuf(copy=header.scid)
@@ -943,15 +967,9 @@ struct QuicConnection(Movable):
             if e.sequence == UInt64(0):
                 e.cid = List[Byte](header.scid.as_span())
                 break
-        self.protect.derive_initial_keys(header.scid.as_span(), is_client=True)
-        var forgotten = self.spaces[0].reset_for_retry()
-        var crypto = List[CryptoFrame]()
-        for ref pkt in forgotten:
+        for ref pkt in self.spaces[0].reset_for_retry():
             self.recovery.on_packet_lost(pkt.size, pkt.in_flight)
-            for ref frame in pkt.frames:
-                if frame.is_crypto():
-                    crypto.append(frame.as_crypto().copy())
-        self.crypto_streams[0].rewind(crypto)
+        self.crypto_streams[0] = rewound^
 
     @always_inline
     def _is_small_datagram_initial(self, ref header: PacketHeader, datagram_len: Int) -> Bool:

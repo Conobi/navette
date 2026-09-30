@@ -148,6 +148,29 @@ def test_client_follows_retry_with_long_token() raises:
     print("  test_client_follows_retry_with_long_token: PASS")
 
 
+def test_retry_that_cannot_rewind_changes_nothing() raises:
+    """A Retry whose CRYPTO rewind fails is ignored whole: no token, SCID, keys or sent-packet state applied."""
+    var f = Fixture()
+    var sent_before = len(f.client.spaces[0].sent_packets)
+    var peer_before = List[Byte](f.client.peer_cid.as_span())
+    # Force a gap between the sent CRYPTO data and the unsent tail.
+    f.client.crypto_streams[0].send_offset = UInt64(100_000)
+    f.client.crypto_streams[0].send_buf = List[Byte](length=1, fill=Byte(0x16))
+    f.client.crypto_streams[0].sent_cursor = 0
+    var raised = False
+    try:
+        f.client.recv(Span(f.retry(_bytes(0x5C, 8), _bytes(0x03, 40))), f.now)
+    except:
+        raised = True
+    assert_true(not raised, "an unusable Retry is ignored, not raised")
+    assert_true(not f.client._retry_scid, "Retry SCID not recorded")
+    assert_equal_int(len(f.client._retry_token), 0, "token not recorded")
+    assert_true(_eq(f.client.peer_cid.as_span(), Span(peer_before)), "DCID unchanged")
+    assert_equal_int(len(f.client.spaces[0].sent_packets), sent_before, "sent packets kept")
+    assert_equal_int(Int(f.client.crypto_streams[0].send_offset), 100_000, "CRYPTO send state untouched")
+    print("  test_retry_that_cannot_rewind_changes_nothing: PASS")
+
+
 def test_handshake_without_retry_checks_original_dcid() raises:
     var f = Fixture()
     var orig = f.orig()
@@ -238,6 +261,7 @@ def main() raises:
     print("test_quic_retry_handshake:")
     test_client_follows_retry_to_handshake()
     test_client_follows_retry_with_long_token()
+    test_retry_that_cannot_rewind_changes_nothing()
     test_handshake_without_retry_checks_original_dcid()
     test_retry_with_bad_tag_is_ignored()
     test_second_retry_is_ignored()
