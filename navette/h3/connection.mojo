@@ -85,7 +85,7 @@ comptime _H3_MAX_SETTINGS_PAYLOAD: Int = 256
 # GOAWAY, CANCEL_PUSH and MAX_PUSH_ID carry a single varint.
 comptime _H3_MAX_VARINT_FRAME_PAYLOAD: Int = 8
 
-# How `_parse_frames_from_buf` treats a frame payload once its header is read.
+# How `_parse_frames` treats a frame payload once its header is read.
 comptime _PAYLOAD_BUFFER: UInt8 = 0  # wait for the whole (capped) payload
 comptime _PAYLOAD_STREAM: UInt8 = 1  # DATA: deliver bytes as they arrive
 comptime _PAYLOAD_SKIP: UInt8 = 2    # dispatch the type, discard the payload
@@ -149,12 +149,13 @@ struct H3Event(Copyable, Movable):
 
 
 struct _H3StreamBuf(Copyable, Movable):
-    """Per-stream receive state.
+    """Receive-side framing state of one peer stream, kept between drains.
 
-    Invariant: `buf` holds at most one frame header plus one capped,
-    whole-frame payload. DATA and unknown-frame payloads never enter it;
-    they are tracked by `payload_remaining` and consumed as they arrive,
-    because QUIC has already returned their flow-control credit.
+    `buf` holds only bytes a drain could not parse yet: a partial frame
+    header or a partial capped frame, so at most one frame header plus
+    `_H3_MAX_HEADERS_PAYLOAD` bytes. DATA and skipped payloads never wait
+    in it; `payload_remaining` tracks them and they are consumed as they
+    arrive, because QUIC has already returned their flow-control credit.
     """
 
     var buf:       List[Byte]
@@ -174,14 +175,6 @@ struct _H3StreamBuf(Copyable, Movable):
         self.payload_remaining = 0
         self.skipping = False
         self.discard = False
-
-    def __init__(out self, *, copy: Self):
-        self.buf = List[Byte](copy=copy.buf)
-        self.type_byte = copy.type_byte.copy()
-        self.is_uni = copy.is_uni
-        self.payload_remaining = copy.payload_remaining
-        self.skipping = copy.skipping
-        self.discard = copy.discard
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +706,12 @@ struct H3Connection(Movable):
         return True
 
     def _drain_stream(mut self, stream_id: UInt64, now: UInt64) raises:
-        """Read bytes from QUIC, accumulate in _stream_bufs, parse frames."""
+        """Read newly contiguous bytes from QUIC and dispatch the frames they complete.
+
+        Work per drain is linear in the bytes drained: frames are parsed
+        in place and only an unparsed partial frame is kept (see
+        `_H3StreamBuf`).
+        """
         # RFC 9000 §10.2.1: once CLOSING/DRAINING/CLOSED, drop further inbound
         # stream data — no more frames flow on this connection.
         if (self._quic.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
@@ -766,25 +764,28 @@ struct H3Connection(Movable):
                     self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
             return
 
-        # Append new bytes to accumulator
-        self._stream_bufs[key].buf.extend(Span(new_bytes))
+        # Parse straight out of the received bytes; only a leftover partial
+        # frame from the previous drain is prepended.
+        var buf = List[Byte]()
+        swap(buf, self._stream_bufs[key].buf)
+        if len(buf) == 0:
+            swap(buf, new_bytes)
+        else:
+            buf.extend(Span(new_bytes))
+        var pos = 0
 
         # Handle unidirectional stream type byte (first byte = stream type)
         if self._stream_bufs[key].is_uni:
             if not self._stream_bufs[key].type_byte:
-                if len(self._stream_bufs[key].buf) == 0:
+                if len(buf) == 0:
                     # B3a + B1 exit (return path 1 — UNI empty buf).
                     comptime if PROFILE_ACCEPT:
                         if self.profile_ptr is not None:
                             self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
                             self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
                     return
-                var type_byte = self._stream_bufs[key].buf[0]
-                # Strip type byte in-place — shift left by 1.
-                var slen = len(self._stream_bufs[key].buf)
-                for i in range(1, slen):
-                    self._stream_bufs[key].buf[i - 1] = self._stream_bufs[key].buf[i]
-                _ = self._stream_bufs[key].buf.pop()
+                var type_byte = buf[0]
+                pos = 1
                 self._stream_bufs[key].type_byte = Optional[UInt8](type_byte)
                 if type_byte == UInt8(0x00):
                     # RFC 9114 §6.2.1: at most one control stream per peer.
@@ -810,7 +811,6 @@ struct H3Connection(Movable):
                     self._stream_bufs[key].discard = True
                 if self._stream_bufs[key].discard:
                     # B3a + B1 exit (return path 2 — discarded UNI type).
-                    self._stream_bufs[key].buf.clear()
                     comptime if PROFILE_ACCEPT:
                         if self.profile_ptr is not None:
                             self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
@@ -838,7 +838,22 @@ struct H3Connection(Movable):
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
 
-        self._parse_frames_from_buf(stream_id, is_ctrl, now)
+        var remaining = self._stream_bufs[key].payload_remaining
+        var skipping = self._stream_bufs[key].skipping
+        pos = self._parse_frames(stream_id, is_ctrl, buf, pos, remaining, skipping, now)
+
+        # Keep only the unparsed tail. It lies inside one frame that began
+        # in this drain or is the previous tail, so copying it is bounded by
+        # the bytes drained now.
+        if (self._quic.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) == 0:
+            ref sb = self._stream_bufs[key]
+            sb.payload_remaining = remaining
+            sb.skipping = skipping
+            if pos == 0:
+                swap(sb.buf, buf)
+            elif pos < len(buf):
+                sb.buf = List[Byte](capacity=len(buf) - pos)
+                sb.buf.extend(Span(buf)[pos:])
 
         # FIN on bidi request stream → STREAM_ENDED event
         if not self._stream_bufs[key].is_uni and fin:
@@ -851,43 +866,60 @@ struct H3Connection(Movable):
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
 
-    def _parse_frames_from_buf(mut self, stream_id: UInt64, is_ctrl: Bool, now: UInt64) raises:
-        """Dispatch frames from the stream buffer without buffering by declared length.
+    def _parse_frames(
+        mut self,
+        stream_id: UInt64,
+        is_ctrl: Bool,
+        mut buf: List[Byte],
+        start: Int,
+        mut remaining: Int,
+        mut skipping: Bool,
+        now: UInt64,
+    ) raises -> Int:
+        """Dispatch every frame `buf[start:]` completes; return the new read position.
 
-        Each frame header is classified by `_payload_action` before any
-        payload is kept: capped frames wait for their whole payload, DATA
-        payloads are handed on in chunks as they arrive, unknown payloads
-        are dropped, and an oversized header closes the connection. Stops
-        at the first incomplete header or frame, or once the connection
-        starts closing.
+        One pass with a read cursor, so the cost is linear in `len(buf)`
+        however small the frames. Each header is classified by
+        `_payload_action` before any payload is kept: capped frames are
+        dispatched once whole, DATA payloads are handed on in chunks as
+        they arrive, skipped payloads are dropped, and a rejected header
+        closes the connection. Stops at the first incomplete header or
+        capped frame, or once the connection starts closing.
+
+        `remaining` / `skipping` carry a streamed or skipped payload across
+        drains. When one DATA chunk spans all of `buf`, its storage moves
+        into the event and `buf` is left empty (position 0).
         """
         var _ct_start = UInt64(0)
         comptime if PROFILE_ACCEPT:
             _ct_start = rdtsc()
-        var key = Int(stream_id)
         # Hoisted per-iter clock-read state (Q1 lesson: hoist to function scope, reassign per iter).
         var t_start_parse: UInt64 = 0
         comptime if not PROFILE_ACCEPT:
             _ = t_start_parse
+        var pos = start
         while True:
             if (self._quic.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
                 break
-            var avail = len(self._stream_bufs[key].buf)
+            var avail = len(buf) - pos
             if avail == 0:
                 break
 
             # Continue a streamed DATA or skipped payload.
-            var remaining = self._stream_bufs[key].payload_remaining
             if remaining > 0:
                 var n = min(remaining, avail)
-                self._stream_bufs[key].payload_remaining = remaining - n
-                if self._stream_bufs[key].skipping:
-                    self._consume_front(key, n)
+                remaining -= n
+                if skipping:
+                    pos += n
+                    continue
+                var chunk = List[Byte]()
+                if pos == 0 and n == len(buf):
+                    swap(chunk, buf)  # whole drain is payload: no copy
                 else:
-                    var chunk = List[Byte](capacity=n)
-                    chunk.extend(Span(self._stream_bufs[key].buf)[0:n])
-                    self._consume_front(key, n)
-                    self._handle_request_frame(stream_id, H3RawFrame(H3_FRAME_DATA, chunk^), now)
+                    chunk.reserve(n)
+                    chunk.extend(Span(buf)[pos : pos + n])
+                    pos += n
+                self._handle_request_frame(stream_id, H3RawFrame(H3_FRAME_DATA, chunk^), now)
                 continue
 
             # B4 entry — wrap the frame-header parse.
@@ -898,9 +930,8 @@ struct H3Connection(Movable):
             var length = UInt64(0)
             var hdr_len = 0
             var ok = True
-            var hdr_view = Span(self._stream_bufs[key].buf)
             try:
-                var r = ByteReader(hdr_view)
+                var r = ByteReader(Span(buf)[pos:])
                 frame_type = varint_decode(r)
                 length = varint_decode(r)
                 hdr_len = r.pos
@@ -914,30 +945,30 @@ struct H3Connection(Movable):
 
             var action = self._payload_action(frame_type, length, is_ctrl, now)
             if action == _PAYLOAD_REJECT:
-                self._stream_bufs[key].buf.clear()  # closing: never parsed
-                break
+                break  # closing: the rest is never parsed
             if action == _PAYLOAD_BUFFER:
                 # Capped above, so the Int conversion and sum are safe.
                 var n = Int(length)
                 if avail - hdr_len < n:
                     break  # payload incomplete
                 var payload = List[Byte](capacity=n)
-                payload.extend(Span(self._stream_bufs[key].buf)[hdr_len : hdr_len + n])
-                self._consume_front(key, hdr_len + n)
+                payload.extend(Span(buf)[pos + hdr_len : pos + hdr_len + n])
+                pos += hdr_len + n
                 self._dispatch_frame(stream_id, is_ctrl, H3RawFrame(frame_type, payload^), now)
                 continue
 
             # _PAYLOAD_STREAM / _PAYLOAD_SKIP: length is a varint (< 2^62).
-            self._consume_front(key, hdr_len)
-            self._stream_bufs[key].payload_remaining = Int(length)
-            self._stream_bufs[key].skipping = action == _PAYLOAD_SKIP
-            if action == _PAYLOAD_SKIP or length == 0:
+            pos += hdr_len
+            remaining = Int(length)
+            skipping = action == _PAYLOAD_SKIP
+            if skipping or length == 0:
                 # Skipped frames still reach the handler (type-only checks
                 # such as "first control frame must be SETTINGS").
                 self._dispatch_frame(stream_id, is_ctrl, H3RawFrame(frame_type, List[Byte]()), now)
         comptime if PROFILE_ACCEPT:
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].call_tracker.record(CallId.PARSE_FRAMES, rdtsc() - _ct_start)
+        return pos
 
     def _payload_action(
         mut self, frame_type: UInt64, length: UInt64, is_ctrl: Bool, now: UInt64
@@ -979,35 +1010,11 @@ struct H3Connection(Movable):
     def _dispatch_frame(
         mut self, stream_id: UInt64, is_ctrl: Bool, var frame: H3RawFrame, now: UInt64
     ) raises:
+        """Route a whole frame to the control- or request-stream handler."""
         if is_ctrl:
             self._handle_control_frame(stream_id, frame^, now)
         else:
             self._handle_request_frame(stream_id, frame^, now)
-
-    def _consume_front(mut self, key: Int, n: Int):
-        """Drop the first `n` buffered bytes of stream `key` (shift in place).
-
-        O(len(buf)); the buffer is bounded by one capped frame.
-        """
-        comptime if PROFILE_ACCEPT:
-            var t_start_buf: UInt64 = 0
-            if self.profile_ptr is not None:
-                t_start_buf = monotonic_us()
-            self._shift_front(key, n)
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
-        else:
-            self._shift_front(key, n)
-
-    def _shift_front(mut self, key: Int, n: Int):
-        try:
-            ref buf = self._stream_bufs[key].buf
-            var remaining = len(buf) - n
-            for i in range(remaining):
-                buf[i] = buf[n + i]
-            buf.resize(remaining, Byte(0))  # truncates
-        except:
-            pass
 
     def _handle_control_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64) raises:
         """Process one frame received on the peer control stream."""
