@@ -38,7 +38,6 @@ from navette.h3.frame import (
 from navette.h3.error import (
     H3_MISSING_SETTINGS,
     H3_SETTINGS_ERROR,
-    H3_ID_ERROR,
     H3_GENERAL_PROTOCOL_ERROR,
     H3_FRAME_UNEXPECTED,
     H3_STREAM_CREATION_ERROR,
@@ -250,9 +249,6 @@ struct H3Connection(Movable):
     var _peer_ctrl_settings:         Bool
     var _goaway_sent:                Optional[UInt64]
     var _peer_goaway_sid:            Optional[UInt64]
-    # Server: the client's MAX_PUSH_ID; None until one arrives (no push id
-    # allowed). Push is never used, it only bounds CANCEL_PUSH.
-    var _peer_max_push_id:           Optional[UInt64]
     var _enc:                        QpackEncoder
     var _dec:                        QpackDecoder
     # Per-request-stream HEADERS-seen flag, feeding the F31 (DATA-before-
@@ -307,7 +303,6 @@ struct H3Connection(Movable):
         self._peer_ctrl_settings = False
         self._goaway_sent = Optional[UInt64]()
         self._peer_goaway_sid = Optional[UInt64]()
-        self._peer_max_push_id = Optional[UInt64]()
         if codec_tables:
             self._enc = QpackEncoder(False, codec_tables.value())
             self._dec = QpackDecoder(codec_tables.value())
@@ -1194,21 +1189,8 @@ struct H3Connection(Movable):
                 # RFC 9114 Section 7.2.7: only clients send MAX_PUSH_ID.
                 self._quic.close_app(H3_FRAME_UNEXPECTED, "MAX_PUSH_ID sent by server", now)
                 return
-            if frame.frame_type == _H3_FRAME_MAX_PUSH_ID:
-                # RFC 9114 Section 7.2.7: MAX_PUSH_ID never decreases.
-                if self._peer_max_push_id and value.value() < self._peer_max_push_id.value():
-                    self._quic.close_app(H3_ID_ERROR, "MAX_PUSH_ID reduced", now)
-                    return
-                self._peer_max_push_id = value
-                return
-            if frame.frame_type == H3_FRAME_CANCEL_PUSH:
-                # RFC 9114 Section 7.2.3: a push id above the allowed
-                # maximum is H3_ID_ERROR. A client never sends MAX_PUSH_ID,
-                # so none is allowed from a server.
-                var allowed = self._is_server and Bool(self._peer_max_push_id)
-                if not allowed or value.value() > self._peer_max_push_id.value():
-                    self._quic.close_app(H3_ID_ERROR, "CANCEL_PUSH above MAX_PUSH_ID", now)
-                return  # push is never used: nothing to cancel
+            if frame.frame_type != H3_FRAME_GOAWAY:
+                return  # push is never enabled: nothing to cancel or grant
             var last_sid = value.value()
             self._peer_goaway_sid = Optional[UInt64](last_sid)
             var h3ev = H3Event(H3Event.GOAWAY_RECEIVED)

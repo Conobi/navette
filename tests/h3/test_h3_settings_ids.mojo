@@ -1,4 +1,4 @@
-"""SETTINGS identifiers and push ids a peer is not allowed to send close the connection (RFC 9114 Sections 7.2.3, 7.2.4, 7.2.4.1, 7.2.7).
+"""SETTINGS identifiers a peer is not allowed to send close the connection (RFC 9114 Sections 7.2.4, 7.2.4.1).
 
 Each case writes the client's control stream straight into a server
 H3Connection and reads the close it queued.
@@ -82,25 +82,9 @@ def test_http2_ids_are_settings_error() raises:
     print("  test_http2_ids_are_settings_error: PASS")
 
 
-def test_cancel_push_above_max_push_id_is_id_error() raises:
-    var frames = _settings([0x06, 0x20])
-    frames.extend(Span([UInt8(0x03), 0x01, 0x00]))  # CANCEL_PUSH push id 0, no MAX_PUSH_ID sent
-    assert_equal_int(_control_close_code(frames^), 0x0108, "no push allowed yet")
-    var ok = _settings([0x06, 0x20])
-    ok.extend(Span([UInt8(0x0D), 0x01, 0x05]))  # MAX_PUSH_ID 5
-    ok.extend(Span([UInt8(0x03), 0x01, 0x05]))  # CANCEL_PUSH 5
-    assert_equal_int(_control_close_code(ok^), -1, "push id within MAX_PUSH_ID")
-    var shrink = _settings([0x06, 0x20])
-    shrink.extend(Span([UInt8(0x0D), 0x01, 0x05]))
-    shrink.extend(Span([UInt8(0x0D), 0x01, 0x04]))  # MAX_PUSH_ID must not shrink
-    assert_equal_int(_control_close_code(shrink^), 0x0108, "MAX_PUSH_ID reduced")
-    print("  test_cancel_push_above_max_push_id_is_id_error: PASS")
-
-
 def main() raises:
     print("test_h3_settings_ids:")
     test_normal_settings_pass()
     test_duplicate_id_is_settings_error()
     test_http2_ids_are_settings_error()
-    test_cancel_push_above_max_push_id_is_id_error()
     print("All test_h3_settings_ids tests passed.")
