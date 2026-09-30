@@ -1592,14 +1592,11 @@ def test_final_size_error_on_reset_mismatch() raises:
 
     # Now send RESET_STREAM with final_size=50, which contradicts the observed 100 bytes.
     var rf = ResetStreamFrame(sid, UInt64(0), UInt64(50))
-    var raised_fse = False
-    try:
-        server._handle_reset_stream(rf)
-    except e:
-        var emsg = String(e)
-        if emsg.find("FINAL_SIZE") >= 0:
-            raised_fse = True
-    assert_true(raised_fse, "server should raise FINAL_SIZE_ERROR on reset with final_size < received")
+    server._handle_reset_stream(rf)
+    assert_true(Bool(server.close.pending), "server closes on reset with final_size < received")
+    assert_equal_int(
+        Int(server.close.pending.value().error_code), 0x06, "FINAL_SIZE_ERROR"
+    )
 
     _ = tls^
     print("  test_final_size_error_on_reset_mismatch: PASS")

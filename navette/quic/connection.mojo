@@ -30,7 +30,10 @@ from navette.tls.early_data_store import (
 )
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
-from navette.quic.error import QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR
+from navette.quic.error import (
+    QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR,
+    FINAL_SIZE_ERROR, FLOW_CONTROL_ERROR,
+)
 from navette.quic.profile import AcceptProfile, CounterId, PROFILE_ACCEPT, monotonic_us, ProfileState, rdtsc, CallId
 from navette.quic.zero_rtt import (
     ZeroRttState, ZERO_RTT_BUFFER_MAX_PKTS, ZERO_RTT_BUFFER_MAX_BYTES,
@@ -1199,7 +1202,13 @@ struct QuicConnection(Movable):
         return True
 
     def _handle_reset_stream(mut self, reset_frame: ResetStreamFrame) raises:
-        """Process an incoming RESET_STREAM frame (RFC 9000 §19.4)."""
+        """Process an incoming RESET_STREAM frame (RFC 9000 Section 19.4).
+
+        Idempotent: a repeat with the same final size changes nothing. A
+        final size that contradicts what was received, or exceeds flow
+        control, closes the connection (FINAL_SIZE_ERROR or
+        FLOW_CONTROL_ERROR) instead of raising.
+        """
         # F15 — RESET on a server-uni stream is illegal: the peer cannot
         # RESET a stream where this endpoint is the sender (§19.4 + §3.2).
         var _f15_ctx = QuicResetCtx(
@@ -1224,28 +1233,55 @@ struct QuicConnection(Movable):
         if not p[].recv_state:
             raise "STREAM_STATE_ERROR: RESET on non-recv stream"
 
-        # Validate final_size invariants.
+        # Validate final_size invariants. Violations close the connection
+        # rather than raise: a raise drops the packet unacknowledged, so
+        # the peer would retransmit it forever.
         if final_size < p[].recv_highest_offset:
-            raise "FINAL_SIZE_ERROR: final_size < received"
+            self.close_transport(
+                FINAL_SIZE_ERROR, "RESET_STREAM final size below data received",
+                monotonic_us(),
+            )
+            return
         if p[].fin_offset:
             if final_size != p[].fin_offset.value():
-                raise "FINAL_SIZE_ERROR: final_size differs from FIN"
+                self.close_transport(
+                    FINAL_SIZE_ERROR, "RESET_STREAM final size changed",
+                    monotonic_us(),
+                )
+                return
 
         if p[].fc_recv:
             if final_size > p[].fc_recv.value().limit:
-                raise "FLOW_CONTROL_ERROR: RESET final_size exceeds stream limit"
+                self.close_transport(
+                    FLOW_CONTROL_ERROR,
+                    "RESET_STREAM final size exceeds stream limit",
+                    monotonic_us(),
+                )
+                return
 
         var rs = p[].recv_state.value()
+        # A repeat (retransmitted, or the stream outlived the first one
+        # waiting on our own RESET's ACK) with the same final size: already
+        # accounted and reported, and Reset Read must not regress.
+        if rs == RecvState.RESET_RECVD or rs == RecvState.RESET_READ:
+            return
         var was_complete = (rs == RecvState.DATA_RECVD or rs == RecvState.DATA_READ)
 
         # Account phantom bytes at connection level (bytes the peer implicitly
-        # "sent" by claiming final_size without delivering them).
+        # "sent" by claiming final_size without delivering them). Raising
+        # recv_highest_offset to final_size records them as counted.
         var phantom = final_size - p[].recv_highest_offset
         if phantom > 0:
             if not self.stream_map.conn_fc_recv.check_limit(phantom):
-                raise "FLOW_CONTROL_ERROR: conn FC exceeded on phantom bytes"
+                self.close_transport(
+                    FLOW_CONTROL_ERROR,
+                    "RESET_STREAM final size exceeds connection limit",
+                    monotonic_us(),
+                )
+                return
             self.stream_map.conn_fc_recv.add_received(phantom)
             self.stream_map.conn_fc_recv.add_consumed(phantom)
+            p[].recv_highest_offset = final_size
 
         if not p[].fin_offset:
             p[].fin_offset = Optional[UInt64](final_size)
