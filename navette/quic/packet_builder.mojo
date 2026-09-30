@@ -54,6 +54,10 @@ comptime SSF_MAX_STREAMS_UNI: UInt8 = 6
 comptime SSF_NEW_CID: UInt8 = 7
 comptime SSF_RETIRE_CID: UInt8 = 8
 comptime SSF_HANDSHAKE_DONE: UInt8 = 9
+comptime SSF_DATA_BLOCKED: UInt8 = 10
+comptime SSF_STREAM_DATA_BLOCKED: UInt8 = 11
+comptime SSF_STREAMS_BLOCKED_BIDI: UInt8 = 12
+comptime SSF_STREAMS_BLOCKED_UNI: UInt8 = 13
 
 
 # ── Data structs ────────────────────────────────────────────────────
@@ -480,13 +484,28 @@ def emit_stream_frames(
 
 
 @always_inline
+def _blocked_record(kind: UInt8, limit: UInt64, stream_id: UInt64 = 0) -> SentStreamFrame:
+    """Loss record for a *_BLOCKED frame; `offset` carries the announced limit."""
+    var rec = SentStreamFrame()
+    rec.kind = kind
+    rec.stream_id = stream_id
+    rec.offset = limit
+    return rec^
+
+
 def emit_blocked_frames(
     mut stream_map: StreamMap,
     mut frames: List[Frame],
+    mut sent_records: List[SentStreamFrame],
     budget: Int,
     mut used: Int,
 ) raises:
-    """Emit DATA_BLOCKED, STREAM_DATA_BLOCKED, and STREAMS_BLOCKED frames."""
+    """Emit DATA_BLOCKED, STREAM_DATA_BLOCKED, and STREAMS_BLOCKED frames.
+
+    Each frame is recorded in `sent_records` so its loss can re-arm it
+    (RFC 9000 Section 13.3: re-sent only while still blocked, with the
+    limit current at that time).
+    """
     var conn_limit = stream_map.conn_fc_send.limit
     if (stream_map.conn_fc_send.received >= conn_limit
             and stream_map.conn_fc_send.blocked_at != conn_limit):
@@ -495,6 +514,7 @@ def emit_blocked_frames(
             frames.append(Frame.data_blocked(conn_limit))
             used += wl
             stream_map.conn_fc_send.blocked_at = conn_limit
+            sent_records.append(_blocked_record(SSF_DATA_BLOCKED, conn_limit))
     var blocked_ids = List[Int]()
     for key in stream_map.sendable_set.keys():
         blocked_ids.append(key)
@@ -514,6 +534,7 @@ def emit_blocked_frames(
             frames.append(Frame.stream_data_blocked(StreamDataBlockedFrame(p[].id, stream_limit)))
             used += wl
             p[].fc_send.value().blocked_at = stream_limit
+            sent_records.append(_blocked_record(SSF_STREAM_DATA_BLOCKED, stream_limit, p[].id))
     if stream_map.needs_streams_blocked_bidi:
         var bidi_limit = stream_map.peer_max_streams_bidi
         var wl = 1 + varint_len(bidi_limit)
@@ -523,6 +544,7 @@ def emit_blocked_frames(
             )
             used += wl
             stream_map.streams_blocked_at_bidi = bidi_limit
+            sent_records.append(_blocked_record(SSF_STREAMS_BLOCKED_BIDI, bidi_limit))
     if stream_map.needs_streams_blocked_uni:
         var uni_limit = stream_map.peer_max_streams_uni
         var wl = 1 + varint_len(uni_limit)
@@ -532,4 +554,5 @@ def emit_blocked_frames(
             )
             used += wl
             stream_map.streams_blocked_at_uni = uni_limit
+            sent_records.append(_blocked_record(SSF_STREAMS_BLOCKED_UNI, uni_limit))
 

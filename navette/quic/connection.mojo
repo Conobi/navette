@@ -46,6 +46,8 @@ from navette.quic.packet_builder import (
     SSF_STREAM, SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA,
     SSF_MAX_STREAM_DATA, SSF_MAX_STREAMS_BIDI, SSF_MAX_STREAMS_UNI,
     SSF_NEW_CID, SSF_RETIRE_CID, SSF_HANDSHAKE_DONE,
+    SSF_DATA_BLOCKED, SSF_STREAM_DATA_BLOCKED,
+    SSF_STREAMS_BLOCKED_BIDI, SSF_STREAMS_BLOCKED_UNI,
     AEAD_TAG_LEN, MAX_PN_LEN, MIN_PLAINTEXT_LEN, MAX_DATAGRAM_SIZE,
     SCRATCH_PAYLOAD_CAP, SCRATCH_WRITER_CAP,
     ANTI_AMP_HEADER_FUDGE,
@@ -3324,7 +3326,7 @@ struct QuicConnection(Movable):
         drain_reset_stream_frames(self.stream_map, frames, sent_records, budget, used)
         drain_stop_sending_frames(self.stream_map, frames, sent_records, budget, used)
         emit_stream_frames(self.stream_map, sent_records, stream_payload, budget, used)
-        emit_blocked_frames(self.stream_map, frames, budget, used)
+        emit_blocked_frames(self.stream_map, frames, sent_records, budget, used)
 
     def _emit_cid_and_fc_frames(
         mut self,
@@ -3504,6 +3506,23 @@ struct QuicConnection(Movable):
                 self.cid_mgr.requeue_retire(rec.cid_seq)
             elif rec.kind == SSF_HANDSHAKE_DONE:
                 self.send_handshake_done = True
+            # A lost *_BLOCKED frame is re-armed only if it is still the
+            # latest announcement; the emitter re-checks that we are still
+            # blocked and sends the limit current then.
+            elif rec.kind == SSF_DATA_BLOCKED:
+                if self.stream_map.conn_fc_send.blocked_at == rec.offset:
+                    self.stream_map.conn_fc_send.blocked_at = UInt64(0)
+            elif rec.kind == SSF_STREAM_DATA_BLOCKED:
+                var p = self.stream_map.try_stream_ptr(Int(rec.stream_id))
+                if p and p.value()[].fc_send:
+                    if p.value()[].fc_send.value().blocked_at == rec.offset:
+                        p.value()[].fc_send.value().blocked_at = UInt64(0)
+            elif rec.kind == SSF_STREAMS_BLOCKED_BIDI:
+                if self.stream_map.streams_blocked_at_bidi == rec.offset:
+                    self.stream_map.streams_blocked_at_bidi = UInt64(0)
+            elif rec.kind == SSF_STREAMS_BLOCKED_UNI:
+                if self.stream_map.streams_blocked_at_uni == rec.offset:
+                    self.stream_map.streams_blocked_at_uni = UInt64(0)
 
     # ── Timers ───────────────────────────────────────────────────────
 
