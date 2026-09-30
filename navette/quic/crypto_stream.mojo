@@ -217,6 +217,33 @@ struct CryptoStream(Copyable, Movable):
             for i in range(skip, len(data)):
                 self.send_buf.append(data[i])
 
+    def rewind(mut self, sent: List[CryptoFrame]) raises:
+        """Queue the whole send side again from offset 0, as after a Retry.
+
+        `sent` holds the frames already emitted, in send order; the bytes
+        still unsent follow them. Raises if together they do not cover the
+        stream from offset 0 without a gap, which happens only once the
+        peer acknowledged data (and it was dropped): a client never
+        follows a Retry after that.
+        """
+        var tail_start = self.send_offset + UInt64(self.sent_cursor)
+        var buf = List[Byte](capacity=Int(tail_start) + len(self.send_buf) - self.sent_cursor)
+        for ref f in sent:
+            if f.offset > UInt64(len(buf)):
+                raise "CryptoStream.rewind: gap in the sent CRYPTO data"
+            var have = Int(UInt64(len(buf)) - f.offset)
+            if have < len(f.data):
+                buf.extend(Span(f.data)[have:])
+        if self.sent_cursor < len(self.send_buf):
+            if tail_start > UInt64(len(buf)):
+                raise "CryptoStream.rewind: gap before the unsent CRYPTO data"
+            var skip = self.sent_cursor + Int(UInt64(len(buf)) - tail_start)
+            if skip < len(self.send_buf):
+                buf.extend(Span(self.send_buf)[skip:])
+        self.send_offset = UInt64(0)
+        self.send_buf = buf^
+        self.sent_cursor = 0
+
     def pending_crypto_frames(self, max_frame_size: Int) -> List[CryptoFrame]:
         """Fragment the unsent part of send_buf into frames of at most
         max_frame_size bytes, without advancing anything."""

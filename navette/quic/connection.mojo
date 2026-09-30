@@ -158,7 +158,9 @@ from navette.quic.packet import (
     pn_truncate,
     pn_encode_length,
     MIN_INITIAL_PACKET_SIZE,
+    RETRY_INTEGRITY_TAG_LEN,
 )
+from navette.quic.retry import compute_retry_integrity_tag
 from navette.quic.trans_param import (
     TransportParams,
     parse_transport_params,
@@ -201,6 +203,10 @@ comptime CONN_CLOSED: UInt8 = 0x80
 
 comptime _WRITE_HS_BUF_SIZE: Int = 4096
 comptime _TP_BUF_SIZE: Int = 1024
+# Close reasons for a server's CID transport parameters that fail RFC 9000
+# Section 7.3 on a client.
+comptime _REASON_ORIGINAL_DCID = "original_destination_connection_id does not match our first DCID"
+comptime _REASON_RETRY_SCID = "retry_source_connection_id does not match the Retry followed"
 
 
 
@@ -405,7 +411,15 @@ struct QuicConnection(Movable):
     var peer_cid: CidBuf
     # The SCID of the first Initial that authenticated; None until then.
     var _initial_peer_scid: Optional[CidBuf]
+    # The client's original DCID on a client (it keys the Retry integrity
+    # tag and must come back as original_destination_connection_id), the
+    # DCID the Initial keys derive from on a server.
     var initial_dcid: CidBuf
+    # Client only: the token and SCID of the one Retry followed (RFC 9000
+    # Section 17.2.5.2). The token rides on every later Initial; the SCID
+    # must come back as retry_source_connection_id.
+    var _retry_token: List[Byte]
+    var _retry_scid: Optional[CidBuf]
     var bytes_received: UInt64
     var bytes_sent: UInt64
     var events: List[QuicEvent]
@@ -506,6 +520,8 @@ struct QuicConnection(Movable):
         self.peer_cid = CidBuf(copy=peer_cid)
         self._initial_peer_scid = None
         self.initial_dcid = CidBuf(copy=initial_dcid)
+        self._retry_token = List[Byte]()
+        self._retry_scid = None
         self.bytes_received = UInt64(0)
         self.bytes_sent = UInt64(0)
         self.events = List[QuicEvent]()
@@ -665,8 +681,17 @@ struct QuicConnection(Movable):
         client_dcid: Span[Byte, _],
         now: UInt64,
         profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
+        retry_scid: List[Byte] = List[Byte](),
     ) raises -> QuicConnection:
-        """Create a QUIC server connection."""
+        """Create a QUIC server connection.
+
+        After a Retry, `orig_dcid` is the DCID of the client's first
+        Initial (recovered from the token), `client_dcid` the DCID of the
+        Initial that carried the token, and `retry_scid` the SCID our
+        Retry used (normally equal to `client_dcid`); the client rejects
+        the handshake unless both come back as transport parameters (RFC
+        9000 Section 7.3). Leave `retry_scid` empty when no Retry was sent.
+        """
         # RFC 9000 caps CIDs at 20 bytes. `CidBuf.from_span` aborts the
         # whole process on an over-length span, so an unvalidated caller
         # (or a wire-derived DCID that skipped `extract_dcid`'s clamp)
@@ -676,6 +701,8 @@ struct QuicConnection(Movable):
             raise "QuicConnection.server: orig_dcid exceeds 20 bytes"
         if len(client_dcid) > 20:
             raise "QuicConnection.server: client_dcid exceeds 20 bytes"
+        if len(retry_scid) > 20:
+            raise "QuicConnection.server: retry_scid exceeds 20 bytes"
         var config_handle = config.handle()
         var profile_arrival_us = monotonic_us()
         var local_cid = _generate_random_cid()
@@ -687,6 +714,8 @@ struct QuicConnection(Movable):
         for ref byte in orig_dcid:
             orig_dcid_list.append(byte)
         params_copy.original_dcid = orig_dcid_list^
+        if len(retry_scid) > 0:
+            params_copy.retry_scid = retry_scid.copy()
         serialize_transport_params(params_copy, tp_writer)
         var tp_bytes = tp_writer.finish()
         var conn_handle = _create_server_tls_conn(
@@ -773,6 +802,11 @@ struct QuicConnection(Movable):
             var header = PacketHeader()
             swap(header, hr[0])
             ph_hdr = self.prof.elapsed(ph_hdr)
+            if header.is_long_header and header.packet_type == PacketType.retry():
+                # A Retry fills the rest of the datagram; a server never gets one.
+                if not self.is_server:
+                    self._on_retry(header, Span(unsafe_ptr=remaining_ptr, length=remaining_len))
+                break
             var classify = self._classify_recv_packet(
                 header, remaining_ptr, remaining_len,
             )
@@ -825,6 +859,52 @@ struct QuicConnection(Movable):
         comptime if PROFILE_ACCEPT:
             if self.prof.ptr is not None:
                 self.prof.ptr.value()[].call_tracker.record(CallId.RECV_FROM_BUFFER, rdtsc() - _ct_start)
+
+    def _on_retry(mut self, ref header: PacketHeader, packet: Span[Byte, _]) raises:
+        """Restart the handshake towards the Retry's SCID, carrying its token (RFC 9000 Section 17.2.5.2).
+
+        Ignored unless it is the first Retry, no server Initial has
+        authenticated yet, it is addressed to our SCID, it carries a token,
+        its SCID differs from our original DCID, and its integrity tag
+        verifies under that DCID (RFC 9001 Section 5.8): anything else is
+        stale, duplicated or forged. Packets already sent in the Initial
+        space are forgotten, not declared lost (the server discarded them
+        unread), and their CRYPTO data is queued again from offset 0 under
+        Initial keys derived from the new DCID. Packet numbers keep
+        increasing (RFC 9000 Section 17.2.5.3).
+        """
+        if Bool(self._retry_scid) or Bool(self._initial_peer_scid):
+            return
+        if header.version != UInt32(1) or header.token_len == 0:
+            return
+        if header.dcid != self.local_cid or header.scid == self.initial_dcid:
+            return
+        var tag = List[Byte](capacity=RETRY_INTEGRITY_TAG_LEN)
+        compute_retry_integrity_tag(
+            tag, self._lib, self.initial_dcid.as_span(), packet[: len(packet) - RETRY_INTEGRITY_TAG_LEN]
+        )
+        var diff = UInt8(0)
+        ref want = header.retry_integrity_tag
+        for i in range(RETRY_INTEGRITY_TAG_LEN):
+            diff |= tag[i] ^ want[i]
+        if diff != 0:
+            return
+        self._retry_token = List[Byte](header.token_span())
+        self._retry_scid = Optional[CidBuf](CidBuf(copy=header.scid))
+        self.peer_cid = CidBuf(copy=header.scid)
+        for ref e in self.cid_mgr.remote_cids:
+            if e.sequence == UInt64(0):
+                e.cid = List[Byte](header.scid.as_span())
+                break
+        self.protect.derive_initial_keys(header.scid.as_span(), is_client=True)
+        var forgotten = self.spaces[0].reset_for_retry()
+        var crypto = List[CryptoFrame]()
+        for ref pkt in forgotten:
+            self.recovery.on_packet_lost(pkt.size, pkt.in_flight)
+            for ref frame in pkt.frames:
+                if frame.is_crypto():
+                    crypto.append(frame.as_crypto().copy())
+        self.crypto_streams[0].rewind(crypto)
 
     @always_inline
     def _is_initial_from_other_scid(self, ref header: PacketHeader) -> Bool:
@@ -2467,6 +2547,11 @@ struct QuicConnection(Movable):
             except e:
                 self.close_transport(UInt64(0x08), String(e), now)
                 return
+        else:
+            var why = self._server_cid_params_error(peer_tp)
+            if why:
+                self.close_transport(UInt64(0x08), why, now)
+                return
         self.peer_params = TransportParams(copy=peer_tp)
         self.events.append(QuicEvent.peer_transport_params(peer_tp))
         var peer = self.peer_params.value().copy()
@@ -2480,6 +2565,23 @@ struct QuicConnection(Movable):
         )
         self.cid_mgr.set_peer_active_limit(peer.active_connection_id_limit)
         _ = self.cid_mgr.issue_new_cid()
+
+    def _server_cid_params_error(self, ref tp: TransportParams) -> String:
+        """Why the server's CID transport parameters fail RFC 9000 Section 7.3 on a client, empty if they pass.
+
+        original_destination_connection_id must echo our first DCID, and
+        retry_source_connection_id must name the Retry we followed, or be
+        absent if we followed none: a mismatch means an attacker injected
+        or replayed the Retry, or the Initial path was tampered with.
+        """
+        if not tp.original_dcid or not _span_eq(Span(tp.original_dcid.value()), self.initial_dcid.as_span()):
+            return String(_REASON_ORIGINAL_DCID)
+        if self._retry_scid:
+            if not tp.retry_scid or not _span_eq(Span(tp.retry_scid.value()), self._retry_scid.value().as_span()):
+                return String(_REASON_RETRY_SCID)
+        elif tp.retry_scid:
+            return String(_REASON_RETRY_SCID)
+        return String()
 
     def _promote_to_established(mut self) raises:
         """Transition to ESTABLISHED, discard handshake keys, queue event."""
@@ -2930,7 +3032,7 @@ struct QuicConnection(Movable):
 
     def _header_len(self, space_idx: Int) -> Int:
         """Delegate to packet_builder.header_len."""
-        return header_len(space_idx, len(self.local_cid), len(self.peer_cid))
+        return header_len(space_idx, len(self.local_cid), len(self.peer_cid), len(self._retry_token))
 
     def _cc_open(self, now: UInt64, space_idx: Int, min_cost: Int) -> Bool:
         """Congestion gate: cwnd has room for a minimum packet and, in the
@@ -3202,7 +3304,7 @@ struct QuicConnection(Movable):
         """Delegate to packet_builder.build_packet."""
         build_packet(
             self.pkt_buf, self.protect,
-            self.peer_cid.as_span(), self.local_cid.as_span(),
+            self.peer_cid.as_span(), self.local_cid.as_span(), Span(self._retry_token),
             space_idx, pn, pn_len, payload,
             self._header_len(space_idx), padding,
         )
@@ -3887,6 +3989,15 @@ struct QuicConnection(Movable):
 
 
 # ── Module-level helpers ─────────────────────────────────────────────
+
+
+def _span_eq(a: Span[Byte, _], b: Span[Byte, _]) -> Bool:
+    if len(a) != len(b):
+        return False
+    for i in range(len(a)):
+        if a[i] != b[i]:
+            return False
+    return True
 
 
 def _generate_random_cid() raises -> List[Byte]:

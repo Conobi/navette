@@ -27,6 +27,7 @@ from navette.quic.packet import (
     serialize_long_header_into,
     serialize_short_header_into,
     pn_truncate,
+    MAX_TOKEN_LEN,
 )
 from navette.quic.packet_protect import PacketProtect
 
@@ -129,10 +130,10 @@ def amp_allowance(bytes_received: UInt64, bytes_sent: UInt64) -> Int:
     return Int(cap - spent)
 
 
-def header_len(space_idx: Int, local_cid_len: Int, peer_cid_len: Int) -> Int:
-    """Budgeted header bytes for a packet in the given space."""
+def header_len(space_idx: Int, local_cid_len: Int, peer_cid_len: Int, token_len: Int = 0) -> Int:
+    """Budgeted header bytes for a packet in the given space; `token_len` counts only for Initial."""
     if space_idx == 0:
-        return 7 + peer_cid_len + local_cid_len + 1 + 2 + MAX_PN_LEN
+        return 7 + peer_cid_len + local_cid_len + varint_len(UInt64(token_len)) + token_len + 2 + MAX_PN_LEN
     if space_idx == 1:
         return 7 + peer_cid_len + local_cid_len + 2 + MAX_PN_LEN
     return 1 + peer_cid_len + MAX_PN_LEN
@@ -146,6 +147,7 @@ def build_packet(
     mut protect: PacketProtect,
     peer_cid: Span[Byte, _],
     local_cid: Span[Byte, _],
+    token: Span[Byte, _],
     space_idx: Int,
     pn: UInt64,
     pn_len: Int,
@@ -153,7 +155,7 @@ def build_packet(
     header_budget: Int,
     padding: Int = 0,
 ) raises:
-    """Build a complete encrypted QUIC packet into pkt_buf."""
+    """Build a complete encrypted QUIC packet into pkt_buf; `token` (at most 232 bytes) goes only into an Initial header."""
     pkt_buf.clear()
 
     var plaintext_len = len(payload) + padding
@@ -169,7 +171,11 @@ def build_packet(
         header.scid = CidBuf.from_span(local_cid)
         if space_idx == 0:
             header.packet_type = PacketType.initial()
-            # header.token/token_len already zero-initialized by PacketHeader().
+            if len(token) > MAX_TOKEN_LEN:
+                raise "build_packet: token longer than " + String(MAX_TOKEN_LEN) + " bytes"
+            for i in range(len(token)):
+                header.token[i] = token[i]
+            header.token_len = UInt8(len(token))
         else:
             header.packet_type = PacketType.handshake()
         header.payload_length = UInt64(pn_len + payload_ciphertext_len)

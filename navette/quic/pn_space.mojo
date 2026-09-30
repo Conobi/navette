@@ -580,6 +580,27 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ae_in_flight = 0
         return result^
 
+    def reset_for_retry(mut self) raises -> List[SentPacket]:
+        """Forget every sent packet, lowest packet number first, after a Retry.
+
+        Unlike `discard`, keys and `next_pn` stay: the space keeps sending
+        under new Initial keys and packet numbers keep increasing (RFC
+        9000 Section 17.2.5.3). The caller releases the returned packets'
+        bytes in flight without declaring them lost.
+        """
+        var pns = List[Int](capacity=len(self.sent_packets))
+        for key in self.sent_packets.keys():
+            pns.append(key)
+        sort(pns)
+        var result = List[SentPacket](capacity=len(pns))
+        for pn in pns:
+            result.append(self.sent_packets.pop(pn))
+        self.probe_pending = False
+        self.time_of_last_ae_sent = None
+        self.ae_in_flight = 0
+        self.ect0_in_flight = UInt64(0)
+        return result^
+
     # ── Persistent-congestion helper ─────────────────────────────────
 
     def any_ae_acked_in_range(self, earliest: UInt64, latest: UInt64) -> Bool:
