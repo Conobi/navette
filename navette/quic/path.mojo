@@ -304,16 +304,13 @@ struct PathValidator(Movable):
                 return
 
     def can_send_bytes(self, target: PathKey, n: Int) -> Bool:
-        """Anti-amp gate per RFC 9000 §8.1.
+        """Anti-amp gate per RFC 9000 Section 8.1 for a path under validation.
 
-        Returns True iff the server may transmit `n` more bytes on the
-        unvalidated path identified by `target`. Budget is
-        ANTI_AMP_FACTOR × bytes_received − bytes_sent; emission is refused
-        once the remaining budget drops below `n`.
-
-        If no pending challenge matches `target`, the path is either
-        already validated (no gate) or unknown to the validator (caller
-        is responsible for starting a challenge first); returns True.
+        True iff a challenge for `target` is pending and its budget,
+        ANTI_AMP_FACTOR × bytes_received − bytes_sent, covers `n`. Default
+        deny: an address with no pending challenge gets nothing here (the
+        validated path is `PathState.can_send`'s call), since a challenge
+        refused at the cap would otherwise leave that address ungated.
         """
         for ref entry in self.pending:
             var t = PathKey(copy=entry.target)
@@ -323,22 +320,32 @@ struct PathValidator(Movable):
                     - entry.bytes_sent
                 )
                 return Int64(n) <= budget
-        return True
+        return False
 
     def gc_expired(mut self, now_ns: UInt64, pto_ns: UInt64):
         """Drop pending challenges older than 3 × PTO (RFC 9000 §8.2.1).
 
-        Called by the connection event loop on each tick; expired
-        challenges abandon the candidate path and free their slot in
-        the pending list.
+        Called from the connection's timer check; expired challenges
+        abandon the candidate path and free their slot in the pending
+        list. A challenge stamped after `now_ns` (clock went back) is kept.
         """
+        if len(self.pending) == 0:
+            return
         var threshold = pto_ns * UInt64(3)
         var kept = List[PathChallenge]()
         for ref entry in self.pending:
-            var age = now_ns - entry.sent_at_ns
-            if age < threshold:
+            if now_ns < entry.sent_at_ns or now_ns - entry.sent_at_ns < threshold:
                 kept.append(PathChallenge(copy=entry))
         self.pending = kept^
+
+    def next_expiry(self, pto_ns: UInt64) -> Optional[UInt64]:
+        """When `gc_expired(_, pto_ns)` next drops a challenge; None with nothing pending."""
+        var earliest = Optional[UInt64](None)
+        for ref entry in self.pending:
+            var at = entry.sent_at_ns + pto_ns * UInt64(3)
+            if not earliest or at < earliest.value():
+                earliest = Optional[UInt64](at)
+        return earliest
 
 
 # ── PathState ──────────────────────────────────────────────────────────
@@ -433,8 +440,19 @@ struct PathState(Movable):
         self.peer_addr = addr^
 
     def can_send(self, target: PathKey, n_bytes: Int) -> Bool:
-        """Anti-amp gate for outbound traffic to `target`."""
+        """Anti-amp gate for outbound traffic to `target`: default deny.
+
+        The validated `peer_addr` is unconstrained here (the handshake's
+        own limit is enforced by the connection); an address under
+        validation gets its 3x budget; any other address gets nothing.
+        """
+        if target == self.peer_addr:
+            return True
         return self.validator.can_send_bytes(target, n_bytes)
+
+    def is_usable(self, target: PathKey) -> Bool:
+        """True when `target` may be a send destination: the validated `peer_addr` or an address under validation."""
+        return target == self.peer_addr or self.has_pending_challenge(target)
 
     def record_send(mut self, target: PathKey, n_bytes: Int):
         """Credit `n_bytes` to the per-path bytes_sent counter for `target`."""

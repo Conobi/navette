@@ -403,9 +403,13 @@ struct H3Connection(Movable):
 
     def note_authenticated_ingress(
         mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
-    ) raises:
-        """`QuicConnection.note_authenticated_ingress`: call after the feed, only when it authenticated."""
-        self._quic.note_authenticated_ingress(from_addr^, datagram_len, now)
+    ) raises -> Bool:
+        """`QuicConnection.note_authenticated_ingress`: call after the feed, only when it authenticated; True moves the destination."""
+        return self._quic.note_authenticated_ingress(from_addr^, datagram_len, now)
+
+    def is_usable_destination(self, target: PathKey) -> Bool:
+        """`QuicConnection.is_usable_destination`: False means fall back to the validated address."""
+        return self._quic.is_usable_destination(target)
 
     def last_datagram_authenticated(self) -> Bool:
         """True when a packet of the last datagram fed decrypted."""

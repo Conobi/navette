@@ -264,6 +264,14 @@ def _sockaddr_matches(
     return True
 
 
+def _copy_sockaddr(name_ptr: Pointer[UInt8, MutUntrackedOrigin], name_len: Int) -> List[Byte]:
+    """Own a delivery's sockaddr blob."""
+    var out = List[Byte](capacity=name_len)
+    for j in range(name_len):
+        out.append(name_ptr[unsafe_offset=j])
+    return out^
+
+
 def _sockaddr_to_path_key(
     buf_ptr: Pointer[mut=True, T=UInt8, origin=_],
     addr_offset: Int,
@@ -497,6 +505,12 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     `dirty_pass` is the id of the last ingress pass that fed the slot; it
     deduplicates the slot in that pass's drain list.
 
+    `addr` is where egress goes; `validated_addr` is the raw blob of the
+    connection's validated peer address (`peer_addr`), refreshed from
+    every authenticated datagram that comes from it, which `addr` falls
+    back to once its own address stops being usable (RFC 9000 Section
+    9.3.2).
+
     `Copyable` is required by `List[ConnSlot[H]]` storage; aliasing
     `h3` across copies matches the prior `List[UnsafePointer[...]]`
     semantics (the underlying pointer was already trivially copied
@@ -504,6 +518,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     """
     var h3: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]
     var addr: List[Byte]
+    var validated_addr: List[Byte]
     var id: Int
     var created_us: UInt64
     var handshaking: Bool
@@ -521,6 +536,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         created_us: UInt64,
     ):
         self.h3 = h3
+        self.validated_addr = List[Byte](copy=addr)
         self.addr = addr^
         self.id = id
         self.created_us = created_us
@@ -534,6 +550,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     def __init__(out self, *, copy: Self):
         self.h3 = copy.h3
         self.addr = List[Byte](copy=copy.addr)
+        self.validated_addr = List[Byte](copy=copy.validated_addr)
         self.id = copy.id
         self.created_us = copy.created_us
         self.handshaking = copy.handshaking
@@ -1865,28 +1882,30 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             # datagram that decrypted: a spoofed source with a valid DCID
             # and garbage payload must neither start a PATH_CHALLENGE nor
             # redirect our traffic. On an authenticated one, a new address
-            # starts path validation and earns anti-amplification credit;
-            # `conn_slots[i].addr` then follows the latest source (the
-            # peer decides where it listens; validation only gates how much
-            # we send there). The blob is frozen once the connection is
-            # closing (checked AFTER the feed, so the datagram that
-            # triggers the close cannot move it), and only rebuilt when
-            # the bytes differ.
+            # starts path validation and earns anti-amplification credit.
+            # `conn_slots[i].addr` follows the source only when the QUIC
+            # layer says so: the newest non-probing packet (RFC 9000
+            # Section 9.3), from the validated address or one under
+            # validation, so egress there stays within 3x what it sent.
+            # The blob is frozen once the connection is closing (checked
+            # AFTER the feed, so the datagram that triggers the close
+            # cannot move it), and only rebuilt when the bytes differ.
             if self.conn_slots[conn_idx].h3[].last_datagram_authenticated():
+                var move = False
                 try:
-                    self.conn_slots[conn_idx].h3[].note_authenticated_ingress(
+                    move = self.conn_slots[conn_idx].h3[].note_authenticated_ingress(
                         PathKey(copy=from_path), pd.payload_len, now
                     )
                 except e:
                     print("H3UdpServer: path bookkeeping error:", e)
-                if not self.conn_slots[conn_idx].h3[].is_closing_or_draining():
-                    if not _sockaddr_matches(
-                        self.conn_slots[conn_idx].addr, pd.name_ptr, pd.name_len
-                    ):
-                        var addr_update = List[Byte](capacity=pd.name_len)
-                        for j in range(pd.name_len):
-                            addr_update.append(pd.name_ptr[unsafe_offset=j])
-                        self.conn_slots[conn_idx].addr = addr_update^
+                ref slot = self.conn_slots[conn_idx]
+                if slot.h3[].peer_addr_copy() == from_path and not _sockaddr_matches(
+                    slot.validated_addr, pd.name_ptr, pd.name_len
+                ):
+                    slot.validated_addr = _copy_sockaddr(pd.name_ptr, pd.name_len)
+                if move and not slot.h3[].is_closing_or_draining():
+                    if not _sockaddr_matches(slot.addr, pd.name_ptr, pd.name_len):
+                        slot.addr = _copy_sockaddr(pd.name_ptr, pd.name_len)
 
             # Egress is deferred to `_drain_dirty`: list the slot once.
             if self.conn_slots[conn_idx].dirty_pass != pass_id:
@@ -1941,7 +1960,9 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         intends to send to the current peer addr, gate via
         `can_send_to(target, n)`. If the peer's address has a pending
         PATH_CHALLENGE, the per-path 3x budget caps the bytes we may
-        emit until validation completes. Datagrams refused by the gate
+        emit until validation completes; an address that is neither
+        validated nor pending is first replaced by the last validated
+        one (`validated_addr`). Datagrams refused by the gate
         are dropped; they'll be regenerated on the next flush after
         more bytes arrive from the peer (or after validation lifts the
         gate entirely). On a successful queue we credit the per-path
@@ -1952,16 +1973,22 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 now
             )
 
-            # Resolve the structured peer key once per flush. The server
-            # tracks the latest sockaddr blob in `conn_slots[i].addr`, which
-            # was just refreshed in `_flush_ingress` to match the source addr
-            # of the datagram that triggered this flush — i.e. the same
-            # address sendmsg will route to.
+            # Resolve the structured peer key once per flush: the address
+            # sendmsg will route to. One whose validation expired or
+            # failed (it is neither the validated address nor under
+            # validation) falls back to the last validated address, RFC
+            # 9000 Section 9.3.2; without that the default-deny gate
+            # would black-hole the connection.
             var target_key = _sockaddr_to_path_key(
                 self.conn_slots[conn_idx].addr.unsafe_ptr(),
                 0,
                 len(self.conn_slots[conn_idx].addr),
             )
+            if not self.conn_slots[conn_idx].h3[].is_usable_destination(target_key):
+                self.conn_slots[conn_idx].addr = List[Byte](
+                    copy=self.conn_slots[conn_idx].validated_addr
+                )
+                target_key = self.conn_slots[conn_idx].h3[].peer_addr_copy()
 
             # ECN mark from the connection's probing/capability state.
             var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
@@ -1974,8 +2001,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 if len(pkt) == 0:
                     continue
 
-                # Per-path anti-amp gate. No-op when `target_key` has
-                # no pending challenge (validated path → returns True). The
+                # Per-path anti-amp gate: open for the validated path,
+                # 3x-budgeted for one under validation. The
                 # validator's `can_send_bytes` includes the QUIC header +
                 # AEAD ciphertext (i.e. the full UDP payload), matching RFC
                 # 9000 section 8.1's measurement convention.

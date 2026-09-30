@@ -138,7 +138,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_STREAM_LOCAL_NOT_CREATED,
 )
 from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED, clamp_local_active_limit
-from navette.quic.path import PathValidator, PathKey, PathState
+from navette.quic.path import PathValidator, PathKey, PathState, MAX_PENDING_CHALLENGES
 from navette.quic.stream import (
     Stream, SendBuf, RecvBuf,
     SendState, RecvState,
@@ -179,7 +179,7 @@ from navette.quic.pn_space import (
     PacketNumberSpace,
     SentPacket,
 )
-from navette.quic.recovery import Recovery, K_GRANULARITY, K_PACKET_THRESHOLD
+from navette.quic.recovery import Recovery, K_GRANULARITY, K_PACKET_THRESHOLD, INITIAL_RTT
 from navette.quic.crypto_stream import CryptoStream
 from navette.quic.packet_protect import PacketProtect, ZERO_RTT_KEY_SLOT_IDX
 from navette.quic.cc.cc_trait import AckedPacket, LostPacket, PERSISTENT_CONG_THRESHOLD
@@ -1584,43 +1584,71 @@ struct QuicConnection(Movable):
     def should_drop_from(self, from_addr: PathKey) -> Bool:
         """True when a datagram from `from_addr` must be dropped unread: side-effect free.
 
-        That is an established connection that advertised
-        `disable_active_migration` receiving from an address other than
-        `peer_addr`. RFC 9000 Section 9 lets it drop such packets; closing
-        instead would let anyone who can spoof a source address with a
-        valid DCID (or a NAT rebinding) kill the connection. The check
-        runs before the datagram is decrypted, so it must not change any
-        state.
+        That is an established connection receiving from an address
+        other than `peer_addr` when either it advertised
+        `disable_active_migration`, or the address has no pending
+        challenge and `MAX_PENDING_CHALLENGES` already are (quiche drops
+        on its path limit too). RFC 9000 Section 9 lets it drop such
+        packets; closing instead would let anyone who can spoof a source
+        address with a valid DCID (or a NAT rebinding) kill the
+        connection, and processing one at the cap would leave a path we
+        cannot validate. The check runs before the datagram is
+        decrypted, so it must not change any state.
         """
         if (self.state & CONN_ESTABLISHED) == 0:
             return False
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return False
-        return self.local_params.disable_active_migration and not (from_addr == self.path.peer_addr)
+        if from_addr == self.path.peer_addr:
+            return False
+        if self.local_params.disable_active_migration:
+            return True
+        return (
+            len(self.path.validator.pending) >= MAX_PENDING_CHALLENGES
+            and not self.has_pending_path_challenge(from_addr)
+        )
 
     def note_authenticated_ingress(
         mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
-    ) raises:
-        """Path bookkeeping for a datagram that authenticated (`last_datagram_authenticated`).
+    ) raises -> Bool:
+        """Path bookkeeping for a datagram that authenticated; True when the send destination should move to `from_addr`.
 
         Call it only after the datagram decrypted: an unauthenticated
         datagram must not start a challenge or credit a path. On an
         established connection an address other than `peer_addr` starts
-        path validation (RFC 9000 Section 9), unless a challenge for it is
-        pending or `MAX_PENDING_CHALLENGES` already are; the datagram's
-        bytes are credited to that address's anti-amplification budget
-        (RFC 9000 Section 8.1; a no-op for the validated path). Before
-        establishment the address is not tracked here: the server seeds it
-        with `bootstrap_peer_addr`. No-op once closing, draining or closed.
+        path validation (RFC 9000 Section 9) unless a challenge for it is
+        pending, and the datagram's bytes are credited to that address's
+        anti-amplification budget (RFC 9000 Section 8.1). An address that
+        could not get a challenge (`MAX_PENDING_CHALLENGES` pending,
+        migration disabled, not yet established) is never a destination:
+        the send gate would have no budget to hold it to. The destination
+        moves only for `last_datagram_may_migrate` (RFC 9000 Section 9.3),
+        to `peer_addr` or an address under validation. False once
+        closing, draining or closed.
         """
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
-            return
-        if (self.state & CONN_ESTABLISHED) != 0 and not (from_addr == self.path.peer_addr):
-            if self.local_params.disable_active_migration:
-                return  # `should_drop_from` refused it already; never migrate
-            if not self.has_pending_path_challenge(from_addr):
-                _ = self.start_path_challenge(PathKey(copy=from_addr), now)
+            return False
+        if from_addr == self.path.peer_addr:
+            return self.last_datagram_may_migrate
+        if (self.state & CONN_ESTABLISHED) == 0 or self.local_params.disable_active_migration:
+            return False
+        if not self.has_pending_path_challenge(from_addr):
+            if not self.start_path_challenge(PathKey(copy=from_addr), now):
+                return False
         self.path.validator.record_received_bytes(from_addr, datagram_len)
+        return self.last_datagram_may_migrate
+
+    def is_usable_destination(self, target: PathKey) -> Bool:
+        """True when `target` may be sent to: the validated `peer_addr` or an address under validation.
+
+        Anything else (an expired or failed challenge) must fall back to
+        `peer_addr`, the last validated address (RFC 9000 Section 9.3.2).
+        """
+        return self.path.is_usable(target)
+
+    def _path_validation_pto(self) -> UInt64:
+        """PTO a path challenge's 3x timeout scales: the larger of the current one and kInitialRtt's (RFC 9000 Section 8.2.4)."""
+        return max(self._pto_interval(), INITIAL_RTT * UInt64(3))
 
     def bootstrap_peer_addr(mut self, var addr: PathKey):
         """Seed peer_addr to the first observed source address."""
@@ -3488,8 +3516,8 @@ struct QuicConnection(Movable):
     def timeout(self, now: UInt64) -> Optional[UInt64]:
         """Earliest deadline the caller must wake `send()` for, or None.
 
-        Sources: per-space PTO and ACK deadlines (omitted while
-        closing/draining/closed), idle, close and drain timers, and, on an
+        Sources: per-space PTO and ACK deadlines and path-validation
+        expiry (omitted while closing/draining/closed), idle, close and drain timers, and, on an
         established non-terminal connection, the pacer wait — folded only
         when it is earlier than the rest and Application data is actually
         waiting, so the stream walk is skipped otherwise.
@@ -3504,6 +3532,7 @@ struct QuicConnection(Movable):
             for s in range(3):
                 _min_deadline(earliest, self._pto_deadline(s))
                 _min_deadline(earliest, self.spaces[s].ack_deadline)
+            _min_deadline(earliest, self.path.validator.next_expiry(self._path_validation_pto()))
 
         # Idle timer — use effective min(local, peer).
         var idle_effective = self._effective_idle_timeout()
@@ -3570,6 +3599,10 @@ struct QuicConnection(Movable):
 
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
+
+        # Abandon path validations older than 3 PTOs (RFC 9000 Section
+        # 8.2.4); the sender then falls back to `peer_addr`.
+        self.path.validator.gc_expired(now, self._path_validation_pto())
 
         # Delayed-ACK deadlines: the ACK goes out in this same send() since
         # ACK-only packets bypass the congestion gate.

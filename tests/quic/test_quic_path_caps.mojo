@@ -91,6 +91,22 @@ def test_challenge_flood_property() raises:
     print("  test_challenge_flood_property: PASS (" + String(iters) + " cases)")
 
 
+def test_send_gate_is_default_deny() raises:
+    """With four challenges pending, a fifth address gets nothing: only the validated or a pending path may be sent to."""
+    var ps = _path_state()
+    ps.seed_peer_addr(_path_key(1000))
+    for i in range(MAX_PENDING_CHALLENGES):
+        assert_true(ps.begin_challenge(_path_key(i), UInt64(1_000)), "challenge started")
+    assert_true(not ps.begin_challenge(_path_key(99), UInt64(1_000)), "the fifth is refused")
+    assert_true(not ps.can_send(_path_key(99), 1), "no byte to an address with no challenge")
+    assert_true(ps.can_send(_path_key(1000), 65_536), "the validated path is not budgeted")
+    assert_true(not ps.can_send(_path_key(0), 1), "a pending path starts with no budget")
+    ps.validator.record_received_bytes(_path_key(0), 100)
+    assert_true(ps.can_send(_path_key(0), 300), "3x what it sent")
+    assert_true(not ps.can_send(_path_key(0), 301), "and no more")
+    print("  test_send_gate_is_default_deny: PASS")
+
+
 # ── Connection-level: the ingress sequence the H3 server runs ─────────────
 
 
@@ -132,7 +148,7 @@ struct Pair(Movable):
         for _ in range(20):
             self.now += UInt64(10_000)
             for ref d in self.client_datagrams():
-                self.feed_server(d, _home())
+                _ = self.feed_server(d, _home())
             var s_dg = List[List[Byte]]()
             _ = self.server.send(self.now, s_dg)
             for ref d in s_dg:
@@ -149,16 +165,20 @@ struct Pair(Movable):
         _ = self.client.send(self.now, out)
         return out^
 
-    def feed_server(mut self, dg: List[Byte], var from_addr: PathKey) raises:
-        """What H3UdpServer does per datagram: drop check, feed, then path bookkeeping only if it authenticated."""
+    def feed_server(mut self, dg: List[Byte], var from_addr: PathKey) raises -> Bool:
+        """What H3UdpServer does per datagram: drop check, feed, then path bookkeeping only if it authenticated.
+
+        True when the server would move its send destination to `from_addr`.
+        """
         if self.server.should_drop_from(from_addr):
-            return
+            return False
         try:
             self.server.recv(Span(dg), self.now)
         except:
             pass
         if self.server.last_datagram_authenticated:
-            self.server.note_authenticated_ingress(from_addr^, len(dg), self.now)
+            return self.server.note_authenticated_ingress(from_addr^, len(dg), self.now)
+        return False
 
 
 def _home() -> PathKey:
@@ -180,14 +200,14 @@ def _garbage_short(dcid: Span[Byte, _]) -> List[Byte]:
 
 def test_unauthenticated_datagram_starts_no_challenge() raises:
     var p = Pair(disable_migration=False)
-    p.feed_server(_garbage_short(p.server.local_cid.as_span()), _away())
+    _ = p.feed_server(_garbage_short(p.server.local_cid.as_span()), _away())
     assert_true(not p.server.last_datagram_authenticated, "garbage does not authenticate")
     assert_equal_int(len(p.server.path.validator.pending), 0, "no challenge from an unauthenticated datagram")
     # Positive control: a real client packet from the new address starts one.
     var sid = p.client.open_stream(True)
     p.client.send_stream_data(sid, Span(List[Byte](length=4, fill=Byte(1))), False)
     for ref d in p.client_datagrams():
-        p.feed_server(d, _away())
+        _ = p.feed_server(d, _away())
     assert_equal_int(len(p.server.path.validator.pending), 1, "an authenticated datagram does")
     print("  test_unauthenticated_datagram_starts_no_challenge: PASS")
 
@@ -200,7 +220,7 @@ def test_migration_disabled_drops_not_closes() raises:
     var sid = p.client.open_stream(True)
     p.client.send_stream_data(sid, Span(List[Byte](length=4, fill=Byte(1))), False)
     for ref d in p.client_datagrams():
-        p.feed_server(d, _away())
+        _ = p.feed_server(d, _away())
     assert_equal_int(Int(p.server.bytes_received), Int(before), "nothing fed from the new address")
     assert_true(not p.server.is_closing() and not p.server.is_closed(), "not closed")
     assert_equal_int(len(p.server.path.validator.pending), 0, "no challenge")
@@ -212,7 +232,7 @@ def _settle(mut p: Pair) raises:
     for _ in range(6):
         p.now += UInt64(30_000)
         for ref d in p.client_datagrams():
-            p.feed_server(d, _home())
+            _ = p.feed_server(d, _home())
         var s_dg = List[List[Byte]]()
         _ = p.server.send(p.now, s_dg)
         for ref d in s_dg:
@@ -235,11 +255,11 @@ def test_replayed_packet_is_dropped() raises:
     _settle(p)
     var dgs = _stream_datagrams(p)
     assert_true(len(dgs) >= 1, "client produced a datagram")
-    p.feed_server(dgs[0], _home())
+    _ = p.feed_server(dgs[0], _home())
     assert_true(p.server.last_datagram_authenticated, "the original authenticates")
     var ae_before = p.server.spaces[2].ack_eliciting_since_last_ack
     var largest_before = p.server.spaces[2].largest_recv_pn
-    p.feed_server(dgs[0], _away())
+    _ = p.feed_server(dgs[0], _away())
     assert_true(not p.server.last_datagram_authenticated, "a replay does not authenticate")
     assert_equal_int(len(p.server.path.validator.pending), 0, "a replay starts no challenge")
     assert_equal_int(
@@ -257,19 +277,53 @@ def test_only_newest_non_probing_may_migrate() raises:
     _ = p.client.start_path_challenge(_away(), p.now)
     var probe = p.client_datagrams()
     assert_true(len(probe) >= 1, "client produced a probe")
-    p.feed_server(probe[0], _away())
+    _ = p.feed_server(probe[0], _away())
     assert_true(p.server.last_datagram_authenticated, "the probe authenticates")
     assert_true(not p.server.last_datagram_may_migrate, "a probing-only packet does not migrate")
     assert_equal_int(len(p.server.path.validator.pending), 1, "the probe starts validation")
     # Newer, non-probing: may move. An older non-probing one held back may not.
     var older = _stream_datagrams(p)
     var newer = _stream_datagrams(p)
-    p.feed_server(newer[0], _away())
+    assert_true(p.feed_server(newer[0], _away()), "the destination moves to the address under validation")
     assert_true(p.server.last_datagram_may_migrate, "the newest non-probing packet may migrate")
-    p.feed_server(older[0], _home())
+    assert_true(not p.feed_server(older[0], _home()), "a reordered packet moves nothing")
     assert_true(p.server.last_datagram_authenticated, "a reordered packet is still processed")
     assert_true(not p.server.last_datagram_may_migrate, "a reordered packet does not migrate")
     print("  test_only_newest_non_probing_may_migrate: PASS")
+
+
+def test_full_challenge_cap_refuses_new_address() raises:
+    """Four authenticated datagrams from junk sources fill the cap; a fifth source is dropped and never sent to."""
+    var p = Pair(disable_migration=False)
+    _settle(p)
+    for i in range(MAX_PENDING_CHALLENGES):
+        for ref d in _stream_datagrams(p):
+            _ = p.feed_server(d, _path_key(i))
+    assert_equal_int(len(p.server.path.validator.pending), MAX_PENDING_CHALLENGES, "cap filled")
+    assert_true(p.server.should_drop_from(_away()), "a fifth source is dropped before decryption")
+    assert_true(not p.server.can_send_to(_away(), 1), "and nothing may be sent to it")
+    assert_true(p.server.can_send_to(_home(), 65_536), "the validated path is unaffected")
+    print("  test_full_challenge_cap_refuses_new_address: PASS")
+
+
+def test_pending_challenges_expire_on_the_timer() raises:
+    """Pending challenges are dropped 3 x max(PTO, kInitialRtt PTO) after they start, and `timeout` wakes for it."""
+    var p = Pair(disable_migration=False)
+    _settle(p)
+    for ref d in _stream_datagrams(p):
+        _ = p.feed_server(d, _away())
+    assert_equal_int(len(p.server.path.validator.pending), 1, "challenge pending")
+    assert_true(p.server.is_usable_destination(_away()), "usable while under validation")
+    var t = p.server.timeout(p.now)
+    assert_true(Bool(t), "a deadline is armed")
+    p.now += UInt64(3_100_000)
+    var out = List[List[Byte]]()
+    _ = p.server.send(p.now, out)
+    assert_equal_int(len(p.server.path.validator.pending), 0, "expired on the timer")
+    assert_true(not p.server.is_usable_destination(_away()), "an expired address is no destination")
+    assert_true(not p.server.can_send_to(_away(), 1), "and gets nothing")
+    assert_true(p.server.is_usable_destination(_home()), "the validated address stays")
+    print("  test_pending_challenges_expire_on_the_timer: PASS")
 
 
 def main() raises:
@@ -277,8 +331,11 @@ def main() raises:
     test_response_ring_keeps_three_newest()
     test_pending_challenges_capped()
     test_challenge_flood_property()
+    test_send_gate_is_default_deny()
     test_unauthenticated_datagram_starts_no_challenge()
     test_migration_disabled_drops_not_closes()
     test_replayed_packet_is_dropped()
     test_only_newest_non_probing_may_migrate()
+    test_full_challenge_cap_refuses_new_address()
+    test_pending_challenges_expire_on_the_timer()
     print("All test_quic_path_caps tests passed.")
