@@ -969,7 +969,7 @@ struct QuicConnection(Movable):
             self.protect.derive_initial_keys(header.scid.as_span(), is_client=True)
         except:
             return
-        self._retry_token = List[Byte](packet[Int(header.token_offset) : Int(header.token_offset) + Int(header.token_len)])
+        self._retry_token = List[Byte](header.token_span())
         self._retry_scid = Optional[CidBuf](CidBuf(copy=header.scid))
         self.peer_cid = CidBuf(copy=header.scid)
         for ref e in self.cid_mgr.remote_cids:
