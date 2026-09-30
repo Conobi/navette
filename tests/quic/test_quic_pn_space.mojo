@@ -281,7 +281,7 @@ def test_time_of_last_ae_sent_tracking() raises:
 
 
 def test_ack_validation_reject_future() raises:
-    """Send 3 packets (PNs 0,1,2), receive ACK with largest=5; verify raises."""
+    """Send 3 packets (PNs 0,1,2), receive ACK with largest=5; flagged, nothing acked, nothing raised."""
     var space = PacketNumberSpace(EncryptionLevel.initial())
 
     # Send 3 packets.
@@ -292,16 +292,13 @@ def test_ack_validation_reject_future() raises:
     # Forge an ACK claiming PN 5 was received.
     var bad_ack = AckFrame()
     bad_ack.largest_ack = UInt64(5)
-    bad_ack.first_ack_range = UInt64(0)  # Just PN 5
+    bad_ack.first_ack_range = UInt64(5)  # PNs 0..5
 
-    var raised = False
-    try:
-        var bad_ranges = List[AckRange](copy=bad_ack.ranges)
-        _ = space.on_ack_received(bad_ack, Span(bad_ranges))
-    except:
-        raised = True
-
-    _assert_true(raised, "should raise for ACK of unsent PN")
+    var bad_ranges = List[AckRange](copy=bad_ack.ranges)
+    var acked = space.on_ack_received(bad_ack, Span(bad_ranges))
+    _assert_true(space.ack_violation, "ACK of unsent PN flagged")
+    _assert_true(len(acked) == 0, "nothing acknowledged")
+    _assert_true(len(space.sent_packets) == 3, "sent packets untouched")
     print("    PASS test_ack_validation_reject_future")
 
 

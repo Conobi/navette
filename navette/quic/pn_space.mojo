@@ -124,6 +124,10 @@ struct SentPacket(Copyable, Movable):
 
 # ── PacketNumberSpace ────────────────────────────────────────────────
 
+# Gaps remembered for the skipped-PN check: at 200-499 packets per gap,
+# 8 cover the last 1,600 packets at least, beyond any ACK a live peer sends.
+comptime SKIP_HISTORY: Int = 8
+
 
 struct PacketNumberSpace(Copyable, Movable):
     """Per-encryption-level PN space with send/receive tracking."""
@@ -145,6 +149,15 @@ struct PacketNumberSpace(Copyable, Movable):
     var ect0_in_flight: UInt64    # O(1) count of in-flight ECT(0)-marked packets
     var pn_skip_rng: UInt64    # Xorshift64 state; 0 = disabled (Initial + Handshake)
     var pn_skip_next: UInt64   # PN at which the next gap is inserted
+    # The last SKIP_HISTORY gaps (first PN, length), a ring; an ACK covering
+    # any of them is an optimistic ACK (RFC 9000 Section 21.4).
+    var _skip_start: InlineArray[UInt64, SKIP_HISTORY]
+    var _skip_len: InlineArray[UInt8, SKIP_HISTORY]
+    var _skip_head: Int     # next ring slot to write
+    var _skip_count: Int
+    # Set by `on_ack_received` when an ACK names a skipped or never-sent
+    # PN; sticky, the connection closes with PROTOCOL_VIOLATION.
+    var ack_violation: Bool
     # ACK scheduling (RFC 9000 §13.2). `Optional` sentinels rather than 0 so a
     # clock starting at 0 and max_ack_delay == 0 cannot collide with "unarmed".
     var largest_rx_pkt_time: Optional[UInt64]   # arrival time of largest_recv_pn
@@ -185,6 +198,11 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ect0_in_flight = UInt64(0)
         self.pn_skip_rng  = UInt64(0)
         self.pn_skip_next = UInt64(0xFFFFFFFFFFFFFFFF)
+        self._skip_start = InlineArray[UInt64, SKIP_HISTORY](fill=UInt64(0))
+        self._skip_len = InlineArray[UInt8, SKIP_HISTORY](fill=UInt8(0))
+        self._skip_head = 0
+        self._skip_count = 0
+        self.ack_violation = False
         self.largest_rx_pkt_time = None
         self.ack_deadline = None
         self.largest_rx_ack_eliciting_pn = -1
@@ -213,6 +231,11 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ect0_in_flight = copy.ect0_in_flight
         self.pn_skip_rng  = copy.pn_skip_rng
         self.pn_skip_next = copy.pn_skip_next
+        self._skip_start = copy._skip_start.copy()
+        self._skip_len = copy._skip_len.copy()
+        self._skip_head = copy._skip_head
+        self._skip_count = copy._skip_count
+        self.ack_violation = copy.ack_violation
         self.largest_rx_pkt_time = copy.largest_rx_pkt_time.copy()
         self.ack_deadline = copy.ack_deadline.copy()
         self.largest_rx_ack_eliciting_pn = copy.largest_rx_ack_eliciting_pn
@@ -239,6 +262,11 @@ struct PacketNumberSpace(Copyable, Movable):
         self.ect0_in_flight = move.ect0_in_flight
         self.pn_skip_rng  = move.pn_skip_rng
         self.pn_skip_next = move.pn_skip_next
+        self._skip_start = move._skip_start^
+        self._skip_len = move._skip_len^
+        self._skip_head = move._skip_head
+        self._skip_count = move._skip_count
+        self.ack_violation = move.ack_violation
         self.largest_rx_pkt_time = move.largest_rx_pkt_time^
         self.ack_deadline = move.ack_deadline^
         self.largest_rx_ack_eliciting_pn = move.largest_rx_ack_eliciting_pn
@@ -254,9 +282,11 @@ struct PacketNumberSpace(Copyable, Movable):
         """Allocate and return the next packet number.
 
         When pn_skip_rng is non-zero (Application space after handshake),
-        randomly skips 1-8 PNs every 200-499 allocations via Xorshift64.
-        Skipped PNs are never in sent_packets — pre-crafted ACKs for them
-        produce no RTT sample (CVE-2025-4820 defense).
+        randomly skips 1-8 PNs every 200-499 allocations via Xorshift64,
+        and remembers the last SKIP_HISTORY gaps so `on_ack_received` can
+        flag an ACK of a PN never sent (the optimistic-ACK defence of RFC
+        9000 Section 21.4; quiche CVE-2025-4820). The seed must be secret:
+        the connection draws it from getrandom.
         """
         if self.pn_skip_rng != 0 and self.next_pn >= self.pn_skip_next:
             # Xorshift64 step
@@ -264,12 +294,34 @@ struct PacketNumberSpace(Copyable, Movable):
             self.pn_skip_rng ^= self.pn_skip_rng >> 7
             self.pn_skip_rng ^= self.pn_skip_rng << 17
             var gap = (self.pn_skip_rng & 7) + 1                    # 1-8 skipped PNs
+            self._skip_start[self._skip_head] = self.next_pn
+            self._skip_len[self._skip_head] = UInt8(gap)
+            self._skip_head = (self._skip_head + 1) % SKIP_HISTORY
+            self._skip_count = min(self._skip_count + 1, SKIP_HISTORY)
             self.next_pn += gap
             # Schedule next gap: 200-499 packets from now
             self.pn_skip_next = self.next_pn + 200 + (self.pn_skip_rng % 300)
         var pn = self.next_pn
         self.next_pn += 1
         return pn
+
+    def skipped_pns(self) -> List[UInt64]:
+        """Every PN in the remembered gaps, oldest gap first (for tests)."""
+        var out = List[UInt64]()
+        for k in range(self._skip_count):
+            var i = (self._skip_head - self._skip_count + k + SKIP_HISTORY) % SKIP_HISTORY
+            for j in range(Int(self._skip_len[i])):
+                out.append(self._skip_start[i] + UInt64(j))
+        return out^
+
+    def _covers_skipped(self, lo: UInt64, hi: UInt64) -> Bool:
+        """True when [lo, hi] overlaps a remembered gap."""
+        for i in range(self._skip_count):
+            var start = self._skip_start[i]
+            var end = start + UInt64(self._skip_len[i]) - 1
+            if lo <= end and start <= hi:
+                return True
+        return False
 
     # ── Receive tracking ─────────────────────────────────────────────
 
@@ -505,15 +557,22 @@ struct PacketNumberSpace(Copyable, Movable):
     ) raises -> List[SentPacket]:
         """Process an incoming ACK frame: decode ranges into PN sets, find
         matching sent_packets, remove them, return newly acked list.
-        Raises if any ACKed PN >= next_pn (security check)."""
+
+        An ACK naming a PN >= next_pn or one we skipped sets
+        `ack_violation` and returns nothing, before any state changes: the
+        caller closes with PROTOCOL_VIOLATION (RFC 9000 Section 13.1).
+        Raises only on malformed ranges."""
         var acked = List[SentPacket](capacity=16)
         self._scratch_pns.clear()
 
         var largest = ack.largest_ack
+        if ack.first_ack_range > largest:
+            raise "ACK range underflow"
         var smallest = largest - ack.first_ack_range
 
-        if Int(largest) >= Int(self.next_pn):
-            raise "ACK for unsent packet: largest_ack=" + String(Int(largest)) + " >= next_pn=" + String(Int(self.next_pn))
+        if largest >= self.next_pn or self._covers_skipped(smallest, largest):
+            self.ack_violation = True
+            return acked^
 
         var pn = smallest
         while pn <= largest:
@@ -531,6 +590,10 @@ struct PacketNumberSpace(Copyable, Movable):
             if ack_range > largest:
                 raise "ACK range exceeds available PNs"
             smallest = largest - ack_range
+            if self._covers_skipped(smallest, largest):
+                self.ack_violation = True
+                self._scratch_pns.clear()
+                return acked^
             pn = smallest
             while pn <= largest:
                 self._scratch_pns.append(Int(pn))

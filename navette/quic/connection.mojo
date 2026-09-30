@@ -18,6 +18,7 @@ from std.memory import Pointer, UnsafePointer
 from std.collections import Span
 from std.utils import Variant
 from navette.util.owned_alloc import Owned
+from navette.util.secure_random import fill_random
 from navette.quic.event import (
     QuicEvent, QuicEventPayload,
     ConnectionClosedPayload, StreamResetPayload, StreamStoppedPayload,
@@ -206,6 +207,8 @@ comptime _TP_BUF_SIZE: Int = 1024
 # Section 7.3 on a client.
 comptime _REASON_ORIGINAL_DCID = "original_destination_connection_id does not match our first DCID"
 comptime _REASON_RETRY_SCID = "retry_source_connection_id does not match the Retry followed"
+# Close reason for an optimistic ACK (a skipped or never-sent packet number).
+comptime _REASON_ACK_UNSENT = "ACK of a packet number never sent"
 
 
 
@@ -2034,8 +2037,15 @@ struct QuicConnection(Movable):
         ack_ranges: Span[AckRange, _],
         space_idx: Int, now: UInt64,
     ) raises:
-        """Process an ACK frame: update recovery, detect losses."""
+        """Process an ACK frame: update recovery, detect losses.
+
+        An ACK of a PN we never sent (skipped, or not yet allocated) is an
+        optimistic ACK: PROTOCOL_VIOLATION (RFC 9000 Section 13.1).
+        """
         var acked = self.spaces[space_idx].on_ack_received(ack_frame, ack_ranges)
+        if self.spaces[space_idx].ack_violation:
+            self.close_transport(PROTOCOL_VIOLATION, String(_REASON_ACK_UNSENT), now)
+            return
 
         if len(acked) == 0:
             return
@@ -2481,12 +2491,15 @@ struct QuicConnection(Movable):
         self._apply_peer_transport_params(now)
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
-        # Seed Application-space PN skip RNG from local_cid.
+        # Seed Application-space PN skipping from the CSPRNG: a seed the
+        # peer can derive (it used to be our SCID) lets it predict every
+        # skipped PN and ACK optimistically without tripping the check.
+        var seed_bytes = InlineArray[UInt8, 8](fill=UInt8(0))
+        fill_random(Span(seed_bytes))
         var pn_skip_seed = UInt64(0)
-        var local_cid_span = self.local_cid.as_span()
-        for i in range(min(Int(8), Int(len(local_cid_span)))):
-            pn_skip_seed = (pn_skip_seed << 8) | UInt64(local_cid_span[i])
-        if pn_skip_seed == 0:
+        for i in range(8):
+            pn_skip_seed = (pn_skip_seed << 8) | UInt64(seed_bytes[i])
+        if pn_skip_seed == 0:  # xorshift's fixed point
             pn_skip_seed = UInt64(0xDEADBEEFCAFEB00F)
         self.spaces[2].pn_skip_rng  = pn_skip_seed
         self.spaces[2].pn_skip_next = 200 + (pn_skip_seed % 300)
