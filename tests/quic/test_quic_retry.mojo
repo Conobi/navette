@@ -189,14 +189,14 @@ def test_classify_none(lib: SharedLibrary) raises:
 
 
 def test_classify_invalid_and_valid(lib: SharedLibrary) raises:
-    """Corrupted, wrong port, wrong IP, expired and future tokens are INVALID; the genuine one is VALID."""
+    """A corrupted token is NONE (it no longer opens); wrong port, wrong IP, expired and future tokens are INVALID; the genuine one is VALID."""
     var scratch = RetryTokenScratch()
     var dcid = hex_decode("0102030405060708090a")
     var issued = UInt64(50_000_000)
     var token = _token(lib, scratch, dcid, _addr_a(), issued)
     var corrupted = token.copy()
     corrupted[40] = corrupted[40] ^ 0x01
-    assert_equal_int(_classify(lib, scratch, corrupted, _addr_a(), issued), TOKEN_INVALID, "corrupted")
+    assert_equal_int(_classify(lib, scratch, corrupted, _addr_a(), issued), TOKEN_NONE, "corrupted")
     assert_equal_int(_classify(lib, scratch, token, _addr_b(), issued), TOKEN_INVALID, "wrong port")
     assert_equal_int(_classify(lib, scratch, token, _addr_c(), issued), TOKEN_INVALID, "same port, wrong IP")
     assert_equal_int(_classify(lib, scratch, token, _addr_a(), issued + RETRY_TOKEN_LIFETIME_US + 1), TOKEN_INVALID, "expired")
@@ -246,7 +246,7 @@ def test_classify_max_length_boundary(lib: SharedLibrary) raises:
     assert_equal_int(_classify(lib, scratch, genuine, _addr_a(), UInt64(1000)), TOKEN_VALID, "genuine 90 bytes")
     var forged_90 = List[Byte](length=90, fill=Byte(0x33))
     forged_90[0] = RETRY_TOKEN_TYPE
-    assert_equal_int(_classify(lib, scratch, forged_90, _addr_a(), UInt64(1000)), TOKEN_INVALID, "forged 90 bytes")
+    assert_equal_int(_classify(lib, scratch, forged_90, _addr_a(), UInt64(1000)), TOKEN_NONE, "forged 90 bytes")
     var long_91 = genuine.copy()
     long_91.append(0x00)
     assert_equal_int(_classify(lib, scratch, long_91, _addr_a(), UInt64(1000)), TOKEN_NONE, "91 bytes")
@@ -299,7 +299,7 @@ def test_malformed_peer_address_is_unusable(lib: SharedLibrary) raises:
 
 
 def test_classify_min_length_boundary(lib: SharedLibrary) raises:
-    """The shortest genuine token (empty DCID) is 70 bytes and VALID; 70 forged bytes are INVALID; 69 are NONE.
+    """The shortest genuine token (empty DCID) is 70 bytes and VALID; 70 forged bytes and 69 bytes are NONE.
 
     1 (type) + 12 (nonce) + 1 (dcid_len) + 32 (addr hash) + 8 (timestamp)
     + 16 (AEAD tag): a foreign type-0x01 token shorter than that cannot be
@@ -312,7 +312,7 @@ def test_classify_min_length_boundary(lib: SharedLibrary) raises:
     assert_equal_int(_classify(lib, scratch, genuine, _addr_a(), UInt64(1000)), TOKEN_VALID, "genuine 70 bytes")
     var forged_70 = List[Byte](length=70, fill=Byte(0x33))
     forged_70[0] = RETRY_TOKEN_TYPE
-    assert_equal_int(_classify(lib, scratch, forged_70, _addr_a(), UInt64(1000)), TOKEN_INVALID, "forged 70 bytes")
+    assert_equal_int(_classify(lib, scratch, forged_70, _addr_a(), UInt64(1000)), TOKEN_NONE, "forged 70 bytes")
     var short_69 = List[Byte](length=69, fill=Byte(0x33))
     short_69[0] = RETRY_TOKEN_TYPE
     assert_equal_int(_classify(lib, scratch, short_69, _addr_a(), UInt64(1000)), TOKEN_NONE, "69 bytes")
@@ -333,8 +333,8 @@ def test_classify_min_length_boundary(lib: SharedLibrary) raises:
     print("  test_classify_min_length_boundary: PASS")
 
 
-def test_classify_changed_secret_is_invalid(lib: SharedLibrary) raises:
-    """A token sealed under the old server secret is INVALID after the secret changes."""
+def test_classify_changed_secret_is_none(lib: SharedLibrary) raises:
+    """A token sealed under the old server secret no longer opens after the secret changes: NONE, so a Retry."""
     var scratch = RetryTokenScratch()
     var token = _token(lib, scratch, hex_decode("0102030405060708"), _addr_a(), UInt64(1000))
     var other = List[Byte](length=16, fill=Byte(0xAB))
@@ -342,9 +342,9 @@ def test_classify_changed_secret_is_invalid(lib: SharedLibrary) raises:
     var c = classify_retry_token(
         out, lib, scratch, Span(other), Span(token), Span(_addr_a()), UInt64(1000), RETRY_TOKEN_LIFETIME_US
     )
-    assert_equal_int(c, TOKEN_INVALID, "rotated secret")
-    assert_equal_int(len(out), 0, "no DCID appended for an invalid token")
-    print("  test_classify_changed_secret_is_invalid: PASS")
+    assert_equal_int(c, TOKEN_NONE, "rotated secret")
+    assert_equal_int(len(out), 0, "no DCID appended for a token that does not open")
+    print("  test_classify_changed_secret_is_none: PASS")
 
 
 def _reason(
@@ -562,7 +562,7 @@ def main() raises:
     test_classify_max_length_boundary(shared)
     test_malformed_peer_address_is_unusable(shared)
     test_classify_min_length_boundary(shared)
-    test_classify_changed_secret_is_invalid(shared)
+    test_classify_changed_secret_is_none(shared)
     test_reject_reasons_are_codes(shared)
     test_addr_hash_reads_ip_and_port_only()
     test_addr_hash_known_answers()

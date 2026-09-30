@@ -15,12 +15,14 @@
 #   P6 — Nonce uniqueness probe: two generate() calls with identical inputs
 #        produce tokens whose nonces (bytes 1..12) differ.
 #   C1 — classify: the genuine token is VALID and yields orig_dcid.
-#   C2 — classify: any single-bit flip in token[1:] is INVALID.
+#   C2 — classify: any single-bit flip in token[1:] is NONE: the token no
+#        longer opens, so it is indistinguishable from a foreign one
+#        (RFC 9000 erratum 7861) and earns a Retry, not INVALID_TOKEN.
 #   C3 — classify: a type byte other than 0x01 is NONE.
-#   C4 — classify: truncation below RETRY_TOKEN_MIN_LEN (70) bytes is
-#        NONE, at or above it INVALID; appended bytes are INVALID up to
-#        RETRY_TOKEN_MAX_LEN (90) bytes and NONE beyond it.
-#   C5 — classify: wrong address, rotated secret or expiry is INVALID.
+#   C4 — classify: a truncated or extended token is NONE, whether it
+#        falls outside the 70..90 byte bounds or no longer opens.
+#   C5 — classify: wrong address or expiry is INVALID (the token opens);
+#        a rotated secret is NONE (it does not).
 #   C6 — the all-zero address hash (malformed peer sockaddr): generate
 #        raises, and the genuine token classifies INVALID against it.
 #   Non-VALID results never append to the output buffer.
@@ -36,8 +38,6 @@ from tests.fuzz.lib.report import FuzzReport, ObserveResult
 
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.quic.retry import (
-    RETRY_TOKEN_MAX_LEN,
-    RETRY_TOKEN_MIN_LEN,
     RetryTokenScratch,
     TOKEN_INVALID,
     TOKEN_NONE,
@@ -199,7 +199,7 @@ def _check_classify(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: RetryT
     var flipped = token.copy()
     var fb = 1 + Int(rng.next_below(UInt64(len(token) - 1)))
     flipped[fb] = flipped[fb] ^ UInt8(1 << Int(rng.next_below(UInt64(8))))
-    var why = _classify_expect(lib, scratch, secret, flipped, addr_hash, now_g, age, TOKEN_INVALID, String("C2 bit flip"))
+    var why = _classify_expect(lib, scratch, secret, flipped, addr_hash, now_g, age, TOKEN_NONE, String("C2 bit flip"))
     if why.byte_length() > 0:
         return ObserveResult(False, why)
     # C3
@@ -214,17 +214,15 @@ def _check_classify(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: RetryT
     var truncated = List[Byte](capacity=cut)
     for i in range(cut):
         truncated.append(token[i])
-    var want_cut = TOKEN_NONE if cut < RETRY_TOKEN_MIN_LEN else TOKEN_INVALID
-    why = _classify_expect(lib, scratch, secret, truncated, addr_hash, now_g, age, want_cut, String("C4 truncated to ") + String(cut))
+    why = _classify_expect(lib, scratch, secret, truncated, addr_hash, now_g, age, TOKEN_NONE, String("C4 truncated to ") + String(cut))
     if why.byte_length() > 0:
         return ObserveResult(False, why)
     var extended = token.copy()
     var extra = 1 + Int(rng.next_below(UInt64(64)))
     for _ in range(extra):
         extended.append(rng.next_u8())
-    var want_ext = TOKEN_NONE if len(extended) > RETRY_TOKEN_MAX_LEN else TOKEN_INVALID
     why = _classify_expect(
-        lib, scratch, secret, extended, addr_hash, now_g, age, want_ext, String("C4 extended to ") + String(len(extended))
+        lib, scratch, secret, extended, addr_hash, now_g, age, TOKEN_NONE, String("C4 extended to ") + String(len(extended))
     )
     if why.byte_length() > 0:
         return ObserveResult(False, why)
@@ -236,7 +234,7 @@ def _check_classify(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: RetryT
         return ObserveResult(False, why)
     var secret2 = secret.copy()
     secret2[Int(rng.next_below(UInt64(16)))] ^= UInt8(1 << Int(rng.next_below(UInt64(8))))
-    why = _classify_expect(lib, scratch, secret2, token, addr_hash, now_g, age, TOKEN_INVALID, String("C5 secret"))
+    why = _classify_expect(lib, scratch, secret2, token, addr_hash, now_g, age, TOKEN_NONE, String("C5 secret"))
     if why.byte_length() > 0:
         return ObserveResult(False, why)
     why = _classify_expect(lib, scratch, secret, token, addr_hash, now_g + age + 1, age, TOKEN_INVALID, String("C5 expired"))
