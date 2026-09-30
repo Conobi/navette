@@ -1538,14 +1538,11 @@ def test_conn_flow_control_error_on_overflow() raises:
         data.append(UInt8(0x41))
 
     var sf = StreamFrame(sid, UInt64(0), List[Byte](), False)
-    var raised_fc = False
-    try:
-        server._handle_stream_frame(sf, Span(data))
-    except e:
-        var emsg = String(e)
-        if emsg.find("FLOW_CONTROL") >= 0:
-            raised_fc = True
-    assert_true(raised_fc, "server should raise FLOW_CONTROL_ERROR on conn FC overflow")
+    server._handle_stream_frame(sf, Span(data))
+    assert_true(
+        Bool(server.close.pending) and server.close.pending.value().error_code == UInt64(0x03),
+        "server should close with FLOW_CONTROL_ERROR on conn FC overflow",
+    )
 
     _ = tls^
     print("  test_conn_flow_control_error_on_overflow: PASS")

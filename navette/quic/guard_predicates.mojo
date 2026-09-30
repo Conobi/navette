@@ -72,16 +72,16 @@ struct QuicResetCtx(Copyable, Movable):
     var stream_id: UInt64
     var local_uni_opened: UInt64
     var local_bidi_opened: UInt64
+    var is_server: Bool  # picks which stream-id suffixes are ours
 
-    def __init__(out self, *, stream_id: UInt64, local_uni_opened: UInt64, local_bidi_opened: UInt64):
+    def __init__(
+        out self, *, stream_id: UInt64, local_uni_opened: UInt64, local_bidi_opened: UInt64,
+        is_server: Bool = True,
+    ):
         self.stream_id = stream_id
         self.local_uni_opened = local_uni_opened
         self.local_bidi_opened = local_bidi_opened
-
-    def __init__(out self, *, copy: Self):
-        self.stream_id = copy.stream_id
-        self.local_uni_opened = copy.local_uni_opened
-        self.local_bidi_opened = copy.local_bidi_opened
+        self.is_server = is_server
 
 
 struct QuicStopSendingCtx(Copyable, Movable):
@@ -90,28 +90,29 @@ struct QuicStopSendingCtx(Copyable, Movable):
     var stream_id: UInt64
     var local_uni_opened: UInt64
     var local_bidi_opened: UInt64
+    var is_server: Bool  # picks which stream-id suffixes are ours
 
-    def __init__(out self, *, stream_id: UInt64, local_uni_opened: UInt64, local_bidi_opened: UInt64):
+    def __init__(
+        out self, *, stream_id: UInt64, local_uni_opened: UInt64, local_bidi_opened: UInt64,
+        is_server: Bool = True,
+    ):
         self.stream_id = stream_id
         self.local_uni_opened = local_uni_opened
         self.local_bidi_opened = local_bidi_opened
-
-    def __init__(out self, *, copy: Self):
-        self.stream_id = copy.stream_id
-        self.local_uni_opened = copy.local_uni_opened
-        self.local_bidi_opened = copy.local_bidi_opened
+        self.is_server = is_server
 
 
 def predicate_f15_reset_on_server_uni(ctx: QuicResetCtx) -> Optional[GuardVerdict]:
     """Return Some(STREAM_STATE_ERROR + tag) when a RESET_STREAM targets
-    a server-uni stream (RFC 9000 §19.4 + §3.2 — the peer cannot RESET a
-    stream where this endpoint is the sender).
+    a unidirectional stream this endpoint opened (RFC 9000 Sections 19.4, 3.2 —
+    the peer cannot RESET a stream where this endpoint is the sender).
 
-    RFC 9000 §2.1: server-uni stream IDs end in 0b11 (suffix 3 mod 4).
+    RFC 9000 Section 2.1: server-uni stream IDs end in 0b11, client-uni in 0b10;
+    `ctx.is_server` picks ours (the name predates the role gate).
     """
     var sid = ctx.stream_id
-    var is_server_uni = (sid & UInt64(3)) == UInt64(3)
-    if not is_server_uni:
+    var local_uni_suffix = UInt64(3) if ctx.is_server else UInt64(2)
+    if (sid & UInt64(3)) != local_uni_suffix:
         return Optional[GuardVerdict]()
     return Optional[GuardVerdict](
         GuardVerdict(
@@ -444,22 +445,24 @@ def predicate_f16_stop_sending_local_not_created(
     locally-initiated stream that has not yet been created
     (RFC 9000 §19.5).
 
-    On the server: server-uni IDs end in 0b11 (suffix 3 mod 4) and
-    server-bidi IDs end in 0b01 (suffix 1 mod 4). For each class the
-    max ever-created local id = `(count-1)*4 + base`; anything strictly
-    greater is uncreated and MUST trip STREAM_STATE_ERROR.
+    Local suffixes follow `ctx.is_server`: server-uni 0b11 and
+    server-bidi 0b01, client-uni 0b10 and client-bidi 0b00. For each
+    class the max ever-created local id = `(count-1)*4 + base`; anything
+    strictly greater is uncreated and MUST trip STREAM_STATE_ERROR.
     """
     var sid = ctx.stream_id
     var suffix = sid & UInt64(3)
-    var is_local_uni = suffix == UInt64(3)
-    var is_local_bidi = suffix == UInt64(1)
+    var uni_base = UInt64(3) if ctx.is_server else UInt64(2)
+    var bidi_base = UInt64(1) if ctx.is_server else UInt64(0)
+    var is_local_uni = suffix == uni_base
+    var is_local_bidi = suffix == bidi_base
     if not is_local_uni and not is_local_bidi:
         return Optional[GuardVerdict]()
     var created: Bool
     if is_local_uni:
-        created = sid < (ctx.local_uni_opened * UInt64(4) + UInt64(3))
+        created = sid < (ctx.local_uni_opened * UInt64(4) + uni_base)
     else:
-        created = sid < (ctx.local_bidi_opened * UInt64(4) + UInt64(1))
+        created = sid < (ctx.local_bidi_opened * UInt64(4) + bidi_base)
     if created:
         return Optional[GuardVerdict]()
     return Optional[GuardVerdict](

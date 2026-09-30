@@ -209,6 +209,12 @@ comptime _REASON_ORIGINAL_DCID = "original_destination_connection_id does not ma
 comptime _REASON_RETRY_SCID = "retry_source_connection_id does not match the Retry followed"
 # Close reason for an optimistic ACK (a skipped or never-sent packet number).
 comptime _REASON_ACK_UNSENT = "ACK of a packet number never sent"
+# Close reasons for stream frames that break RFC 9000 Sections 4 and 19.
+comptime _REASON_WRONG_DIRECTION = "frame for the stream side we do not have"
+comptime _REASON_STREAM_LIMIT = "peer stream beyond our MAX_STREAMS"
+comptime _REASON_FINAL_SIZE = "STREAM data contradicts the final size"
+comptime _REASON_CONN_FLOW = "STREAM data beyond the connection flow-control limit"
+comptime _REASON_RECV_GAPS = "too many gaps in a stream's receive buffer"
 
 
 
@@ -1242,18 +1248,26 @@ struct QuicConnection(Movable):
             stream_frame.stream_id, stream_frame.offset, stream_frame.fin, stream_data
         )
 
-    def _resolve_frame_stream(mut self, stream_id: UInt64) raises -> Bool:
+    def _resolve_frame_stream(mut self, stream_id: UInt64, needs_send: Bool) raises -> Bool:
         """Find, or implicitly open, the stream a STREAM, RESET_STREAM or
         STOP_SENDING frame addresses; False means the caller drops the frame.
 
+        `needs_send` names the side of the stream the frame acts on from
+        our point of view (STOP_SENDING: our send side; STREAM and
+        RESET_STREAM: our receive side). A unidirectional stream lacking
+        that side closes the connection with STREAM_STATE_ERROR (RFC 9000
+        Sections 19.4, 19.5, 19.8), whether or not it is still in the map.
         An absent id its initiator already opened belongs to a stream that
         was closed and freed: late or duplicate frames for it are ignored
         (RFC 9000 Section 3). Raising instead would discard the whole packet
         unacknowledged, so the peer would retransmit it forever. An absent
         locally-initiated id we never opened closes the connection with
-        STREAM_STATE_ERROR (RFC 9000 Sections 19.4, 19.5, 19.8). Raises
-        STREAM_LIMIT_ERROR when a peer id exceeds our MAX_STREAMS.
+        STREAM_STATE_ERROR, and a peer id beyond our MAX_STREAMS with
+        STREAM_LIMIT_ERROR (RFC 9000 Section 4.6).
         """
+        if not stream_is_bidi(stream_id) and stream_is_local(stream_id, self.is_server) != needs_send:
+            self.close_transport(UInt64(0x05), String(_REASON_WRONG_DIRECTION), monotonic_us())
+            return False
         if Int(stream_id) in self.stream_map.streams:
             return True
         if self.stream_map.was_opened(stream_id):
@@ -1264,7 +1278,13 @@ struct QuicConnection(Movable):
                 monotonic_us(),
             )
             return False
-        var new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
+        var new_ids: List[UInt64]
+        try:
+            new_ids = self.stream_map.get_or_create_peer_stream(stream_id)
+        except:
+            # Local ids returned above, so the limit is the only failure.
+            self.close_transport(UInt64(0x04), String(_REASON_STREAM_LIMIT), monotonic_us())
+            return False
         var is_zr = (self._current_space_idx == ZERO_RTT_SPACE_IDX)
         for ref new_id in new_ids:
             self.events.append(QuicEvent.stream_opened(new_id))
@@ -1287,6 +1307,7 @@ struct QuicConnection(Movable):
             stream_id=reset_frame.stream_id,
             local_uni_opened=self.stream_map.local_opened_uni,
             local_bidi_opened=self.stream_map.local_opened_bidi,
+            is_server=self.is_server,
         )
         var _f15_verdict = predicate_f15_reset_on_server_uni(_f15_ctx)
         if _f15_verdict:
@@ -1299,11 +1320,9 @@ struct QuicConnection(Movable):
         var final_size = reset_frame.final_size
 
         var key = Int(stream_id)
-        if not self._resolve_frame_stream(stream_id):
+        if not self._resolve_frame_stream(stream_id, needs_send=False):
             return
         var p = self.stream_map.stream_ptr(key)
-        if not p[].recv_state:
-            raise "STREAM_STATE_ERROR: RESET on non-recv stream"
 
         # Validate final_size invariants. Violations close the connection
         # rather than raise: a raise drops the packet unacknowledged, so
@@ -1378,6 +1397,7 @@ struct QuicConnection(Movable):
             stream_id=stop_frame.stream_id,
             local_uni_opened=self.stream_map.local_opened_uni,
             local_bidi_opened=self.stream_map.local_opened_bidi,
+            is_server=self.is_server,
         )
         var _f16_verdict = predicate_f16_stop_sending_local_not_created(_f16_ctx)
         if _f16_verdict:
@@ -1389,11 +1409,9 @@ struct QuicConnection(Movable):
         var error_code = stop_frame.error_code
 
         var key = Int(stream_id)
-        if not self._resolve_frame_stream(stream_id):
+        if not self._resolve_frame_stream(stream_id, needs_send=True):
             return
         var p = self.stream_map.stream_ptr(key)
-        if not p[].send_state:
-            raise "STREAM_STATE_ERROR: STOP_SENDING targets non-send side"
 
         var ss = p[].send_state.value()
         if ss == SendState.RESET_SENT or ss == SendState.RESET_RECVD or ss == SendState.DATA_RECVD:
@@ -1767,40 +1785,9 @@ struct QuicConnection(Movable):
     def _on_max_stream_data(
         mut self, ref frame: Frame, now: UInt64
     ) raises:
-        """Handle MAX_STREAM_DATA: validate, update FC, re-queue sendable."""
+        """`_on_max_stream_data_from_cursor` for a decoded `Frame`."""
         ref msd = frame.as_max_stream_data()
-        var key = Int(msd.stream_id)
-        var p_opt = self.stream_map.try_stream_ptr(key)
-        if not p_opt and self.stream_map.was_opened(msd.stream_id):
-            return  # closed and freed: ignore (RFC 9000 Section 3)
-        var _exists = Bool(p_opt)
-        var _has_send = stream_is_bidi(msd.stream_id) or stream_is_local(
-            msd.stream_id, self.is_server
-        )
-        var _ctx_msd = MaxStreamDataCtx(
-            stream_id=msd.stream_id,
-            exists=_exists,
-            has_send_side=_has_send,
-        )
-        var _verdict_msd = predicate_f18_f19_max_stream_data(_ctx_msd)
-        if _verdict_msd:
-            var _v_msd = _verdict_msd.take()
-            self.close_transport(_v_msd.error_code, _v_msd.tag, now)
-            return
-        var p = p_opt.value()
-        if p[].fc_send:
-            var old_limit = p[].fc_send.value().limit
-            p[].fc_send.value().ensure_limit(msd.maximum)
-            var grew = p[].fc_send.value().limit > old_limit
-            if grew:
-                p[].fc_send.value().blocked_at = UInt64(0)
-            var _has_pending = False
-            if p[].send_buf:
-                _has_pending = p[].send_buf.value().has_pending()
-            if grew:
-                self.events.append(QuicEvent.stream_writable(msd.stream_id))
-                if _has_pending:
-                    self.stream_map.add_sendable(key)
+        self._on_max_stream_data_from_cursor(msd.stream_id, msd.maximum, now)
 
     def _on_max_streams(
         mut self, ref frame: Frame, is_bidi: Bool, now: UInt64
@@ -1841,13 +1828,22 @@ struct QuicConnection(Movable):
         """Process STREAM frame from cursor scalars (no StreamFrame alloc)."""
         var data_len = UInt64(len(stream_data))
         var key = Int(stream_id)
-        if not self._resolve_frame_stream(stream_id):
+        if not self._resolve_frame_stream(stream_id, needs_send=False):
             return
         var p = self.stream_map.stream_ptr(key)
-        if not p[].is_bidi and p[].is_local:
-            raise "STREAM_STATE_ERROR: incoming STREAM frame on local uni stream"
         if not p[].recv_state:
-            raise "STREAM_STATE_ERROR: no recv state"
+            raise "internal: receivable stream without recv state"
+        # RFC 9000 Section 4.5: a known final size never changes, and no
+        # data lies beyond it; checked in every state, a retransmission
+        # after DATA_RECVD included.
+        var end = offset + data_len
+        if p[].fin_offset:
+            if end > p[].fin_offset.value() or (fin and end != p[].fin_offset.value()):
+                self.close_transport(FINAL_SIZE_ERROR, String(_REASON_FINAL_SIZE), monotonic_us())
+                return
+        elif fin and end < p[].recv_highest_offset:
+            self.close_transport(FINAL_SIZE_ERROR, String(_REASON_FINAL_SIZE), monotonic_us())
+            return
         var rs = p[].recv_state.value()
         if rs != RecvState.RECV and rs != RecvState.SIZE_KNOWN:
             return
@@ -1858,13 +1854,21 @@ struct QuicConnection(Movable):
             return
         if not p[].recv_buf:
             raise "internal: missing recv_buf"
-        var new_bytes = p[].recv_buf.value().write(
-            offset, stream_data, fin, p[].fin_offset
-        )
-        if offset + data_len > p[].recv_highest_offset:
-            p[].recv_highest_offset = offset + data_len
+        # Final size is checked above, so the only refusal left is the
+        # reassembly gap cap.
+        var new_bytes: UInt64
+        try:
+            new_bytes = p[].recv_buf.value().write(
+                offset, stream_data, fin, p[].fin_offset
+            )
+        except:
+            self.close_transport(PROTOCOL_VIOLATION, String(_REASON_RECV_GAPS), monotonic_us())
+            return
+        if end > p[].recv_highest_offset:
+            p[].recv_highest_offset = end
         if not self.stream_map.conn_fc_recv.check_limit(new_bytes):
-            raise "FLOW_CONTROL_ERROR: connection FC exceeded"
+            self.close_transport(FLOW_CONTROL_ERROR, String(_REASON_CONN_FLOW), monotonic_us())
+            return
         p[].fc_recv.value().add_received(new_bytes)
         self.stream_map.conn_fc_recv.add_received(new_bytes)
         var readable = p[].recv_buf.value().has_readable()
@@ -1938,12 +1942,16 @@ struct QuicConnection(Movable):
         """Handle MAX_STREAM_DATA from cursor scalars."""
         var key = Int(stream_id)
         var p_opt = self.stream_map.try_stream_ptr(key)
-        if not p_opt and self.stream_map.was_opened(stream_id):
-            return  # closed and freed: ignore (RFC 9000 Section 3)
-        var _exists = Bool(p_opt)
         var _has_send = stream_is_bidi(stream_id) or stream_is_local(
             stream_id, self.is_server
         )
+        # A freed stream we send on: late frame, ignore (RFC 9000 Section
+        # 3). A freed receive-only one still exists for F19: the frame is
+        # a STREAM_STATE_ERROR whenever it arrives (Section 19.10).
+        var _freed = not p_opt and self.stream_map.was_opened(stream_id)
+        if _freed and _has_send:
+            return
+        var _exists = Bool(p_opt) or _freed
         var _ctx_msd = MaxStreamDataCtx(
             stream_id=stream_id,
             exists=_exists,
