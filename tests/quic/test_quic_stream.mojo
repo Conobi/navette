@@ -811,6 +811,27 @@ def test_send_buf_write_after_fin() raises:
     print("  test_send_buf_write_after_fin: PASS")
 
 
+def test_send_buf_highest_sent_survives_loss() raises:
+    """highest_sent_offset never rewinds: it is the final size a reset
+    must carry (RFC 9000 Section 4.5)."""
+    var buf = SendBuf()
+    var data = List[Byte]()
+    for i in range(10):
+        data.append(UInt8(i))
+    buf.write(Span(data), False)
+    assert_equal_int(Int(buf.highest_sent_offset), 0, "nothing sent yet")
+    _ = buf.make_frame(UInt64(4), 10)
+    assert_equal_int(Int(buf.highest_sent_offset), 10, "10 bytes sent")
+    buf.on_loss(UInt64(0), UInt64(10))
+    assert_equal_int(Int(buf.unsent_offset), 0, "loss rewinds the cursor")
+    assert_equal_int(Int(buf.highest_sent_offset), 10, "high-water mark kept")
+    _ = buf.prepare_frame(4)
+    assert_equal_int(Int(buf.highest_sent_offset), 10, "partial resend keeps it")
+    _ = buf.prepare_frame(100)
+    assert_equal_int(Int(buf.highest_sent_offset), 10, "full resend keeps it")
+    print("  test_send_buf_highest_sent_survives_loss: PASS")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -837,6 +858,7 @@ def main() raises:
     test_send_buf_ack_after_loss_rewind()
     test_send_buf_fin()
     test_send_buf_is_fully_acked()
+    test_send_buf_highest_sent_survives_loss()
 
     test_stream_bidi_lifecycle()
     test_stream_uni_local()

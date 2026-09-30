@@ -470,10 +470,11 @@ struct SendBuf(Copyable, Movable):
     var data: List[Byte]
     var offset: UInt64              # byte offset of data[0] in the stream
     var unsent_offset: UInt64       # first unsent byte (absolute)
+    var highest_sent_offset: UInt64  # end of the furthest byte ever framed
     var acked_offset: UInt64        # contiguous ACKed bytes from stream start
     var acked_above: List[Tuple[UInt64, UInt64]]  # [start, end) acked past a gap
-    var fin: Bool
-    var fin_offset: Optional[UInt64]    # set when FIN first framed
+    var fin: Bool                       # FIN requested by the application
+    var fin_offset: Optional[UInt64]    # set when FIN framed, cleared on its loss
     var fin_acked: Bool
     var read_cursor: Int
 
@@ -481,6 +482,7 @@ struct SendBuf(Copyable, Movable):
         self.data = List[Byte]()
         self.offset = UInt64(0)
         self.unsent_offset = UInt64(0)
+        self.highest_sent_offset = UInt64(0)
         self.acked_offset = UInt64(0)
         self.acked_above = List[Tuple[UInt64, UInt64]]()
         self.fin = False
@@ -492,6 +494,7 @@ struct SendBuf(Copyable, Movable):
         self.data = List[Byte](copy=copy.data)
         self.offset = copy.offset
         self.unsent_offset = copy.unsent_offset
+        self.highest_sent_offset = copy.highest_sent_offset
         self.acked_offset = copy.acked_offset
         self.acked_above = copy.acked_above.copy()
         self.fin = copy.fin
@@ -550,7 +553,9 @@ struct SendBuf(Copyable, Movable):
         """Advance the send cursor and return (offset, chunk_size, fin).
 
         Unlike make_frame, does NOT copy data — the caller reads the
-        chunk via data_span() after this returns.
+        chunk via data_span() after this returns. Every STREAM frame,
+        first send or retransmission, is cut here, so this is the one
+        place that raises highest_sent_offset.
         """
         var total_data_end = self.offset + UInt64(len(self.data) - self.read_cursor)
 
@@ -574,6 +579,8 @@ struct SendBuf(Copyable, Movable):
             self.fin_offset = frame_start + UInt64(chunk_size)
 
         self.unsent_offset = frame_start + UInt64(chunk_size)
+        if self.unsent_offset > self.highest_sent_offset:
+            self.highest_sent_offset = self.unsent_offset
 
         return Tuple(frame_start, chunk_size, include_fin)
 
@@ -693,6 +700,17 @@ struct SendBuf(Copyable, Movable):
             if lost_end >= self.fin_offset.value():
                 self.fin_offset = None
                 self.fin_acked = False
+
+    def reset_final_size(self) -> UInt64:
+        """Final size for a RESET_STREAM (RFC 9000 Section 4.5): the highest
+        offset ever sent, which loss never lowers.
+
+        unsent_offset is wrong here: on_loss rewinds it, and a final size
+        below bytes the peer already received is a FINAL_SIZE_ERROR.
+        """
+        if self.fin_offset:
+            return max(self.highest_sent_offset, self.fin_offset.value())
+        return self.highest_sent_offset
 
     def is_fully_acked(self) -> Bool:
         """True when all data and FIN have been acknowledged."""

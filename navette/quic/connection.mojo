@@ -1298,11 +1298,7 @@ struct QuicConnection(Movable):
         p[].reset_stream_error = error_code
         var final_size: UInt64 = 0
         if p[].send_buf:
-            ref sb = p[].send_buf.value()
-            if sb.fin_offset:
-                final_size = sb.fin_offset.value()
-            else:
-                final_size = sb.unsent_offset
+            final_size = p[].send_buf.value().reset_final_size()
         p[].reset_stream_final_size = final_size
 
         self.stream_map.remove_sendable(key)
@@ -3707,11 +3703,7 @@ struct QuicConnection(Movable):
             return
         var final_size: UInt64 = 0
         if p[].send_buf:
-            ref sb = p[].send_buf.value()
-            if sb.fin_offset:
-                final_size = sb.fin_offset.value()
-            else:
-                final_size = sb.unsent_offset
+            final_size = p[].send_buf.value().reset_final_size()
         p[].send_state = Optional[SendState](SendState.RESET_SENT)
         p[].needs_reset_stream = True
         p[].reset_stream_error = error_code
