@@ -603,13 +603,18 @@ def test_pto_probe_emits_ping() raises:
     _ = p.client.send(now, dgs)
     assert_equal_int(len(dgs), 1, "probe datagram emitted")
     assert_equal_int(len(dgs[0]), MAX_DATAGRAM_SIZE, "client handshake datagram padded to 1200")
+    # SentPacket.frames records only CRYPTO; judge the probe by what it does.
     var probe_pn = _last_sent_pn(p.client, 1)
-    var frames = _frames_of(p.client, 1, probe_pn)
-    assert_true(_has_kind(frames, "ping"), "probe packet carries PING")
     assert_true(p.client.spaces[1].sent_packets[probe_pn].ack_eliciting, "probe is ack-eliciting")
     assert_true(p.client.spaces[1].sent_packets[probe_pn].in_flight, "probe is in flight")
+    assert_false(
+        _has_kind(_frames_of(p.client, 1, probe_pn), "crypto"),
+        "no CRYPTO to re-queue, so the probe is a PING",
+    )
+    assert_false(p.server.spaces[1].has_unacked_ack_eliciting(), "peer owes no Handshake ACK yet")
     p.server.recv(Span(dgs[0]), now)
     assert_true(p.server.spaces[1].largest_recv_pn > before, "peer decrypted the Handshake probe")
+    assert_true(p.server.spaces[1].has_unacked_ack_eliciting(), "the probe makes the peer owe a Handshake ACK")
     print("  test_pto_probe_emits_ping: PASS")
 
 
@@ -627,7 +632,7 @@ def test_close_sent_once_per_trigger() raises:
     var dgs = List[List[Byte]](capacity=1)
     _ = p.client.send(now, dgs)
     assert_equal_int(len(dgs), 1, "exactly one CLOSE datagram on transition")
-    assert_true(_has_kind(_frames_of(p.client, 2, _last_sent_pn(p.client, 2)), "close"), "it carries CONNECTION_CLOSE")
+    var first_close = dgs[0].copy()
     assert_equal_int(p.client.send(now, dgs), 0, "second send is empty")
     assert_equal_int(p.client.send(now + UInt64(1_000), dgs), 0, "still empty without a trigger")
 
@@ -656,6 +661,9 @@ def test_close_sent_once_per_trigger() raises:
     var final_dg = List[List[Byte]](capacity=1)
     assert_equal_int(p.client.send(now, final_dg), 1, "one CLOSE after a PTO-spaced trigger")
     assert_equal_int(p.client.send(now, final_dg), 0, "then empty again")
+    # The first datagram carried CONNECTION_CLOSE: the peer drains on it.
+    p.server.recv(Span(first_close), now)
+    assert_true(p.server.is_draining(), "the transition datagram carries CONNECTION_CLOSE")
     print("  test_close_sent_once_per_trigger: PASS")
 
 
@@ -682,15 +690,21 @@ def test_close_reason_bounded() raises:
     now2 = _client_with_handshake_keys(q, now2)
     assert_false(q.client.is_established(), "not established yet")
     q.client.close_transport(UInt64(0x0A), String("early"), now2)
+    var last_before = List[Int]()
+    for s in range(3):
+        last_before.append(_last_sent_pn(q.client, s))
     var cds = List[List[Byte]](capacity=1)
     _ = q.client.send(now2, cds)
     assert_equal_int(len(cds), 1, "one handshake-time CLOSE datagram")
     assert_equal_int(len(cds[0]), MAX_DATAGRAM_SIZE, "client handshake datagram padded to 1200")
+    # A closing endpoint emits only CONNECTION_CLOSE, so one new
+    # non-ack-eliciting packet per keyed space is one CLOSE per space.
+    assert_true(q.client.protect.has_keys(1), "Handshake keyed")
     for s in range(3):
         if q.client.protect.has_keys(s):
-            assert_true(_has_kind(_frames_of(q.client, s, _last_sent_pn(q.client, s)), "close"),
-                        "CLOSE in keyed space " + String(s))
-    assert_true(_has_kind(_frames_of(q.client, 1, _last_sent_pn(q.client, 1)), "close"), "CLOSE in Handshake")
+            var pn = _last_sent_pn(q.client, s)
+            assert_true(pn > last_before[s], "CLOSE in keyed space " + String(s))
+            assert_false(q.client.spaces[s].sent_packets[pn].ack_eliciting, "CLOSE-only packet in space " + String(s))
     var cds2 = List[List[Byte]](capacity=1)
     assert_equal_int(q.client.send(now2, cds2), 0, "second send empty")
     q.server.recv(Span(cds[0]), now2)
@@ -1131,8 +1145,8 @@ def test_ack_scheduling_suspended_in_closing() raises:
         assert_true(p.client.spaces[2].largest_recv_pn == largest_before, "PN window frozen while closing")
         _ = p.client.send(now, out)
         assert_equal_int(len(out), 1, "one CLOSE per trigger")
-        var frames = _frames_of(p.client, 2, _last_sent_pn(p.client, 2))
-        assert_true(len(frames) == 1 and frames[0].is_connection_close(), "CLOSE-only packet, no ACK")
+        var close_pn = _last_sent_pn(p.client, 2)
+        assert_false(p.client.spaces[2].sent_packets[close_pn].ack_eliciting, "CLOSE packet is not ack-eliciting")
         var t = p.client.timeout(now)
         assert_true(Bool(t) and t.value() > now, "closing: deadline in the future")
     # Server drains on the CLOSE; further packets change nothing.
