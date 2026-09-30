@@ -207,6 +207,7 @@ comptime _TP_BUF_SIZE: Int = 1024
 # Section 7.3 on a client.
 comptime _REASON_ORIGINAL_DCID = "original_destination_connection_id does not match our first DCID"
 comptime _REASON_RETRY_SCID = "retry_source_connection_id does not match the Retry followed"
+comptime _REASON_INITIAL_SCID = "initial_source_connection_id does not match the peer's first Initial SCID"
 # Close reason for an optimistic ACK (a skipped or never-sent packet number).
 comptime _REASON_ACK_UNSENT = "ACK of a packet number never sent"
 # Close reasons for stream frames that break RFC 9000 Sections 4 and 19.
@@ -2614,6 +2615,10 @@ struct QuicConnection(Movable):
             if why:
                 self.close_transport(UInt64(0x08), why, now)
                 return
+        var scid_why = self._initial_scid_error(peer_tp)
+        if scid_why:
+            self.close_transport(UInt64(0x08), scid_why, now)
+            return
         self.peer_params = TransportParams(copy=peer_tp)
         self.events.append(QuicEvent.peer_transport_params(peer_tp))
         var peer = self.peer_params.value().copy()
@@ -2627,6 +2632,19 @@ struct QuicConnection(Movable):
         )
         self.cid_mgr.set_peer_active_limit(peer.active_connection_id_limit)
         _ = self.cid_mgr.issue_new_cid()
+
+    def _initial_scid_error(self, ref tp: TransportParams) -> String:
+        """Why the peer's initial_source_connection_id fails RFC 9000 Section 7.3, empty if it passes.
+
+        Both roles: it MUST be present and equal the SCID of the peer's
+        first authenticated Initial (`_initial_peer_scid`), zero-length
+        included; otherwise the Initial SCID was altered on the path.
+        """
+        if not tp.initial_scid or not self._initial_peer_scid:
+            return String(_REASON_INITIAL_SCID)
+        if not _span_eq(Span(tp.initial_scid.value()), self._initial_peer_scid.value().as_span()):
+            return String(_REASON_INITIAL_SCID)
+        return String()
 
     def _server_cid_params_error(self, ref tp: TransportParams) -> String:
         """Why the server's CID transport parameters fail RFC 9000 Section 7.3 on a client, empty if they pass.
