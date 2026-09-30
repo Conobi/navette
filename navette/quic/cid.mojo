@@ -36,6 +36,19 @@ comptime RETIRE_QUEUE_MULTIPLIER = 3
 # Hard ceiling on outstanding retirements, whatever our own limit is.
 comptime MAX_RETIRE_QUEUE = 64
 
+
+
+def clamp_local_active_limit(limit: UInt64) -> UInt64:
+    """Our active_connection_id_limit held to [2, MAX_RETIRE_QUEUE].
+
+    2 is the RFC 9000 Section 18.2 minimum. The ceiling keeps the stored
+    peer CIDs and the retire backlog small. The transport parameter we
+    advertise must go through this too, or a peer staying within the
+    advertised limit would be closed for exceeding the enforced one.
+    """
+    return min(max(limit, UInt64(2)), UInt64(MAX_RETIRE_QUEUE))
+
+
 # Close reasons for CID frame violations.
 comptime CID_REASON_LIMIT = "NEW_CONNECTION_ID exceeds active_connection_id_limit"
 comptime CID_REASON_RETIRE_BACKLOG = "too many unacknowledged RETIRE_CONNECTION_ID"
@@ -123,8 +136,9 @@ struct CidManager(Movable):
             lib: SharedLibrary handle (refcount is incremented).
             initial_local_cid:  The CID we present as SCID in Initial packets.
             initial_remote_cid: The peer's initial CID (their SCID / our DCID).
-            local_active_limit: The active_connection_id_limit we advertise;
-                bounds the peer CIDs we store and the retire backlog.
+            local_active_limit: The active_connection_id_limit we advertise,
+                clamped by `clamp_local_active_limit`; bounds the peer CIDs
+                we store and the retire backlog.
             peer_active_limit:  Peer's active_connection_id_limit transport
                 parameter; issuance is clamped to MAX_ISSUED_CIDS.
         """
@@ -163,11 +177,11 @@ struct CidManager(Movable):
         self.remote_cids.append(remote_entry^)
         self.remote_active_cid_seq = UInt64(0)
 
-        self.local_active_limit = local_active_limit
+        self.local_active_limit = clamp_local_active_limit(local_active_limit)
         self._peer_active_limit = UInt64(0)
         self.retire_queue = List[UInt64]()
         self._retire_unacked = List[UInt64]()
-        var scaled = min(local_active_limit, UInt64(MAX_RETIRE_QUEUE)) * UInt64(
+        var scaled = self.local_active_limit * UInt64(
             RETIRE_QUEUE_MULTIPLIER
         )
         self.retire_queue_cap = Int(min(scaled, UInt64(MAX_RETIRE_QUEUE)))
@@ -240,7 +254,9 @@ struct CidManager(Movable):
         The caller has already checked `retire_prior_to <= seq` and the CID
         length. Outcomes:
         - exact repeat of a stored (seq, CID, token): ignored;
-        - seq or CID matching a stored entry otherwise: PROTOCOL_VIOLATION;
+        - seq or CID matching a stored entry otherwise: PROTOCOL_VIOLATION,
+          checked first, as quiche does, so a stale seq cannot smuggle in
+          a CID we already hold;
         - seq below the highest retire_prior_to seen: not stored, one
           RETIRE_CONNECTION_ID queued (none while one is outstanding);
         - a retire_prior_to increase drops every older entry and queues its
@@ -251,11 +267,6 @@ struct CidManager(Movable):
 
         Returns the verdict to close with, or None.
         """
-        if seq < self.highest_retire_prior_to:
-            if not self._queue_retirement(seq):
-                return _verdict(CONNECTION_ID_LIMIT_ERROR, CID_REASON_RETIRE_BACKLOG)
-            return None
-
         for ref e in self.remote_cids:
             var same_seq = e.sequence == seq
             var same_cid = _bytes_eq(Span(e.cid), Span(cid))
@@ -265,6 +276,11 @@ struct CidManager(Movable):
                 ):
                     return None
                 return _verdict(PROTOCOL_VIOLATION, CID_REASON_CONFLICT)
+
+        if seq < self.highest_retire_prior_to:
+            if not self._queue_retirement(seq):
+                return _verdict(CONNECTION_ID_LIMIT_ERROR, CID_REASON_RETIRE_BACKLOG)
+            return None
 
         var backlog_full = False
         if retire_prior_to > self.highest_retire_prior_to:
@@ -462,10 +478,12 @@ struct CidManager(Movable):
 
 
 def _verdict(code: UInt64, reason: StaticString) -> Optional[GuardVerdict]:
+    """Close verdict for a CID frame violation; `code` is a transport error."""
     return Optional[GuardVerdict](GuardVerdict(error_code=code, tag=String(reason)))
 
 
 def _bytes_eq(a: Span[Byte, _], b: Span[Byte, _]) -> Bool:
+    """Byte equality, lengths included; not constant-time, so not for secrets."""
     if len(a) != len(b):
         return False
     for i in range(len(a)):

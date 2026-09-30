@@ -133,7 +133,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_CRYPTO_IN_ZERO_RTT,
     GUARD_TAG_ACK_IN_ZERO_RTT,
 )
-from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED
+from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED, clamp_local_active_limit
 from navette.quic.path import PathValidator, PathKey, PathState
 from navette.quic.stream import (
     Stream, SendBuf, RecvBuf,
@@ -3821,7 +3821,11 @@ def _min_deadline(mut earliest: Optional[UInt64], candidate: Optional[UInt64]):
 
 
 def _apply_m3c_defaults(mut params: TransportParams):
-    """Set flow-control / stream-limit defaults if not already set."""
+    """Set flow-control / stream-limit defaults if not already set, and
+    clamp active_connection_id_limit to the value CidManager enforces."""
+    params.active_connection_id_limit = clamp_local_active_limit(
+        params.active_connection_id_limit
+    )
     if params.initial_max_data == 0:
         params.initial_max_data = UInt64(10485760)  # 10 MiB
     if params.initial_max_stream_data_bidi_local == 0:
