@@ -41,6 +41,18 @@ struct ByteVec[capacity: Int](Movable, Copyable, Sized):
             self._storage[self._len + i] = data[i]
         self._len += len(data)
 
+    def extend_truncated(mut self, data: Span[Byte, _]) -> Int:
+        """Appends the prefix of `data` that fits; never raises.
+
+        Returns:
+            The number of bytes copied (the rest of `data` is dropped).
+        """
+        var n = min(len(data), Self.capacity - self._len)
+        for i in range(n):
+            self._storage[self._len + i] = data[i]
+        self._len += n
+        return n
+
     def as_span(ref self) -> Span[Byte, origin_of(self._storage)]:
         return Span(unsafe_ptr=Pointer(to=self._storage.unsafe_ptr()[]), length=self._len)
 

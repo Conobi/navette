@@ -41,7 +41,6 @@ comptime MIN_PLAINTEXT_LEN: Int = 4
 comptime MAX_DATAGRAM_SIZE: Int = 1200
 comptime SCRATCH_PAYLOAD_CAP: Int = MAX_DATAGRAM_SIZE * 5
 comptime SCRATCH_WRITER_CAP: Int = 256
-comptime MAX_CLOSE_REASON_BYTES: Int = 256
 
 # ── SentStreamFrame kind tags ───────────────────────────────────────
 

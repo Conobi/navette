@@ -16,10 +16,10 @@ from navette.quic.connection import (
 )
 from navette.quic.packet_builder import (
     SentStreamFrame, SSF_STREAM,
-    MAX_DATAGRAM_SIZE, MAX_CLOSE_REASON_BYTES,
+    MAX_DATAGRAM_SIZE,
 )
 from navette.quic.cc.cubic import Cubic
-from navette.quic.frame import Frame
+from navette.quic.frame import Frame, MAX_CLOSE_REASON_BYTES
 from navette.quic.pn_space import SentPacket, EncryptionLevel, PacketNumberSpace
 from navette.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_false, assert_equal_int, load_test_cert, load_test_ca

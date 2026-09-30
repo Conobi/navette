@@ -48,7 +48,7 @@ from navette.quic.packet_builder import (
     SSF_NEW_CID, SSF_RETIRE_CID,
     AEAD_TAG_LEN, MAX_PN_LEN, MIN_PLAINTEXT_LEN, MAX_DATAGRAM_SIZE,
     SCRATCH_PAYLOAD_CAP, SCRATCH_WRITER_CAP,
-    MAX_CLOSE_REASON_BYTES, ANTI_AMP_HEADER_FUDGE,
+    ANTI_AMP_HEADER_FUDGE,
     datagram_budget, amp_allowance, header_len,
     build_packet, seal_packet,
     emit_stream_frames, emit_one_stream_frame,
@@ -57,6 +57,7 @@ from navette.quic.packet_builder import (
 )
 from navette.quic.frame import (
     Frame,
+    MAX_CLOSE_REASON_BYTES,
     FrameCursor,
     AckFrame,
     AckRange,
@@ -3776,19 +3777,11 @@ struct QuicConnection(Movable):
         self.close.owed = True
         for s in range(3):
             self.spaces[s].ack_deadline = None
-        var reason_str_bytes = reason.as_bytes()
-        var n = len(reason_str_bytes)
-        if n > MAX_CLOSE_REASON_BYTES:
-            n = MAX_CLOSE_REASON_BYTES
         var cc = ConnectionCloseFrame()
         cc.is_transport = not is_app
         cc.error_code = error_code
         cc.frame_type = UInt64(0)
-        try:
-            for i in range(n):
-                cc.reason.append(reason_str_bytes[i])
-        except:
-            pass
+        _ = cc.reason.extend_truncated(reason.as_bytes())
         self.close.pending = cc^
 
     def is_established(self) -> Bool:

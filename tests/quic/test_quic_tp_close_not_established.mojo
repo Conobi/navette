@@ -6,6 +6,7 @@ from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import default_transport_params
+from navette.quic.guard_tags import GUARD_TAG_TP_STATELESS_RESET_FORBIDDEN
 from navette.util.byte_vec import ByteVec
 from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
 
@@ -53,6 +54,11 @@ def test_forbidden_client_param_closes_without_promotion() raises:
     assert_true(Bool(server.close.pending), "server closes")
     assert_equal_int(Int(server.close.pending.value().error_code), 0x08, "TRANSPORT_PARAMETER_ERROR")
     assert_true(not server.is_established(), "a closing server is never promoted to established")
+    var tag = String(GUARD_TAG_TP_STATELESS_RESET_FORBIDDEN)
+    assert_true(
+        String(unsafe_from_utf8=server.close.pending.value().reason.as_span()).startswith(tag),
+        "the guard tag reaches the close reason whole, closing bracket included",
+    )
     _ = tls^
     print("  test_forbidden_client_param_closes_without_promotion: PASS")
 

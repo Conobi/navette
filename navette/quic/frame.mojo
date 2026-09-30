@@ -234,17 +234,28 @@ struct NewConnectionIdFrame(Copyable, Movable):
         self.stateless_reset_token = other.stateless_reset_token.copy()
 
 
+comptime MAX_CLOSE_REASON_BYTES: Int = 128
+"""Inline capacity of a CONNECTION_CLOSE reason phrase, sent or received.
+
+Longer phrases are truncated. Kept inline (not heap) so building or parsing
+a close allocates nothing; 128 bytes holds every guard tag plus its detail
+text (the longest, a transport-parameter rejection, is about 85 bytes).
+"""
+
+
 struct ConnectionCloseFrame(Copyable, Movable):
+    """CONNECTION_CLOSE payload; `reason` holds at most MAX_CLOSE_REASON_BYTES."""
+
     var is_transport: Bool
     var error_code: UInt64
     var frame_type: UInt64
-    var reason: ByteVec[32]
+    var reason: ByteVec[MAX_CLOSE_REASON_BYTES]
 
     def __init__(out self):
         self.is_transport = True
         self.error_code = UInt64(0)
         self.frame_type = UInt64(0)
-        self.reason = ByteVec[32]()
+        self.reason = ByteVec[MAX_CLOSE_REASON_BYTES]()
 
     def __init__(out self, *, other: Self):
         self.is_transport = other.is_transport
@@ -834,8 +845,7 @@ def parse_frame_with_type[origin: Origin](mut reader: ByteReader[origin], frame_
             cc.frame_type = varint_decode(reader)
         var reason_length = varint_decode(reader)
         var reason_span = reader.read_span(Int(reason_length))
-        var copy_len = min(Int(reason_length), 32)
-        cc.reason.extend(reason_span[:copy_len])
+        _ = cc.reason.extend_truncated(reason_span)
         return Frame(
             FRAME_CONNECTION_CLOSE_TRANSPORT if cc.is_transport else FRAME_CONNECTION_CLOSE_APP,
             FramePayload(cc^),

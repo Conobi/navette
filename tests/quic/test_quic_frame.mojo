@@ -2,6 +2,7 @@ from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_dec
 from navette.quic.cid_buf import CidBuf
 from navette.quic.frame import (
     Frame,
+    MAX_CLOSE_REASON_BYTES,
     AckFrame,
     AckRange,
     CryptoFrame,
@@ -1249,10 +1250,10 @@ def test_wire_len_exact() raises:
             cc.is_transport = (si % 2) == 0
             cc.error_code = m
             cc.frame_type = m
-            # ConnectionCloseFrame.reason is bounded to 32 bytes; clip the shared
+            # ConnectionCloseFrame.reason is bounded to MAX_CLOSE_REASON_BYTES; clip the shared
             # `sizes` fixture rather than skip the larger magnitudes so the
             # wire_len invariant is still exercised at every `si`.
-            cc.reason.extend(Span(_fill(min(n, 32), m)))
+            cc.reason.extend(Span(_fill(min(n, MAX_CLOSE_REASON_BYTES), m)))
             _check_wire_len(Frame.connection_close(cc), "CONNECTION_CLOSE")
             checked += 7
     _check_wire_len(Frame.path_challenge(_fill(8, UInt64(1))), "PATH_CHALLENGE")
