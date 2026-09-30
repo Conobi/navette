@@ -1057,8 +1057,9 @@ struct H3Connection(Movable):
         H3_FRAME_ERROR. PUSH_PROMISE is never acceptable: servers must not
         receive it, and this client never sends MAX_PUSH_ID. HTTP/2-only
         types are H3_FRAME_UNEXPECTED. HEADERS and DATA on the control
-        stream, and unknown types, are skipped: the handler still sees the
-        type and rejects the control-stream ones from it alone.
+        stream, control-only frames on a request stream, and unknown types
+        are skipped: the handler still sees the type and rejects the
+        misplaced ones from it alone, before any length check applies.
         """
         if frame_type == H3_FRAME_DATA:
             return _PAYLOAD_SKIP if is_ctrl else _PAYLOAD_STREAM
@@ -1079,6 +1080,15 @@ struct H3Connection(Movable):
         if _is_http2_frame_type(frame_type):
             self._quic.close_app(H3_FRAME_UNEXPECTED, "HTTP/2 frame type", now)
             return _PAYLOAD_REJECT
+        if (
+            frame_type == H3_FRAME_SETTINGS
+            or frame_type == H3_FRAME_GOAWAY
+            or frame_type == H3_FRAME_CANCEL_PUSH
+            or frame_type == _H3_FRAME_MAX_PUSH_ID
+        ) and not is_ctrl:
+            # Control-stream frames elsewhere are H3_FRAME_UNEXPECTED
+            # whatever their length: the handler rejects the type.
+            return _PAYLOAD_SKIP
         if frame_type == H3_FRAME_SETTINGS:
             if length > UInt64(_H3_MAX_SETTINGS_PAYLOAD):
                 self._quic.close_app(H3_FRAME_ERROR, "SETTINGS frame too large", now)
