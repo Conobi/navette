@@ -168,6 +168,22 @@ def test_owned_buf_mtu_size() raises:
     assert_equal_int(Int(sp[1199]), 1199 % 256, "OwnedBuf MTU-size last byte")
 
 
+def test_unsafe_ptr_reads_storage() raises:
+    """unsafe_ptr must type-check (origin tied to self) and see written bytes."""
+    var v = ByteVec[4]()
+    v.append(7)
+    v.append(9)
+    var p = v.unsafe_ptr()
+    assert_equal_int(Int(p[0]), 7, "ByteVec ptr[0]")
+    assert_equal_int(Int(p[1]), 9, "ByteVec ptr[1]")
+    var ob = OwnedBuf[4]()
+    ob.append(3)
+    var q = ob.unsafe_ptr()
+    assert_equal_int(Int(q[0]), 3, "OwnedBuf ptr[0]")
+    _ = v._len
+    _ = ob._len
+
+
 def main() raises:
     test_empty()
     test_append_and_len()
@@ -185,4 +201,5 @@ def main() raises:
     test_owned_buf_clear_and_reuse()
     test_owned_buf_overflow_raises()
     test_owned_buf_mtu_size()
-    print("test_byte_vec: all 16 tests passed")
+    test_unsafe_ptr_reads_storage()
+    print("test_byte_vec: all 17 tests passed")
