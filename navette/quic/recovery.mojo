@@ -161,16 +161,16 @@ struct Recovery(Movable):
             delay = K_GRANULARITY
         return delay
 
-    def pto_timeout(self, max_ack_delay: UInt64) -> UInt64:
-        """Compute probe timeout including exponential backoff."""
-        var pto = self.smoothed_rtt
+    def base_pto(self, max_ack_delay: UInt64) -> UInt64:
+        """Probe timeout without backoff (RFC 9002 Section 6.2.1): srtt + max(4 rttvar, granularity) + max_ack_delay."""
         var four_rttvar = 4 * self.rttvar
         if four_rttvar < K_GRANULARITY:
             four_rttvar = K_GRANULARITY
-        pto += four_rttvar + max_ack_delay
-        # Exponential backoff: pto * 2^pto_count.
-        pto = pto << UInt64(self.pto_count)
-        return pto
+        return self.smoothed_rtt + four_rttvar + max_ack_delay
+
+    def pto_timeout(self, max_ack_delay: UInt64) -> UInt64:
+        """`base_pto` backed off exponentially by `pto_count`."""
+        return self.base_pto(max_ack_delay) << UInt64(self.pto_count)
 
     # ── Loss detection (RFC 9002 §6.1) ──────────────────────────────────
 

@@ -19,7 +19,9 @@ from navette.quic.frame import Frame
 
 # ── RFC 9000 limits ───────────────────────────────────────────────────────────
 
-# RFC 9000 §8.2: max 3 PATH_CHALLENGE attempts per challenge before abandon.
+# PATH_CHALLENGE transmissions per challenge (first send included). RFC
+# 9000 Section 8.2.1 asks for Initial-like pacing; the challenge then waits
+# for its 3 x PTO expiry (Section 8.2.4).
 comptime MAX_CHALLENGE_ATTEMPTS: UInt8 = 3
 # RFC 9000 §8.1: anti-amplification factor — server-sent ≤ 3× server-received
 # on an unvalidated path.
@@ -115,7 +117,8 @@ struct PathChallenge(Copyable, Movable):
     var token: List[Byte]       # exactly 8 random bytes
     var target: PathKey          # address being validated
     var sent_at_ns: UInt64       # monotonic timestamp the challenge was queued
-    var attempts: UInt8          # PATH_CHALLENGE retransmits (≤ MAX_CHALLENGE_ATTEMPTS)
+    var attempts: UInt8          # PATH_CHALLENGE frames sent (≤ MAX_CHALLENGE_ATTEMPTS)
+    var next_send_at: UInt64     # when the next PATH_CHALLENGE is due
     var bytes_received: Int64    # post-AEAD UDP datagram bytes from this path
     var bytes_sent: Int64        # bytes the server has sent on this path
 
@@ -125,15 +128,12 @@ struct PathChallenge(Copyable, Movable):
         var target: PathKey,
         sent_at_ns: UInt64,
     ):
-        """Construct a fresh pending challenge.
-
-        attempts starts at 1 (this constructor records the initial send);
-        the byte counters start at 0.
-        """
+        """Construct a fresh pending challenge, due for its first send at once."""
         self.token = token^
         self.target = target^
         self.sent_at_ns = sent_at_ns
-        self.attempts = UInt8(1)
+        self.attempts = UInt8(0)
+        self.next_send_at = sent_at_ns
         self.bytes_received = Int64(0)
         self.bytes_sent = Int64(0)
 
@@ -143,6 +143,7 @@ struct PathChallenge(Copyable, Movable):
         self.target = PathKey(copy=copy.target)
         self.sent_at_ns = copy.sent_at_ns
         self.attempts = copy.attempts
+        self.next_send_at = copy.next_send_at
         self.bytes_received = copy.bytes_received
         self.bytes_sent = copy.bytes_sent
 
@@ -152,6 +153,7 @@ struct PathChallenge(Copyable, Movable):
         self.target = move.target^
         self.sent_at_ns = move.sent_at_ns
         self.attempts = move.attempts
+        self.next_send_at = move.next_send_at
         self.bytes_received = move.bytes_received
         self.bytes_sent = move.bytes_sent
 
@@ -303,6 +305,50 @@ struct PathValidator(Movable):
                 self.pending[i].bytes_received += Int64(n)
                 return
 
+    def _index_of(self, target: PathKey) -> Int:
+        """Index of the challenge for `target` (at most one exists), -1 if none."""
+        for i in range(len(self.pending)):
+            if self.pending[i].target == target:
+                return i
+        return -1
+
+    def allowance(self, target: PathKey) -> Int:
+        """Bytes still sendable to `target` under validation: 3x received minus sent, floored at 0; 0 if not pending."""
+        var i = self._index_of(target)
+        if i < 0:
+            return 0
+        var budget = ANTI_AMP_FACTOR * self.pending[i].bytes_received - self.pending[i].bytes_sent
+        return Int(budget) if budget > 0 else 0
+
+    def challenge_due(self, target: PathKey, now: UInt64) -> Bool:
+        """True when the challenge for `target` has an attempt left and its send time has come."""
+        var i = self._index_of(target)
+        return (
+            i >= 0
+            and self.pending[i].attempts < MAX_CHALLENGE_ATTEMPTS
+            and self.pending[i].next_send_at <= now
+        )
+
+    def next_challenge_at(self, target: PathKey) -> Optional[UInt64]:
+        """When the challenge for `target` is next due; None with no attempt left or nothing pending."""
+        var i = self._index_of(target)
+        if i < 0 or self.pending[i].attempts >= MAX_CHALLENGE_ATTEMPTS:
+            return None
+        return Optional[UInt64](self.pending[i].next_send_at)
+
+    def take_challenge(mut self, target: PathKey, now: UInt64, interval: UInt64) -> List[Byte]:
+        """Token of the challenge for `target` if due, recording the send; empty otherwise.
+
+        The next attempt is due `interval` after the first send, doubling
+        each time (RFC 9000 Section 8.2.1: no more often than an Initial).
+        """
+        if not self.challenge_due(target, now):
+            return List[Byte]()
+        var i = self._index_of(target)
+        self.pending[i].next_send_at = now + (interval << UInt64(self.pending[i].attempts))
+        self.pending[i].attempts += 1
+        return List[Byte](copy=self.pending[i].token)
+
     def can_send_bytes(self, target: PathKey, n: Int) -> Bool:
         """Anti-amp gate per RFC 9000 Section 8.1 for a path under validation.
 
@@ -365,6 +411,10 @@ struct PathState(Movable):
     var _resp_count: Int
     var peer_addr: PathKey
     var current_recv_addr: PathKey
+    # Where the driver sends: `peer_addr`, or an address under validation
+    # that sent the newest non-probing packet (RFC 9000 Section 9.3).
+    # `send_dest()` falls back to `peer_addr` once it is neither.
+    var dest: PathKey
 
     def __init__(out self):
         """No validated path, nothing pending; `peer_addr` is the zero sentinel until seeded."""
@@ -376,6 +426,7 @@ struct PathState(Movable):
         self._resp_count = 0
         self.peer_addr = PathKey.zero()
         self.current_recv_addr = PathKey.zero()
+        self.dest = PathKey.zero()
 
     def on_challenge_received(mut self, data: Span[Byte, _]):
         """Queue a PATH_CHALLENGE's data for echo; drops the oldest queued one when full.
@@ -411,11 +462,53 @@ struct PathState(Movable):
             self._resp_count -= 1
         return out^
 
-    def emit_challenge_frames(mut self) raises -> List[Frame]:
-        """Build PATH_CHALLENGE frames for every pending challenge."""
+    def send_dest(self) -> PathKey:
+        """The address the next datagram goes to: `dest` while usable, else `peer_addr` (RFC 9000 Section 9.3.2)."""
+        if self.is_usable(self.dest):
+            return PathKey(copy=self.dest)
+        return PathKey(copy=self.peer_addr)
+
+    def settle_dest(mut self):
+        """Fall `dest` back to `peer_addr` once it is neither validated nor under validation."""
+        if not self.is_usable(self.dest):
+            self.dest = PathKey(copy=self.peer_addr)
+
+    def send_allowance(self) -> Int:
+        """Bytes the next datagrams may use: unbounded (Int.MAX) toward `peer_addr`, the 3x budget toward an address under validation."""
+        var d = self.send_dest()
+        if d == self.peer_addr:
+            return Int.MAX
+        return self.validator.allowance(d)
+
+    def record_dest_send(mut self, n_bytes: Int):
+        """Charge a datagram sent to `send_dest()` to its budget; a no-op toward `peer_addr`."""
+        var d = self.send_dest()
+        if not (d == self.peer_addr):
+            self.validator.record_sent_bytes(d, n_bytes)
+
+    def challenge_due(self, now: UInt64) -> Bool:
+        """True when the destination's challenge is due: challenges only travel on the path they validate (RFC 9000 Section 8.2.1)."""
+        if len(self.validator.pending) == 0:
+            return False
+        return self.validator.challenge_due(self.send_dest(), now)
+
+    def next_challenge_at(self) -> Optional[UInt64]:
+        """When the destination's challenge is next due, None if none is."""
+        if len(self.validator.pending) == 0:
+            return None
+        return self.validator.next_challenge_at(self.send_dest())
+
+    def emit_challenge_frames(mut self, now: UInt64, interval: UInt64) raises -> List[Frame]:
+        """The destination's PATH_CHALLENGE if due (at most one), recording the send.
+
+        A challenge for any other address is not sent: a response can only
+        validate it if it arrives from that address.
+        """
         var out = List[Frame]()
-        for ref chal in self.validator.pending:
-            var token = List[Byte](copy=chal.token)
+        if len(self.validator.pending) == 0:
+            return out^
+        var token = self.validator.take_challenge(self.send_dest(), now, interval)
+        if len(token) > 0:
             out.append(Frame.path_challenge(token^))
         return out^
 
@@ -436,7 +529,8 @@ struct PathState(Movable):
         self.current_recv_addr = addr^
 
     def seed_peer_addr(mut self, var addr: PathKey):
-        """Seed peer_addr to the first observed source address."""
+        """Seed peer_addr (and the send destination) to the first observed source address."""
+        self.dest = PathKey(copy=addr)
         self.peer_addr = addr^
 
     def can_send(self, target: PathKey, n_bytes: Int) -> Bool:

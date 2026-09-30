@@ -4711,10 +4711,10 @@ def test_timeout_pacer_clause_order() raises:
 
     # Quiesce: nothing left to send on the client after the handshake.
     for _ in range(5):
-        if not client._space_has_other_sendable(2):
+        if not client._space_has_other_sendable(2, now):
             break
         now = _pump(client, server, now, 1)
-    assert_true(not client._space_has_other_sendable(2), "precondition: nothing sendable after quiescing")
+    assert_true(not client._space_has_other_sendable(2, now), "precondition: nothing sendable after quiescing")
     now += UInt64(10_000)
 
     # Non-pacer reference: the same call with the pacer disabled. srtt is
@@ -4743,7 +4743,7 @@ def test_timeout_pacer_clause_order() raises:
     var payload = List[Byte]()
     payload.append(UInt8(0x41))
     client.send_stream_data(sid, Span(payload), False)
-    assert_true(client._space_has_other_sendable(2), "precondition: stream data waiting")
+    assert_true(client._space_has_other_sendable(2, now), "precondition: stream data waiting")
     # Queueing moved the connection's own terms; rows 1a-3 compare against a
     # non-pacer reference taken after it, not the pre-queue one.
     client.recovery.pacer.enabled = False

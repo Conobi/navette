@@ -423,13 +423,9 @@ struct H3Connection(Movable):
         """Seed `peer_addr` on a freshly-accepted connection."""
         self._quic.bootstrap_peer_addr(addr^)
 
-    def can_send_to(self, target: PathKey, n_bytes: Int) -> Bool:
-        """Anti-amp gate (RFC 9000 §8.1) for outbound bytes to `target`."""
-        return self._quic.can_send_to(target, n_bytes)
-
-    def record_send_to(mut self, target: PathKey, n_bytes: Int):
-        """Credit `n_bytes` to the per-path bytes_sent counter."""
-        self._quic.record_send_to(target, n_bytes)
+    def send_destination(self) -> PathKey:
+        """Address the QUIC layer sized and charged its next datagrams for; see `QuicConnection.send_destination`."""
+        return self._quic.send_destination()
 
     def peer_addr_copy(self) -> PathKey:
         """Return a copy of the currently-validated peer 4-tuple.

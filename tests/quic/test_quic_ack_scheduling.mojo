@@ -21,6 +21,7 @@ from navette.quic.packet_builder import (
 from navette.quic.cc.cubic import Cubic
 from navette.quic.frame import Frame, MAX_CLOSE_REASON_BYTES
 from navette.quic.pn_space import SentPacket, EncryptionLevel, PacketNumberSpace
+from navette.quic.path import PathKey
 from navette.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_false, assert_equal_int, load_test_cert, load_test_ca
 
@@ -733,8 +734,8 @@ def test_send_returns_empty_when_idle() raises:
     assert_equal_int(p.client.send(now, client_buf), 0, "client idle: empty again")
     assert_equal_int(p.server.send(now, server_buf), 0, "server idle: empty")
     assert_equal_int(p.server.send(now, server_buf), 0, "server idle: empty again")
-    assert_false(p.client._space_has_other_sendable(2), "client predicate false when idle")
-    assert_false(p.server._space_has_other_sendable(2), "server predicate false when idle")
+    assert_false(p.client._space_has_other_sendable(2, now), "client predicate false when idle")
+    assert_false(p.server._space_has_other_sendable(2, now), "server predicate false when idle")
     p.server.close_transport(UInt64(0), String("bye"), now)
     assert_equal_int(p.server.send(now, server_buf), 1, "one CLOSE datagram")
     assert_equal_int(p.server.send(now, server_buf), 0, "then empty")
@@ -743,7 +744,7 @@ def test_send_returns_empty_when_idle() raises:
 
 def test_bundle_predicate_sound() raises:
     """`bundle-predicate-sound`: over random Application-space states with the
-    gate forced open, `not _space_has_other_sendable(2)` implies the step-4
+    gate forced open, `not _space_has_other_sendable(2, now)` implies the step-4
     builders produce no frame."""
     var now = UInt64(1_000_000)
     var p = _Pair(_default_params(), _default_params(), now)
@@ -773,8 +774,14 @@ def test_bundle_predicate_sound() raises:
         elif k == 6:
             var d = _bytes(10)
             _ = p.server.send_datagram(Span(d))
-        # k in {7, 8}: no change (exercises the idle case).
-        var may = p.server._space_has_other_sendable(2)
+        elif k == 7 and rng.below(4) == 0:
+            # A new address under validation becomes the destination.
+            var b = PathKey.from_v4(UInt8(10), UInt8(0), UInt8(0), UInt8(2), UInt16(1000 + rng.below(8)))
+            if p.server.start_path_challenge(PathKey(copy=b), now):
+                p.server.path.validator.record_received_bytes(b, 10_000)
+                p.server.path.dest = b^
+        # Otherwise no change (exercises the idle case).
+        var may = p.server._space_has_other_sendable(2, now)
         var frames = List[Frame]()
         var records = List[SentStreamFrame]()
         var stream_payload = List[Byte]()

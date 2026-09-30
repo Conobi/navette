@@ -1955,19 +1955,19 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
         The one path from a connection to the egress backlog: ingress,
         the timer pass and `inject_response` all go through it, so every
-        datagram is subject to the destination fallback and the gate below.
+        datagram gets the destination fallback and the check below.
 
-        RFC 9000 §8.1 anti-amplification: for each datagram the server
-        intends to send to the current peer addr, gate via
-        `can_send_to(target, n)`. If the peer's address has a pending
-        PATH_CHALLENGE, the per-path 3x budget caps the bytes we may
-        emit until validation completes; an address that is neither
-        validated nor pending is first replaced by the last validated
-        one (`validated_addr`). Datagrams refused by the gate
-        are dropped; they'll be regenerated on the next flush after
-        more bytes arrive from the peer (or after validation lifts the
-        gate entirely). On a successful queue we credit the per-path
-        bytes_sent so subsequent emissions stay within budget.
+        RFC 9000 Section 8.1 anti-amplification is enforced by the QUIC
+        layer: `send()` sizes every datagram to the 3x budget of its
+        destination (`send_destination()`, the address under validation
+        that sent the newest non-probing packet, else the validated one)
+        and charges it there. Here the raw sockaddr is resolved the same
+        way: an address that is neither validated nor under validation is
+        replaced by the last validated one (`validated_addr`, RFC 9000
+        Section 9.3.2). Datagrams the QUIC layer built for a different
+        destination than the one resolved are dropped (fail closed: they
+        were charged to another address's budget); the two are kept in
+        step by construction, so this does not happen in practice.
         """
         try:
             var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(
@@ -1976,10 +1976,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
             # Resolve the structured peer key once per flush: the address
             # sendmsg will route to. One whose validation expired or
-            # failed (it is neither the validated address nor under
-            # validation) falls back to the last validated address, RFC
-            # 9000 Section 9.3.2; without that the default-deny gate
-            # would black-hole the connection.
+            # failed falls back to the last validated address; without
+            # that the connection would be black-holed.
             var target_key = _sockaddr_to_path_key(
                 self.conn_slots[conn_idx].addr.unsafe_ptr(),
                 0,
@@ -1990,6 +1988,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                     copy=self.conn_slots[conn_idx].validated_addr
                 )
                 target_key = self.conn_slots[conn_idx].h3[].peer_addr_copy()
+            if not (target_key == self.conn_slots[conn_idx].h3[].send_destination()):
+                return
 
             # ECN mark from the connection's probing/capability state.
             var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
@@ -2001,33 +2001,11 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 swap(pkt, datagrams[i])
                 if len(pkt) == 0:
                     continue
-
-                # Per-path anti-amp gate: open for the validated path,
-                # 3x-budgeted for one under validation. The
-                # validator's `can_send_bytes` includes the QUIC header +
-                # AEAD ciphertext (i.e. the full UDP payload), matching RFC
-                # 9000 section 8.1's measurement convention.
-                if not self.conn_slots[conn_idx].h3[].can_send_to(
-                    target_key, len(pkt)
-                ):
-                    # Budget exhausted on the unvalidated path. Drop the
-                    # datagram; loss recovery will regenerate the contents
-                    # once the peer credits more bytes or validation lifts
-                    # the gate. NOT a fatal error.
-                    continue
-
-                var pkt_len = len(pkt)
                 var addr_copy = List[Byte](
                     copy=self.conn_slots[conn_idx].addr
                 )
-
                 self._egress_backlog.append(
                     EgressPacket(pkt^, addr_copy^, conn_idx, ecn)
-                )
-
-                # Credit per-path bytes_sent. No-op on validated paths.
-                self.conn_slots[conn_idx].h3[].record_send_to(
-                    target_key, pkt_len
                 )
         finally:
             # A raise above (drain, anti-amp accounting) still leaves a

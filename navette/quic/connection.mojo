@@ -1578,8 +1578,8 @@ struct QuicConnection(Movable):
         return self.path.emit_response_frames()
 
     def emit_path_challenge_frames(mut self, now: UInt64) raises -> List[Frame]:
-        """Build PATH_CHALLENGE frames for every pending challenge."""
-        return self.path.emit_challenge_frames()
+        """The send destination's PATH_CHALLENGE if due, recording the send; see `PathState.emit_challenge_frames`."""
+        return self.path.emit_challenge_frames(now, self._challenge_interval())
 
     def start_path_challenge(
         mut self, var target: PathKey, now: UInt64
@@ -1637,19 +1637,22 @@ struct QuicConnection(Movable):
         migration disabled, not yet established) is never a destination:
         the send gate would have no budget to hold it to. The destination
         moves only for `last_datagram_may_migrate` (RFC 9000 Section 9.3),
-        to `peer_addr` or an address under validation. False once
+        to `peer_addr` or an address under validation; `path.dest`
+        mirrors that move, so `send()` sizes, charges and fills (PATH_CHALLENGE)
+        datagrams for the address the driver will send them to. False once
         closing, draining or closed.
         """
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return False
-        if from_addr == self.path.peer_addr:
-            return self.last_datagram_may_migrate
-        if (self.state & CONN_ESTABLISHED) == 0 or self.local_params.disable_active_migration:
-            return False
-        if not self.has_pending_path_challenge(from_addr):
-            if not self.start_path_challenge(PathKey(copy=from_addr), now):
+        if not (from_addr == self.path.peer_addr):
+            if (self.state & CONN_ESTABLISHED) == 0 or self.local_params.disable_active_migration:
                 return False
-        self.path.validator.record_received_bytes(from_addr, datagram_len)
+            if not self.has_pending_path_challenge(from_addr):
+                if not self.start_path_challenge(PathKey(copy=from_addr), now):
+                    return False
+            self.path.validator.record_received_bytes(from_addr, datagram_len)
+        if self.last_datagram_may_migrate:
+            self.path.dest = from_addr^
         return self.last_datagram_may_migrate
 
     def is_usable_destination(self, target: PathKey) -> Bool:
@@ -1660,13 +1663,34 @@ struct QuicConnection(Movable):
         """
         return self.path.is_usable(target)
 
+    def _challenge_interval(self) -> UInt64:
+        """Base Application PTO, without backoff: the first PATH_CHALLENGE retransmit delay (each later one doubles)."""
+        var mad = UInt64(0)
+        if self.handshake_confirmed and self.peer_params:
+            mad = self.peer_params.value().max_ack_delay * 1000
+        return self.recovery.base_pto(mad)
+
     def _path_validation_pto(self) -> UInt64:
-        """PTO a path challenge's 3x timeout scales: the larger of the current one and kInitialRtt's (RFC 9000 Section 8.2.4)."""
-        return max(self._pto_interval(), INITIAL_RTT * UInt64(3))
+        """PTO a path challenge's 3x timeout scales: the larger of the current one and kInitialRtt's (RFC 9000 Section 8.2.4).
+
+        The current PTO is taken without backoff: an unanswered challenge
+        is itself ack-eliciting, so its PTOs back off, and a backed-off
+        PTO would push the challenge's own expiry out indefinitely.
+        """
+        return max(self._challenge_interval(), INITIAL_RTT * UInt64(3))
 
     def bootstrap_peer_addr(mut self, var addr: PathKey):
         """Seed peer_addr to the first observed source address."""
         self.path.seed_peer_addr(addr^)
+
+    def send_destination(self) -> PathKey:
+        """Where the datagrams `send()` builds are meant to go: an address under validation that sent the newest non-probing packet, else `peer_addr`.
+
+        `send()` sizes each datagram to that address's anti-amplification
+        budget and charges it there, so a driver must send to exactly this
+        address.
+        """
+        return self.path.send_dest()
 
     def can_send_to(self, target: PathKey, n_bytes: Int) -> Bool:
         """Anti-amp gate for outbound traffic to `target`."""
@@ -2872,6 +2896,12 @@ struct QuicConnection(Movable):
             var allowance = self._amp_allowance()
             if allowance < budget:
                 budget = allowance
+        # An address under validation gets 3x what it sent (RFC 9000
+        # Section 8.1): size the datagram to fit rather than build one the
+        # driver's gate would drop.
+        var path_allowance = self.path.send_allowance()
+        if path_allowance < budget:
+            budget = path_allowance
         var server_initial_deferred = self.is_server and budget < MAX_DATAGRAM_SIZE
         var ade = self.local_params.ack_delay_exponent
         var plans = List[PacketPlan]()
@@ -2922,6 +2952,7 @@ struct QuicConnection(Movable):
         for i in range(len(result)):
             var dg = List[Byte]()
             swap(dg, result[i])
+            self.path.record_dest_send(len(dg))
             out.append(dg^)
         comptime if PROFILE_ACCEPT:
             if self.prof.ptr is not None:
@@ -2962,7 +2993,7 @@ struct QuicConnection(Movable):
             frames.append(cf^)
         else:
             var deferred = server_initial_deferred and space_idx == 0
-            var may_bundle = (not deferred) and self._space_has_other_sendable(space_idx)
+            var may_bundle = (not deferred) and self._space_has_other_sendable(space_idx, now)
             var maybe_ack = self.spaces[space_idx].peek_ack_frame(
                 now, ade, bundle=may_bundle
             )
@@ -3152,7 +3183,7 @@ struct QuicConnection(Movable):
         return Frame.connection_close(self.close.pending.value())
 
     @always_inline
-    def _space_has_other_sendable(self, space_idx: Int) -> Bool:
+    def _space_has_other_sendable(self, space_idx: Int, now: UInt64) -> Bool:
         """Non-mutating bundle predicate: one clause per builder that could
         emit a non-ACK frame in this space. May be conservatively true, never
         false when a builder would produce a frame."""
@@ -3182,7 +3213,7 @@ struct QuicConnection(Movable):
                 or len(self.stream_map.control_reset) > 0
                 or len(self.stream_map.control_stop_sending) > 0):
             return True
-        if self.path.pending_response_count() > 0 or len(self.path.validator.pending) > 0:
+        if self.path.pending_response_count() > 0 or self.path.challenge_due(now):
             return True
         if self._outbound_dg_head < len(self.pending_outbound_datagrams):
             return True
@@ -3263,32 +3294,36 @@ struct QuicConnection(Movable):
                         break
                 self.initial_cids_emitted = True
 
+            # Path frames first: on an address under validation the 3x
+            # budget may fit little else, and the challenge is what lifts it.
+            self._build_path_frames(frames, used, budget, now)
             self._build_app_frames(frames, sent_records, stream_payload, budget, used)
-            self._build_path_and_datagram_frames(frames, used, budget, now)
+            self._build_datagram_frames(frames, used, budget)
 
     def _max_app_payload(self) -> Int:
         """Largest plaintext a 1-RTT packet can carry in an empty datagram."""
         return MAX_DATAGRAM_SIZE - self._header_len(2) - AEAD_TAG_LEN
 
-    def _build_path_and_datagram_frames(
+    def _build_path_frames(
         mut self, mut frames: List[Frame], mut used: Int, budget: Int, now: UInt64,
     ) raises:
-        """Append PATH_RESPONSE, PATH_CHALLENGE, and DATAGRAM frames.
-
-        PATH_RESPONSEs go out as many as fit (9 bytes each); the rest stay
-        queued for the next packet.
-        """
+        """Append PATH_RESPONSEs (as many as fit, 9 bytes each; the rest stay
+        queued) and the destination's PATH_CHALLENGE when due."""
         if self.path.pending_response_count() > 0 and budget - used >= 9:
             var path_responses = self.path.emit_response_frames((budget - used) // 9)
             for ref pr in path_responses:
                 frames.append(pr.copy())
             used += 9 * len(path_responses)
-        var n_chal = len(self.path.validator.pending)
-        if n_chal > 0 and used + 9 * n_chal <= budget:
+        if used + 9 <= budget and self.path.challenge_due(now):
             var path_challenges = self.emit_path_challenge_frames(now)
             for ref pc in path_challenges:
                 frames.append(pc.copy())
-            used += 9 * n_chal
+            used += 9 * len(path_challenges)
+
+    def _build_datagram_frames(
+        mut self, mut frames: List[Frame], mut used: Int, budget: Int,
+    ) raises:
+        """Append queued DATAGRAM frames in order while they fit."""
         while self._outbound_dg_head < len(self.pending_outbound_datagrams):
             var dl = len(self.pending_outbound_datagrams[self._outbound_dg_head])
             var wl = 1 + varint_len(UInt64(dl)) + dl
@@ -3587,6 +3622,12 @@ struct QuicConnection(Movable):
                 _min_deadline(earliest, self._pto_deadline(s))
                 _min_deadline(earliest, self.spaces[s].ack_deadline)
             _min_deadline(earliest, self.path.validator.next_expiry(self._path_validation_pto()))
+            # A challenge that came due but could not go out (congestion or
+            # anti-amplification limited) waits for the ACK or datagram that
+            # lifts the limit, not for a timer that would spin.
+            var chal_at = self.path.next_challenge_at()
+            if chal_at and chal_at.value() > now:
+                _min_deadline(earliest, chal_at)
 
         # Idle timer — use effective min(local, peer).
         var idle_effective = self._effective_idle_timeout()
@@ -3605,7 +3646,7 @@ struct QuicConnection(Movable):
         if not terminal and self.is_established():
             var rate = self.recovery.cc.pacing_rate(self.recovery.smoothed_rtt)
             var wait = self.recovery.pacer.next_send_time(rate, now)
-            if wait and (earliest is None or wait.value() < earliest.value()) and self._space_has_other_sendable(2):
+            if wait and (earliest is None or wait.value() < earliest.value()) and self._space_has_other_sendable(2, now):
                 earliest = wait
 
         return earliest^
@@ -3657,6 +3698,7 @@ struct QuicConnection(Movable):
         # Abandon path validations older than 3 PTOs (RFC 9000 Section
         # 8.2.4); the sender then falls back to `peer_addr`.
         self.path.validator.gc_expired(now, self._path_validation_pto())
+        self.path.settle_dest()
 
         # Delayed-ACK deadlines: the ACK goes out in this same send() since
         # ACK-only packets bypass the congestion gate.
