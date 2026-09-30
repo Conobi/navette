@@ -7,6 +7,19 @@ failure names the case to replay. The sockaddr builders produce the
 exact Linux layouts the servers read.
 """
 
+from std.os import getenv
+
+
+def prop_iters(default: Int) -> Int:
+    """Property-test case count: `NAVETTE_PROP_ITERS` when set to an integer, else `default` (keep defaults small)."""
+    var raw = getenv("NAVETTE_PROP_ITERS")
+    if raw.byte_length() == 0:
+        return default
+    try:
+        return Int(raw)
+    except:
+        return default
+
 
 struct Rng(Movable):
     """SplitMix64 stream; `seed` fixes the whole sequence."""
