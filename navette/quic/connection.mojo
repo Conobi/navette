@@ -1129,19 +1129,6 @@ struct QuicConnection(Movable):
         var first_byte = hp_result[0]
         var pn_length = hp_result[1]
 
-        if header.is_long_header:
-            var _f12_verdict = check_long_reserved_bits(first_byte)
-            if _f12_verdict:
-                var _v12 = _f12_verdict.take()
-                self.close_transport(_v12.error_code, _v12.tag, now)
-                raise Error("reserved bits")
-        else:
-            var _f14_verdict = check_short_reserved_bits(first_byte)
-            if _f14_verdict:
-                var _v14 = _f14_verdict.take()
-                self.close_transport(_v14.error_code, _v14.tag, now)
-                raise Error("reserved bits")
-
         var pn_space_idx = 2 if space_idx == ZERO_RTT_SPACE_IDX else space_idx
         var truncated_pn = UInt64(0)
         for i in range(pn_length):
@@ -1159,6 +1146,23 @@ struct QuicConnection(Movable):
             key_slot, full_pn, header_len, pkt_ptr, pkt_len
         )
         ph_aead_us = self.prof.elapsed(ph_aead_us)
+
+        # RFC 9000 Section 17.2 / 17.3.1: reserved bits count only once both
+        # protections are removed. Before the AEAD verifies, a forged
+        # packet's unmasked bits are random, and closing on them let anyone
+        # knowing the DCID kill the connection.
+        if header.is_long_header:
+            var _f12_verdict = check_long_reserved_bits(first_byte)
+            if _f12_verdict:
+                var _v12 = _f12_verdict.take()
+                self.close_transport(_v12.error_code, _v12.tag, now)
+                raise Error("reserved bits")
+        else:
+            var _f14_verdict = check_short_reserved_bits(first_byte)
+            if _f14_verdict:
+                var _v14 = _f14_verdict.take()
+                self.close_transport(_v14.error_code, _v14.tag, now)
+                raise Error("reserved bits")
 
         if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
             self.state = self.state | CONN_ADDR_VALIDATED
