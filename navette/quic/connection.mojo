@@ -45,7 +45,7 @@ from navette.quic.packet_builder import (
     PacketPlan,
     SSF_STREAM, SSF_RESET_STREAM, SSF_STOP_SENDING, SSF_MAX_DATA,
     SSF_MAX_STREAM_DATA, SSF_MAX_STREAMS_BIDI, SSF_MAX_STREAMS_UNI,
-    SSF_NEW_CID, SSF_RETIRE_CID,
+    SSF_NEW_CID, SSF_RETIRE_CID, SSF_HANDSHAKE_DONE,
     AEAD_TAG_LEN, MAX_PN_LEN, MIN_PLAINTEXT_LEN, MAX_DATAGRAM_SIZE,
     SCRATCH_PAYLOAD_CAP, SCRATCH_WRITER_CAP,
     ANTI_AMP_HEADER_FUDGE,
@@ -3237,11 +3237,15 @@ struct QuicConnection(Movable):
                     frames.append(Frame.crypto(cf))
                     used += written
 
-        # HANDSHAKE_DONE (server, Application space, once).
+        # HANDSHAKE_DONE (server, Application space); recorded so a loss
+        # re-queues it until acknowledged (RFC 9000 Section 13.3).
         if self.send_handshake_done and space_idx == 2 and self.is_server and used + 1 <= budget:
             frames.append(Frame.handshake_done())
             self.send_handshake_done = False
             used += 1
+            var hd_rec = SentStreamFrame()
+            hd_rec.kind = SSF_HANDSHAKE_DONE
+            sent_records.append(hd_rec^)
 
         # Application-space stream-layer frames.
         if space_idx == 2:
@@ -3498,6 +3502,8 @@ struct QuicConnection(Movable):
             elif rec.kind == SSF_RETIRE_CID:
                 # Re-queue unless the retirement was acked meanwhile.
                 self.cid_mgr.requeue_retire(rec.cid_seq)
+            elif rec.kind == SSF_HANDSHAKE_DONE:
+                self.send_handshake_done = True
 
     # ── Timers ───────────────────────────────────────────────────────
 

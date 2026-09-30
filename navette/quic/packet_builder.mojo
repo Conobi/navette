@@ -53,6 +53,7 @@ comptime SSF_MAX_STREAMS_BIDI: UInt8 = 5
 comptime SSF_MAX_STREAMS_UNI: UInt8 = 6
 comptime SSF_NEW_CID: UInt8 = 7
 comptime SSF_RETIRE_CID: UInt8 = 8
+comptime SSF_HANDSHAKE_DONE: UInt8 = 9
 
 
 # ── Data structs ────────────────────────────────────────────────────
