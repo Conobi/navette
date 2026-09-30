@@ -3654,6 +3654,19 @@ struct QuicConnection(Movable):
         """
         self._close_impl(error_code, reason, now, is_app=True)
 
+    def abandon(mut self):
+        """Drop the connection silently: CLOSED at once, no CONNECTION_CLOSE, no closing or draining period.
+
+        For a server giving up on a handshake: an endpoint without
+        established state does not enter the closing state (RFC 9000
+        Section 10.2), and answering a peer whose address is not validated
+        would only reflect traffic. Any queued close is discarded; `send`
+        emits nothing afterwards.
+        """
+        self.state = self.state | CONN_CLOSED
+        self.close.pending = None
+        self.close.owed = False
+
     def _close_impl(mut self, error_code: UInt64, reason: String, now: UInt64, is_app: Bool):
         """Shared implementation for `close_transport` and `close_app`.
 

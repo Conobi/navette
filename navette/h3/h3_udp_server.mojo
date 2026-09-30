@@ -34,7 +34,7 @@ and egress (DatagramSink with batched sendmmsg + ECN/GSO cmsgs).
     │  └─ _submit_egress: build Message + ECN/GSO cmsg, push_msg + flush
     │  └─ release buffer leases (_live_datagrams.clear)
     │
-    └─ conn_slots[i]: ConnSlot[H] (h3 ptr + addr + dcids + generation)
+    └─ conn_slots[i]: ConnSlot[H] (h3 ptr + addr + stable id)
          └─ owns a QuicConnection + an H instance
 ```
 
@@ -115,12 +115,23 @@ from navette.tls.early_data_filter import EarlyDataPredicateFn, IdempotentOnlyFi
 from navette.http.handler import StreamHandler
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
+from navette.h3.conn_table import ConnTable
 from navette.h3.h3_handler_server import H3HandlerServer
+from navette.h3.ingress_guard import (
+    IngressGuard,
+    PRE_PASS,
+    PRE_VN,
+    ADMIT_CREATE,
+    ADMIT_CREATE_VALIDATED,
+    ADMIT_RETRY,
+    ADMIT_CLOSE,
+)
+from navette.protect.config import ProtectionConfig, ProtectionStats
 from navette.h3.qpack import QpackCodecTables
 from navette.quic.cid import demux_key
 from navette.quic.cid_buf import CidBuf
 from navette.quic.connection import QuicConnection
-from navette.quic.packet import is_long_header_initial, extract_dcid
+from navette.quic.packet import extract_dcid
 from navette.quic.path import PathKey
 from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.trans_param import TransportParams
@@ -138,9 +149,6 @@ comptime PBUF_COUNT: Int = 1024
 # Control capacity passed to recv_msg_multishot. 48 bytes fits both
 # an IP_TOS/IPV6_TCLASS record (24 B) and a UDP_GRO record (24 B).
 comptime _RECV_CONTROL_CAPACITY: Int = 48
-
-# Shortest DCID a client Initial may carry (RFC 9000 Section 7.2).
-comptime MIN_INITIAL_DCID_LEN: Int = 8
 
 # Peer address capacity used by the delivery header decoder. Derived the
 # way bouclette sizes every stream's name slot (its private
@@ -195,6 +203,17 @@ comptime SERVER_DEFAULT_IDLE_TIMEOUT_MS: UInt64 = 30_000
 # scan is a plain min over integers; produced only by the `ConnSlot`
 # constructor and by `_refresh_deadline` when `timeout()` returns None.
 comptime NO_DEADLINE_US: UInt64 = UInt64.MAX
+
+# A connection not established this long after its first Initial is
+# dropped silently (no CONNECTION_CLOSE: its peer may be spoofed).
+comptime HANDSHAKE_TIMEOUT_US: UInt64 = 10_000_000
+
+
+def _handshake_deadline[H: StreamHandler](ref slot: ConnSlot[H]) -> UInt64:
+    """When a still-handshaking slot is abandoned; `NO_DEADLINE_US` once established."""
+    if slot.handshaking:
+        return slot.created_us + HANDSHAKE_TIMEOUT_US
+    return NO_DEADLINE_US
 
 
 def _earliest_cached_deadline[H: StreamHandler](
@@ -454,38 +473,21 @@ struct EgressPacket(Movable):
 # ── Connection slot + DCID demux entry ──────────────────────────────────────
 
 
-struct _DcidEntry(Copyable, Movable):
-    """`(idx, generation)` value of the DCID → connection-slot demux map.
-
-    The generation guard lets a stale entry — left behind when a closed
-    slot's index was reused by swap-and-pop — be detected at lookup time
-    by comparing against the current `conn_slots[idx].generation`.
-    """
-    var idx: Int
-    var generation: UInt64
-
-    def __init__(out self, idx: Int, generation: UInt64):
-        self.idx = idx
-        self.generation = generation
-
-    def __init__(out self, *, copy: Self):
-        self.idx = copy.idx
-        self.generation = copy.generation
-
-
 struct ConnSlot[H: StreamHandler](Copyable, Movable):
     """One QUIC/H3 connection's per-slot record, indexed by `conn_slots` position.
 
-    `dcids` holds every DCID the connection responds to (typically
-    `[initial_dcid, local_cid]`). `generation` increments every time the
-    slot is overwritten by a swap-and-pop survivor, so stale demux entries
-    can be detected at lookup time.
+    `id` is the connection's stable `ConnTable` id: the slot index moves
+    on swap-and-pop, the id and its demux keys do not. `handshaking` is
+    set at creation and cleared once, when the connection is first seen
+    established; while set, the slot is abandoned `HANDSHAKE_TIMEOUT_US`
+    after `created_us`.
 
     `next_deadline_us` caches the connection's earliest deadline as of
     `deadline_refreshed_at_us` (`now` while egress is capped, `timeout()`
-    otherwise, `NO_DEADLINE_US` for none); after construction only the
-    creation-time write and `_refresh_deadline` may change it, and the
-    timer scan reads it without touching `h3`.
+    otherwise, capped by the handshake deadline, `NO_DEADLINE_US` for
+    none); after construction only the creation-time write and
+    `_refresh_deadline` may change it, and the timer scan reads it without
+    touching `h3`.
 
     `dirty_pass` is the id of the last ingress pass that fed the slot; it
     deduplicates the slot in that pass's drain list.
@@ -497,8 +499,9 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     """
     var h3: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]
     var addr: List[Byte]
-    var dcids: List[UInt64]
-    var generation: UInt64
+    var id: Int
+    var created_us: UInt64
+    var handshaking: Bool
     var next_deadline_us: UInt64
     var deadline_refreshed_at_us: UInt64
     var dirty_pass: UInt64
@@ -507,13 +510,14 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
         out self,
         h3: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin],
         var addr: List[Byte],
-        var dcids: List[UInt64],
-        generation: UInt64,
+        id: Int,
+        created_us: UInt64,
     ):
         self.h3 = h3
         self.addr = addr^
-        self.dcids = dcids^
-        self.generation = generation
+        self.id = id
+        self.created_us = created_us
+        self.handshaking = True
         self.next_deadline_us = NO_DEADLINE_US
         self.deadline_refreshed_at_us = UInt64(0)
         self.dirty_pass = UInt64(0)
@@ -521,8 +525,9 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     def __init__(out self, *, copy: Self):
         self.h3 = copy.h3
         self.addr = List[Byte](copy=copy.addr)
-        self.dcids = List[UInt64](copy=copy.dcids)
-        self.generation = copy.generation
+        self.id = copy.id
+        self.created_us = copy.created_us
+        self.handshaking = copy.handshaking
         self.next_deadline_us = copy.next_deadline_us
         self.deadline_refreshed_at_us = copy.deadline_refreshed_at_us
         self.dirty_pass = copy.dirty_pass
@@ -567,15 +572,21 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     # Per-conn handler factory.
     var make_handler: def () thin raises -> Self.H
 
-    # Per-conn book-keeping. `conn_slots[i]` collapses what used to be
-    # three parallel lists (h3 pointer / addr / dcids) plus a generation
-    # counter. `conn_dcid_map` keys every DCID this conn responds to
-    # (typically [initial_dcid, local_cid] for dual-DCID demux) to a
-    # `(idx, generation)` pair; the generation guard catches stale
-    # entries left behind by swap-and-pop.
+    # Per-conn book-keeping. `_table` gives each connection a stable id
+    # and routes every DCID demux key it owns (the client's Initial DCID
+    # and our local CID) to the id's current slot; it is sized from
+    # `protection.conn_cap` in start().
     var conn_slots: List[ConnSlot[Self.H]]
-    var conn_dcid_map: Dict[UInt64, _DcidEntry]
-    var next_generation: UInt64
+    var _table: ConnTable
+
+    # Protection limits (validated in start()) and the door: pre-state
+    # checks, admission and stateless replies. The guard is built in
+    # start() (it needs the TLS library and the CSPRNG).
+    var protection: ProtectionConfig
+    var _guard: Optional[IngressGuard]
+    var _require_validation: Bool
+    # Slots whose `handshaking` flag is still set.
+    var _handshaking: Int
 
     # TLS backend instance. Declared AFTER conn_slots so that Mojo's
     # declaration-order destruction destroys connections before the library.
@@ -706,6 +717,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         var server_config: QuicServerConfig,
         var transport_params: TransportParams,
         make_handler: def () thin raises -> Self.H,
+        protection: ProtectionConfig = ProtectionConfig(),
     ):
         """Construct an H3UdpServer.
 
@@ -721,14 +733,19 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 `max_idle_timeout` of 0 is replaced by
                 `SERVER_DEFAULT_IDLE_TIMEOUT_MS` in `start()`, silently.
             make_handler: Factory function producing one H per connection.
+            protection: Protection limits; `start()` raises if they do not
+                validate. `conn_cap` bounds the live connections.
         """
         self.udp_socket = Socket(udp_handle^)
         self.transport_params = transport_params^
         self.make_handler = make_handler
 
         self.conn_slots = List[ConnSlot[Self.H]]()
-        self.conn_dcid_map = Dict[UInt64, _DcidEntry]()
-        self.next_generation = UInt64(0)
+        self._table = ConnTable(capacity=0)
+        self.protection = protection.copy()
+        self._guard = Optional[IngressGuard](None)
+        self._require_validation = False
+        self._handshaking = 0
 
         self._tls = tls^
         self.server_config = server_config^
@@ -787,20 +804,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     # ── Connection lookup ────────────────────────────────────────
 
     def _find_conn_by_dcid(self, key: UInt64) -> Int:
-        """Resolve a `demux_key` to a `conn_slots` index with one `Dict.find` probe.
-
-        -1 when absent, or when the entry is stale (the slot's generation
-        moved on after swap-and-pop).
-        """
-        var entry = self.conn_dcid_map.find(key)
-        if not entry:
-            return -1
-        var idx = entry.value().idx
-        if idx < 0 or idx >= len(self.conn_slots):
-            return -1
-        if self.conn_slots[idx].generation != entry.value().generation:
-            return -1
-        return idx
+        """Resolve a `demux_key` to a `conn_slots` index with one map probe; -1 when no live connection owns it."""
+        return self._table.lookup(key)
 
     # ── Lifecycle — wire_context / start / flush ────────────────
 
@@ -837,6 +842,11 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         """
         if self._started:
             raise "H3UdpServer.start: already started"
+        self.protection.validate()
+        if not self._guard:
+            self._table = ConnTable(capacity=self.protection.conn_cap)
+            self._guard = Optional(IngressGuard(self._tls.shared()))
+            self._guard.value().require_validation = self._require_validation
 
         # Store loop pointer for re-arming in flush(). A retry must use
         # the loop the first attempt registered its resources with.
@@ -1023,6 +1033,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             return
 
         # 1. Drain datagrams from the DatagramStream into pending_rx.
+        self._guard.value().begin_pass()
         self._drain_recv_stream()
 
         # 2. Process buffered ingress (DCID routing, QUIC feed, egress
@@ -1093,12 +1104,13 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             else:
                 var d = slot.h3[].timeout(t)
                 expect = d.value() if d else NO_DEADLINE_US
+            expect = min(expect, _handshake_deadline(slot))
             if slot.next_deadline_us != expect:
                 return False
         return True
 
     def _refresh_deadline(mut self, idx: Int, now: UInt64):
-        """Recompute slot `idx`'s cached deadline: `now` while egress is capped, else `timeout(now)`.
+        """Recompute slot `idx`'s cached deadline: `now` while egress is capped, else `timeout(now)`, capped by the handshake deadline.
 
         The only production writer of the cache; every server path that
         mutates a connection reaches it before the next reader runs.
@@ -1106,11 +1118,13 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self._deadline_refresh_count += 1
         ref slot = self.conn_slots[idx]
         slot.deadline_refreshed_at_us = now
+        var d: UInt64
         if slot.h3[].has_pending_egress():
-            slot.next_deadline_us = now
-            return
-        var t = slot.h3[].timeout(now)
-        slot.next_deadline_us = t.value() if t else NO_DEADLINE_US
+            d = now
+        else:
+            var t = slot.h3[].timeout(now)
+            d = t.value() if t else NO_DEADLINE_US
+        slot.next_deadline_us = min(d, _handshake_deadline(slot))
 
     def _timer_pass_due(self, now: UInt64) -> Bool:
         """Pass gate: no live timer, or the minimum cached deadline has passed."""
@@ -1168,11 +1182,15 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         pass. Each drained slot either advances its deadline, becomes CLOSED,
         or is still capped (progress by construction), so no slot is drained
         on consecutive passes without progress. Only the drained slots are
-        recomputed; the loop itself is an O(N) integer compare.
+        recomputed; the loop itself is an O(N) integer compare. A slot
+        still handshaking past its handshake deadline is abandoned
+        (closed without a CONNECTION_CLOSE) and reaped.
         """
         for i in range(len(self.conn_slots)):
             if self.conn_slots[i].next_deadline_us > now:
                 continue
+            if _handshake_deadline(self.conn_slots[i]) <= now:
+                self.conn_slots[i].h3[]._h3._quic.abandon()
             try:
                 self._drain_and_send(i, now)
             # Silent on purpose: a slot whose send() raises persistently stays due on
@@ -1196,7 +1214,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             i -= 1
 
     def _free_slot(mut self, i: Int) raises:
-        """Destroy slot `i`'s connection, drop its DCIDs and swap-and-pop."""
+        """Destroy slot `i`'s connection, release its id (and every demux key) and swap-and-pop."""
         var slot_h3 = self.conn_slots[i].h3
         slot_h3.unsafe_deinit_pointee()
         slot_h3.unsafe_free()
@@ -1208,23 +1226,17 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             H3HandlerServer[Self.H], MutUntrackedOrigin
         ]()
 
-        # B-permissive teardown: pop ALL of dying conn's DCID entries
-        # from the demux map (typically 2: initial_dcid + local_cid).
-        for dcid_u64 in self.conn_slots[i].dcids:
-            _ = self.conn_dcid_map.pop(dcid_u64)
+        if self.conn_slots[i].handshaking:
+            self._handshaking -= 1
+        var id = self.conn_slots[i].id
+        self._table.release(id, self._table.gen_of(id))
 
         var last = len(self.conn_slots) - 1
         if i != last:
-            # Swap-and-pop: pop the last slot (taking ownership), bump
-            # its generation so any stale `(idx=i, old_gen)` entries left
-            # in `conn_dcid_map` fail the generation check in
-            # `_find_conn_by_dcid`, then remap the survivor's DCIDs.
+            # Swap-and-pop: the survivor keeps its id and keys; only the
+            # id's slot moves.
             var survivor = self.conn_slots.pop()
-            var new_gen = self.next_generation
-            self.next_generation += UInt64(1)
-            survivor.generation = new_gen
-            for dcid_u64 in survivor.dcids:
-                self.conn_dcid_map[dcid_u64] = _DcidEntry(i, new_gen)
+            self._table.moved(survivor.id, i)
             self.conn_slots[i] = survivor^
         else:
             _ = self.conn_slots.pop()
@@ -1394,9 +1406,15 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         cmsg carries the stride; each segment gets its own DCID
         extraction and PendingDatagram entry, all sharing one buffer
         lease via a refcount in `_dgram_refcounts`.
+
+        Every datagram, or GRO segment on its own length, passes the
+        guard's `precheck` before its DCID is read: drops are counted and
+        released here, and an unknown version is answered with Version
+        Negotiation (queued straight to egress).
         """
         if self._recv_stream is None:
             return
+        var now = self._now()
 
         while True:
             var dgram_opt = self._recv_stream.value().next()
@@ -1405,6 +1423,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
             # Skip truncated datagrams.
             if dgram_opt.value().truncated():
+                self._guard.value().stats.dropped_truncated += 1
                 continue
 
             # Decode the delivery header for payload and peer address.
@@ -1455,12 +1474,19 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                     var seg_span = Span[Byte, MutUntrackedOrigin](
                         unsafe_ptr=seg_ptr, length=seg_len,
                     )
+                    var verdict = self._guard.value().precheck(seg_span)
+                    if verdict == PRE_VN:
+                        self._answer_vn(seg_span, name, now)
+                    # A dropped segment releases its share of the
+                    # refcount so the buffer can still be freed.
+                    if verdict != PRE_PASS:
+                        self._dgram_refcounts[dgram_idx] -= UInt16(1)
+                        continue
                     var dcid: CidBuf
                     try:
                         dcid = extract_dcid(seg_span)
                     except:
-                        # Undecodable segment — release its share of
-                        # the refcount so the buffer can still be freed.
+                        self._guard.value().stats.dropped_undecodable += 1
                         self._dgram_refcounts[dgram_idx] -= UInt16(1)
                         continue
 
@@ -1477,10 +1503,16 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                     )
             else:
                 # Non-GRO: single datagram, refcount 1.
+                var verdict = self._guard.value().precheck(payload)
+                if verdict == PRE_VN:
+                    self._answer_vn(payload, name, now)
+                if verdict != PRE_PASS:
+                    continue
                 var dcid: CidBuf
                 try:
                     dcid = extract_dcid(payload)
                 except:
+                    self._guard.value().stats.dropped_undecodable += 1
                     continue
 
                 self._dgram_refcounts.append(UInt16(1))
@@ -1500,10 +1532,31 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 # Keep the lease alive until _flush_ingress completes.
                 self._live_datagrams.append(dgram_opt^)
 
+    def _answer_vn(mut self, pkt: Span[Byte, _], name: Span[Byte, _], now: UInt64):
+        """Queue a Version Negotiation for a PRE_VN datagram if the guard's pacing and egress bound allow one."""
+        try:
+            if self._guard.value().answer_vn(pkt, now, len(self._egress_backlog)):
+                self._queue_stateless(name)
+        except:
+            pass
+
+    def _queue_stateless(mut self, name: Span[Byte, _]):
+        """Queue the guard's last stateless reply (`out`) to the raw sockaddr `name`.
+
+        Copies it at once: the next stateless reply overwrites `out`.
+        """
+        var data = List[Byte](self._guard.value().out)
+        var addr = List[Byte](name)
+        self._egress_backlog.append(EgressPacket(data^, addr^, -1, UInt8(0)))
+
     # ── Per-connection construction ──────────────────────────────
 
     def _construct_conn_handler(
-        mut self, dcid: Span[Byte, _], now: UInt64
+        mut self,
+        dcid: Span[Byte, _],
+        now: UInt64,
+        orig_dcid: List[Byte] = List[Byte](),
+        retry_scid: List[Byte] = List[Byte](),
     ) raises -> Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]:
         """Build a fresh per-connection `H3HandlerServer[H]` on the heap.
 
@@ -1538,9 +1591,12 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         `_early_data_store` / `_early_data_filter` pointer discipline.
 
         Args:
-            dcid: The client's Initial DCID span (used as both `orig_dcid`
-                and, copied, `client_dcid` for the dual-DCID server start).
+            dcid: The DCID of the Initial that opens the connection
+                (`client_dcid`: Initial keys and a demux key derive from it).
             now: Current monotonic time in microseconds.
+            orig_dcid: The client's first DCID, recovered from a Retry
+                token; empty means `dcid` (no Retry).
+            retry_scid: Our Retry's SCID when a Retry preceded, else empty.
 
         Returns:
             A heap-allocated, move-initialized `H3HandlerServer[Self.H]`
@@ -1554,21 +1610,20 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             these per-datagram and releases the inbound buffer rather than
             aborting the whole flush.
         """
-        var dcid_copy = List[Byte](capacity=len(dcid))
-        for ref byte in dcid:
-            dcid_copy.append(byte)
+        var orig = List[Byte](dcid) if len(orig_dcid) == 0 else orig_dcid.copy()
 
         var quic = QuicConnection.server(
             self._tls.shared(),
             self.server_config,
             self.transport_params.copy(),
+            Span(orig),
             dcid,
-            Span(dcid_copy),
             now,
             # The connection stores this alias for its whole lifetime, which
             # outlives what the checker can see of `self.profile`; the field is
             # untracked, so the hand-off is explicit rather than implied.
             Pointer(to=self.profile).unsafe_origin_cast[MutUntrackedOrigin](),
+            retry_scid=retry_scid.copy(),
         )
 
         # Per-conn StreamHandler — produced by the user-supplied factory.
@@ -1607,6 +1662,107 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         h3_ptr.unsafe_write(h3^)
         return h3_ptr
 
+    def _admit(mut self, ref pd: PendingDatagram, now: UInt64) -> Int:
+        """Run a demux miss through the door; the new slot's index, or -1 (dropped or answered statelessly).
+
+        Only a v1 Initial with an 8-20 byte DCID gets past `unknown_dcid`;
+        `admit_initial` then decides Retry, a stateless close, or a new
+        connection (validated when its Retry token was). The connection
+        gets a stable id holding its Initial DCID and local CID as demux
+        keys; if either key already belongs to another connection the new
+        one is destroyed rather than sharing a key.
+        """
+        var pkt = Span[Byte, MutUntrackedOrigin](unsafe_ptr=pd.payload_ptr, length=pd.payload_len)
+        var name = Span[Byte, MutUntrackedOrigin](unsafe_ptr=pd.name_ptr, length=pd.name_len)
+        if self._guard.value().unknown_dcid(pkt) != PRE_PASS:
+            return -1
+        var cap = self.protection.conn_cap
+        var verdict: Int
+        try:
+            verdict = self._guard.value().admit_initial(
+                pkt, name, now,
+                self._table.unvalidated_count, self._table.live, cap,
+                cap - self._table.live, len(self._egress_backlog),
+            )
+        except:
+            return -1
+        if verdict == ADMIT_RETRY or verdict == ADMIT_CLOSE:
+            self._queue_stateless(name)
+            return -1
+        if verdict != ADMIT_CREATE and verdict != ADMIT_CREATE_VALIDATED:
+            return -1
+
+        var h3_ptr: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]
+        try:
+            var orig = self._guard.value().orig_dcid.copy()
+            var retry_scid = self._guard.value().retry_scid.copy()
+            h3_ptr = self._construct_conn_handler(pd.dcid.as_span(), now, orig, retry_scid)
+        except e:
+            print("H3UdpServer: conn construction error:", e)
+            return -1
+
+        var conn_idx = len(self.conn_slots)
+        var id = self._table.open(conn_idx, unvalidated=verdict == ADMIT_CREATE)
+        var keyed = id >= 0
+        if keyed:
+            ref quic = h3_ptr[]._h3._quic
+            keyed = self._table.add_key(
+                id, demux_key(quic.initial_dcid.as_span(), self._demux_sip)
+            ) and self._table.add_key(
+                id, demux_key(quic.local_cid.as_span(), self._demux_sip)
+            )
+            if not keyed:
+                self._table.release(id, self._table.gen_of(id))
+        if not keyed:
+            h3_ptr.unsafe_deinit_pointee()
+            h3_ptr.unsafe_free()
+            return -1
+
+        # Raw sockaddr blob (16 or 28 bytes) for sendmsg routing;
+        # `_set_msg_peer_raw()` parses this layout.
+        self.conn_slots.append(ConnSlot[Self.H](h3_ptr, List[Byte](name), id, now))
+        self._handshaking += 1
+        ref stats = self._guard.value().stats
+        stats.handshaking_peak = max(stats.handshaking_peak, UInt64(self._handshaking))
+        stats.unvalidated_handshaking_peak = max(
+            stats.unvalidated_handshaking_peak, UInt64(self._table.unvalidated_count)
+        )
+        # Provisional cache so no live slot ever holds the sentinel;
+        # this pass's `_drain_dirty` replaces it.
+        self.conn_slots[conn_idx].next_deadline_us = now
+        self.conn_slots[conn_idx].deadline_refreshed_at_us = now
+
+        # Seed `peer_addr` exactly once at conn creation so the sentinel
+        # zero PathKey is replaced. From this point forward, `peer_addr`
+        # only mutates inside `on_path_response_received` after a
+        # verified match.
+        var bootstrap_key = _sockaddr_to_path_key(pd.name_ptr, 0, pd.name_len)
+        self.conn_slots[conn_idx].h3[].bootstrap_peer_addr(bootstrap_key^)
+        return conn_idx
+
+    # ── Protection surface ───────────────────────────────────────
+
+    def protection_stats(self) -> ProtectionStats:
+        """A snapshot of the protection counters (all zero before `start()`)."""
+        if not self._guard:
+            return ProtectionStats()
+        return self._guard.value().stats.copy()
+
+    def unvalidated_handshaking(self) -> Int:
+        """Live connections whose peer address is not validated yet (no Retry token, handshake not done)."""
+        return self._table.unvalidated_count
+
+    def set_require_validation(mut self, on: Bool):
+        """Answer every token-less Initial with a Retry (an extension point for the embedding application)."""
+        self._require_validation = on
+        if self._guard:
+            self._guard.value().require_validation = on
+
+    def _test_retry_threshold(mut self, n: Int):
+        """Test-only (after `start()`): lower the unvalidated count at which Initials get a Retry."""
+        comptime if Self.test_hooks:
+            self._guard.value().unvalidated_retry_threshold = n
+
     # ── Ingress flush ───────────────────────────────────────────
 
     def _flush_ingress(mut self) raises:
@@ -1639,89 +1795,11 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 demux_key(pd.dcid.as_span(), self._demux_sip)
             )
 
-            # RFC 9000 §12.4: only long-header Initial packets create new
-            # conns. All other DCID-misses are dropped silently, and so is
-            # an Initial whose DCID is under the 8-byte floor of RFC 9000
-            # Section 7.2: a 0-byte DCID would otherwise route every such
-            # client to one shared slot. ngtcp2 (`ngtcp2_accept`) applies
-            # the floor only to token-less Initials; quiche and TQUIC do
-            # not check. Ours is unconditional (stricter), which stays
-            # correct only while our Retry SCIDs are at least 8 bytes: a
-            # client echoes the Retry SCID as its next Initial's DCID.
             if conn_idx < 0:
-                var first_byte_span = Span[Byte, MutUntrackedOrigin](
-                    unsafe_ptr=pd.payload_ptr, length=pd.payload_len)
-                if (
-                    not is_long_header_initial(first_byte_span)
-                    or len(pd.dcid) < MIN_INITIAL_DCID_LEN
-                ):
+                conn_idx = self._admit(pd, now)
+                if conn_idx < 0:
                     self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
                     continue
-
-            if conn_idx < 0:
-                # New conn — drive QuicConnection.server() and wrap in
-                # H3HandlerServer via the extracted constructor (which wires
-                # the accept-profile pointer through both layers).
-                var h3_ptr: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]
-                try:
-                    h3_ptr = self._construct_conn_handler(pd.dcid.as_span(), now)
-                except e:
-                    print("H3UdpServer: conn construction error:", e)
-                    self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
-                    continue
-
-                # B-permissive dual-DCID: both the client's Initial DCID
-                # (random ICID, 8..20 bytes) and the server's chosen SCID
-                # (local_cid, always 8) map to the same conn_idx so the
-                # ICID→SCID transition is transparent during the handshake.
-                debug_assert(
-                    len(h3_ptr[]._h3._quic.local_cid) == 8,
-                    "local_cid != 8 bytes",
-                )
-
-                var icid_u64 = demux_key(
-                    h3_ptr[]._h3._quic.initial_dcid.as_span(), self._demux_sip
-                )
-                var lcid_u64 = demux_key(
-                    h3_ptr[]._h3._quic.local_cid.as_span(), self._demux_sip
-                )
-
-                # Build peer address from the delivery header name region
-                # for sendmsg routing. Stored as a raw sockaddr blob (16 or
-                # 28 bytes) — _set_msg_peer_raw() parses this layout.
-                var addr = List[Byte](capacity=pd.name_len)
-                for j in range(pd.name_len):
-                    addr.append(pd.name_ptr[unsafe_offset=j])
-
-                conn_idx = len(self.conn_slots)
-                var gen = self.next_generation
-                self.next_generation += UInt64(1)
-
-                self.conn_dcid_map[icid_u64] = _DcidEntry(conn_idx, gen)
-                self.conn_dcid_map[lcid_u64] = _DcidEntry(conn_idx, gen)
-
-                var dcids = List[UInt64]()
-                dcids.append(icid_u64)
-                dcids.append(lcid_u64)
-
-                self.conn_slots.append(
-                    ConnSlot[Self.H](h3_ptr, addr^, dcids^, gen)
-                )
-                # Provisional cache so no live slot ever holds the sentinel;
-                # this pass's `_drain_dirty` replaces it.
-                self.conn_slots[conn_idx].next_deadline_us = now
-                self.conn_slots[conn_idx].deadline_refreshed_at_us = now
-
-                # Seed `peer_addr` exactly once at conn creation so
-                # the sentinel zero PathKey is replaced. From this point
-                # forward, `peer_addr` only mutates inside
-                # `on_path_response_received` after a verified match.
-                var bootstrap_key = _sockaddr_to_path_key(
-                    pd.name_ptr, 0, pd.name_len
-                )
-                self.conn_slots[conn_idx].h3[].bootstrap_peer_addr(
-                    bootstrap_key^
-                )
 
             # Build a structured PathKey for path-validation bookkeeping
             # — used for address-change detection, anti-amp
@@ -1760,6 +1838,15 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 )
             except e:
                 print("H3UdpServer: feed_datagram error:", e)
+
+            # RFC 9000 Section 8.1: completing the handshake validates the
+            # peer's address.
+            if self.conn_slots[conn_idx].handshaking and self.conn_slots[
+                conn_idx
+            ].h3[]._h3._quic.is_established():
+                self.conn_slots[conn_idx].handshaking = False
+                self._handshaking -= 1
+                self._table.validate(self.conn_slots[conn_idx].id)
 
             # Refresh the raw sockaddr blob used by sendmsg routing. The
             # `conn_slots[i].addr` blob targets the most-recent observed

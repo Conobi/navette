@@ -26,6 +26,7 @@ from navette.h3.connection import H3Connection
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.h3.h3_udp_server import H3UdpServer
 from navette.http.handler import StreamHandler
+from navette.protect.config import ProtectionConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.trans_param import TransportParams
 from navette.runtime.socket_helpers import udp_listener
@@ -109,13 +110,15 @@ struct UdpServerHarness[H: StreamHandler](Movable):
         loop_capacity: Int = 256,
         disable_gro: Bool = False,
         fail_first_start: Bool = False,
+        protection: ProtectionConfig = ProtectionConfig(),
     ) raises:
         """Bind an ephemeral port, start the server and pin its clock.
 
         `disable_gro` pins the non-coalesced receive path (one datagram per
         buffer) whatever the kernel supports. `fail_first_start` leaves the
         server as a `start()` that raised after arming its receive stream
-        leaves it; the test completes it with `start()`.
+        leaves it; the test completes it with `start()`. `protection` goes
+        to the server as is.
         """
         self.tls = TlsBackend("lib/librustls_mojo.so")
         var ck = load_test_cert()
@@ -137,6 +140,7 @@ struct UdpServerHarness[H: StreamHandler](Movable):
             srv_cfg^,
             server_params^,
             make_handler,
+            protection=protection,
         )
         self.srv = _heap_alloc[H3UdpServer[Self.H, test_hooks=True]](1)
         self.srv.unsafe_write(server^)
@@ -252,6 +256,10 @@ struct UdpServerHarness[H: StreamHandler](Movable):
             _ = client.sock.send(Span(dgs[i]))
         return len(dgs)
 
+    def client_capture(mut self, mut client: HarnessClient) raises -> List[List[Byte]]:
+        """Drain the client's datagrams without sending them, so a test can replay them from any socket."""
+        return client.h3.drain_datagrams(self.now())
+
     def send_raw(self, ref sock: Socket, dg: List[Byte]) raises:
         """Write one prebuilt datagram on an arbitrary socket."""
         _ = sock.send(Span(dg))
@@ -326,11 +334,11 @@ struct UdpServerHarness[H: StreamHandler](Movable):
         return False
 
 
-def raw_initial(dcid: List[Byte], total_len: Int) -> List[Byte]:
-    """A `total_len`-byte QUIC v1 long-header Initial carrying `dcid`, zero-filled.
+def raw_initial(dcid: List[Byte], total_len: Int, token: List[Byte] = List[Byte]()) -> List[Byte]:
+    """A `total_len`-byte QUIC v1 long-header Initial carrying `dcid` and `token`, zero-filled.
 
     It does not decrypt, but the server creates a connection slot for
-    any long-header Initial before touching its payload, so a slot
+    any admitted Initial before touching its payload, so a slot
     appearing proves the datagram got through receive and demux intact.
     """
     var p = List[Byte](capacity=total_len)
@@ -345,10 +353,33 @@ def raw_initial(dcid: List[Byte], total_len: Int) -> List[Byte]:
     p.append(8)  # SCID length
     for i in range(8):
         p.append(UInt8(0xA0 + i))
-    p.append(0x00)  # token length 0
+    if len(token) < 64:
+        p.append(UInt8(len(token)))
+    else:
+        p.append(UInt8(0x40 | (len(token) >> 8)))
+        p.append(UInt8(len(token) & 0xFF))
+    for b in token:
+        p.append(b)
     var rest = total_len - len(p) - 2
     p.append(UInt8(0x40 | ((rest >> 8) & 0x3F)))  # 2-byte varint length
     p.append(UInt8(rest & 0xFF))
+    while len(p) < total_len:
+        p.append(0x00)
+    return p^
+
+
+def raw_long(version: UInt32, dcid: List[Byte], total_len: Int) -> List[Byte]:
+    """A `total_len`-byte long-header packet of any `version` carrying `dcid` and an 8-byte SCID, zero-filled."""
+    var p = List[Byte](capacity=total_len)
+    p.append(0xC3)
+    for i in range(4):
+        p.append(UInt8((version >> UInt32(8 * (3 - i))) & 0xFF))
+    p.append(UInt8(len(dcid)))
+    for b in dcid:
+        p.append(b)
+    p.append(8)
+    for i in range(8):
+        p.append(UInt8(0xA0 + i))
     while len(p) < total_len:
         p.append(0x00)
     return p^
