@@ -23,6 +23,7 @@ from navette.h3.h3_udp_server import (
     TIMER_FLOOR_MS,
     TIMER_CEILING_MS,
     SERVER_DEFAULT_IDLE_TIMEOUT_MS,
+    HANDSHAKE_TIMEOUT_US,
     _earliest_cached_deadline,
     _timer_arm_ms,
 )
@@ -550,23 +551,34 @@ def test_idle_timeout_nonzero_on_server_runtimes() raises:
 
 
 def test_idle_reaps_abandoned_handshake() raises:
-    """idle-reaps-abandoned-handshake: one Initial, then silence, reaped after idle."""
+    """idle-reaps-abandoned-handshake: one Initial, then silence, reaped at the handshake deadline.
+
+    The handshake deadline (`HANDSHAKE_TIMEOUT_US` after the slot was
+    created) comes well before the idle timeout, so it is what reaps an
+    abandoned handshake; it does so silently and counts it.
+    """
     var h = UdpServerHarness[StubHandler](
         make_stub_handler, default_transport_params(), _params(),
     )
     var c = h.new_client()
     _ = h.pump(c)
     assert_equal_int(h.slot_count(), 1, "Initial creates one slot")
+    assert_true(
+        HANDSHAKE_TIMEOUT_US < SERVER_DEFAULT_IDLE_TIMEOUT_MS * UInt64(1000),
+        "the handshake deadline comes first",
+    )
+    var created = h.srv[].conn_slots[0].created_us
 
-    # Just short of the idle deadline: still there.
-    h.advance(SERVER_DEFAULT_IDLE_TIMEOUT_MS * UInt64(1000) - UInt64(5000))
+    # Just short of the handshake deadline: still there.
+    h.advance(created + HANDSHAKE_TIMEOUT_US - UInt64(5000) - h.now())
     h.flush()
-    assert_equal_int(h.slot_count(), 1, "slot survives before the idle deadline")
+    assert_equal_int(h.slot_count(), 1, "slot survives before the handshake deadline")
 
-    # Past it: the clock gate runs the pass, expiry closes, the pass reaps.
+    # Past it: the clock gate runs the pass, the handshake is abandoned and reaped.
     h.advance(UInt64(10_000))
     h.flush()
-    assert_equal_int(h.slot_count(), 0, "slot reaped once idle expired")
+    assert_equal_int(h.slot_count(), 0, "slot reaped once the handshake deadline passed")
+    assert_equal_int(Int(h.srv[].protection_stats().handshake_timeouts), 1, "counted as a handshake timeout")
     print("PASS: test_idle_reaps_abandoned_handshake")
 
 
@@ -837,10 +849,10 @@ def test_closing_conn_addr_frozen() raises:
     """closing-conn-addr-frozen: a spoofed source cannot redirect the reflected CLOSE.
 
     Case 1: the connection is already CLOSING; a valid datagram from a
-    new source yields a CLOSE to the old address only. Case 2: the
-    datagram that itself triggers the close (migration disabled, new
-    source) leaves the address untouched and the CLOSE goes to the old
-    address.
+    new source yields a CLOSE to the old address only. Case 2: with
+    migration disabled, a valid datagram from a new source is dropped
+    unread: the connection stays open, the address untouched, and
+    nothing goes to the new source.
     """
     # ── Case 1: datagram from a new source while CLOSING ──
     var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
@@ -883,7 +895,7 @@ def test_closing_conn_addr_frozen() raises:
     var to_old = h.client_recv(c, 30, feed=False)
     assert_true(to_old >= 1, "the reflected CLOSE goes to the old address")
 
-    # ── Case 2: the transition datagram itself (migration disabled) ──
+    # ── Case 2: a new source with migration disabled ──
     var sp = _params()
     sp.disable_active_migration = True
     var h2 = UdpServerHarness[StubHandler](make_stub_handler, sp^, _params())
@@ -902,12 +914,11 @@ def test_closing_conn_addr_frozen() raises:
     h2.flush()
     _ = h2.step(20)
     assert_true(
-        h2.server_conn(0)[].is_closing_or_draining(),
-        "a new source with migration disabled closes the connection",
+        not h2.server_conn(0)[].is_closing_or_draining(),
+        "a new source with migration disabled is dropped, not closed",
     )
-    assert_true(_addrs_eq(h2.server_addr(0), old_addr2), "transition datagram did not move the address")
+    assert_true(_addrs_eq(h2.server_addr(0), old_addr2), "the dropped datagram did not move the address")
     assert_equal_int(len(h2.recv_raw(spoof2, 30)), 0, "nothing goes to the new source")
-    assert_true(h2.client_recv(c2, 30, feed=False) >= 1, "CLOSE goes to the old address")
     print("PASS: test_closing_conn_addr_frozen")
 
 
@@ -1110,7 +1121,7 @@ def test_refresh_matches_oracle() raises:
     assert_equal_int(h.slot_count(), 1, "Initial created B's slot")
     assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after Initial fed")
 
-    # B's idle clock started at t0; everything else starts >= 1 s later.
+    # B's handshake deadline counts from t0; everything else starts >= 1 s later.
     h.advance(UInt64(1_000_000))
 
     # 2. Handshake complete (A).
@@ -1136,10 +1147,11 @@ def test_refresh_matches_oracle() raises:
     assert_true(h.server_conn(2)[].is_closing_or_draining(), "D drains")
     assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after peer CLOSE fed")
 
-    # 5. The pass that expires B's idle (and D's drain); A survives.
+    # 5. The pass past B's handshake deadline (10 s, well before idle) and
+    # D's drain: B is abandoned, D closed, both reaped; A survives.
     h.advance(t0 + UInt64(30_005_000) - h.now())
     h.flush()
-    assert_equal_int(h.slot_count(), 1, "B idle-expired and D drain-expired; A remains")
+    assert_equal_int(h.slot_count(), 1, "B abandoned at its handshake deadline and D drain-expired; A remains")
     assert_true(h.server_conn(0)[]._h3._quic.is_established(), "the survivor is A")
     assert_true(h.srv[]._deadline_cache_matches_oracle(), "oracle after the expiring pass")
     # Keep the harness alive past the server derefs above (ASAP destruction).
