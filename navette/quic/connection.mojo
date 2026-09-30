@@ -831,7 +831,7 @@ struct QuicConnection(Movable):
             var space_idx = classify[1]
             var key_slot = classify[2]
             var pkt_len = classify[3]
-            if self._is_initial_from_other_scid(header) or self._is_small_datagram_initial(header, buf_len):
+            if self._is_long_from_other_scid(header) or self._is_small_datagram_initial(header, buf_len):
                 offset += pkt_len
                 continue
             var decrypt_ok = True
@@ -859,7 +859,6 @@ struct QuicConnection(Movable):
                 not self._initial_peer_scid
                 and header.is_long_header
                 and header.packet_type == PacketType.initial()
-                and len(header.scid) > 0
             ):
                 self._adopt_initial_peer_scid(header.scid)
             if not closing:
@@ -931,12 +930,15 @@ struct QuicConnection(Movable):
         )
 
     @always_inline
-    def _is_initial_from_other_scid(self, ref header: PacketHeader) -> Bool:
-        """True for an Initial whose SCID differs from the one we adopted;
-        such packets are discarded unprocessed (RFC 9000 Section 7.2)."""
+    def _is_long_from_other_scid(self, ref header: PacketHeader) -> Bool:
+        """True for an Initial or Handshake packet whose SCID differs from
+        the one we adopted (a zero-length one included); such packets are
+        discarded unprocessed (RFC 9000 Section 7.2)."""
         if not self._initial_peer_scid:
             return False
-        if not header.is_long_header or header.packet_type != PacketType.initial():
+        if not header.is_long_header or (
+            header.packet_type != PacketType.initial() and header.packet_type != PacketType.handshake()
+        ):
             return False
         return header.scid != self._initial_peer_scid.value()
 
