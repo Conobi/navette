@@ -218,7 +218,7 @@ def test_roundtrip_initial() raises:
     var initial_token = hex_decode("cafebabe")
     for i in range(len(initial_token)):
         hdr.token[i] = initial_token[i]
-    hdr.token_len = UInt8(len(initial_token))
+    hdr.token_len = UInt16(len(initial_token))
     hdr.payload_length = UInt64(100)
 
     var w = ByteWriter()
@@ -427,15 +427,14 @@ def test_error_short_header_fixed_bit() raises:
 
 
 def test_error_initial_token_too_long() raises:
-    # Initial packet whose wire-declared token length (233) exceeds the
-    # 232-byte InlineArray capacity backing PacketHeader.token -- must raise
-    # rather than overflow the fixed-size buffer.
+    # Initial packet whose wire-declared token length (233) runs past the
+    # end of the packet -- must raise rather than read out of bounds.
     var w = ByteWriter()
     w.write_u8(UInt8(0xC0))  # long header + fixed bit, ptype bits 00 = Initial
     w.write_u32_be(UInt32(1))  # version
     w.write_u8(UInt8(0))  # dcid_len = 0
     w.write_u8(UInt8(0))  # scid_len = 0
-    varint_encode(w, UInt64(233))  # token_len > MAX_TOKEN_LEN (232)
+    varint_encode(w, UInt64(233))  # token_len with no token bytes behind it
     var wire = w.finish()
 
     var caught = False
@@ -443,13 +442,13 @@ def test_error_initial_token_too_long() raises:
         _ = parse_packet_header(Span(wire), 8)
     except:
         caught = True
-    assert_true(caught, "expected error for Initial token exceeding capacity")
+    assert_true(caught, "expected error for an Initial token past the packet end")
     print("  error_initial_token_too_long: PASS")
 
 
-def test_error_retry_token_too_long() raises:
-    # Retry packet where remaining-bytes-minus-tag (233) exceeds the
-    # 232-byte token capacity -- must raise rather than overflow.
+def test_retry_token_beyond_inline_capacity() raises:
+    # A Retry token longer than the inline copy (233 > MAX_TOKEN_LEN) still
+    # parses: it is located by offset, and token_span() is empty.
     var wire = List[Byte]()
     wire.append(UInt8(0xF0))  # long header + fixed bit + Retry type (0x30)
     wire.append(UInt8(0x00))
@@ -458,16 +457,15 @@ def test_error_retry_token_too_long() raises:
     wire.append(UInt8(0x01))  # version = 1
     wire.append(Byte(0))  # dcid_len = 0
     wire.append(Byte(0))  # scid_len = 0
-    for _ in range(249):  # 249 - 16 (integrity tag) = 233 > MAX_TOKEN_LEN (232)
-        wire.append(UInt8(0x00))
+    for i in range(249):  # 249 - 16 (integrity tag) = 233 token bytes
+        wire.append(UInt8(i & 0xFF))
 
-    var caught = False
-    try:
-        _ = parse_packet_header(Span(wire), 8)
-    except:
-        caught = True
-    assert_true(caught, "expected error for Retry token exceeding capacity")
-    print("  error_retry_token_too_long: PASS")
+    var h = parse_packet_header(Span(wire), 8)[0].copy()
+    assert_equal_int(Int(h.token_len), 233, "whole token length")
+    assert_equal_int(Int(h.token_offset), 7, "token starts after the SCID length")
+    assert_equal_int(len(h.token_span()), 0, "no inline copy past MAX_TOKEN_LEN")
+    assert_equal_int(Int(h.retry_integrity_tag[0]), 233, "tag follows the token")
+    print("  retry_token_beyond_inline_capacity: PASS")
 
 
 def test_error_vn_too_many_versions() raises:
@@ -557,7 +555,7 @@ def main() raises:
     test_error_truncated_long_header()
     test_error_short_header_fixed_bit()
     test_error_initial_token_too_long()
-    test_error_retry_token_too_long()
+    test_retry_token_beyond_inline_capacity()
     test_error_vn_too_many_versions()
 
     # 6. Padding utility

@@ -124,6 +124,30 @@ def test_client_follows_retry_to_handshake() raises:
     print("  test_client_follows_retry_to_handshake: PASS")
 
 
+def test_client_follows_retry_with_long_token() raises:
+    """A 500-byte Retry token (well past the inline header copy) is followed and echoed."""
+    var f = Fixture()
+    var orig = f.orig()
+    var rscid = _bytes(0x5B, 8)
+    var token = _bytes(0x02, 500)
+    f.client.recv(Span(f.retry(rscid, token)), f.now)
+    var second = _send_all(f.client, f.now)
+    assert_true(len(second) > 0, "client re-sends its Initial")
+    var h = parse_packet_header(Span(second[0]), 8)[0].copy()
+    assert_true(_eq(h.dcid.as_span(), Span(rscid)), "DCID switched to the Retry SCID")
+    var at = Int(h.token_offset)
+    assert_equal_int(Int(h.token_len), 500, "token length")
+    assert_true(
+        _eq(Span(second[0])[at : at + 500], Span(token)),
+        "Initial carries the whole token",
+    )
+    assert_true(len(second[0]) >= 1200, "still padded to 1,200 B")
+    var server = f.server(orig, rscid, rscid)
+    _pump(f.client, server, f.now, second)
+    assert_true(f.client.is_established() and server.is_established(), "handshake after a long-token Retry")
+    print("  test_client_follows_retry_with_long_token: PASS")
+
+
 def test_handshake_without_retry_checks_original_dcid() raises:
     var f = Fixture()
     var orig = f.orig()
@@ -213,6 +237,7 @@ def test_retry_scid_equal_to_orig_dcid_ignored() raises:
 def main() raises:
     print("test_quic_retry_handshake:")
     test_client_follows_retry_to_handshake()
+    test_client_follows_retry_with_long_token()
     test_handshake_without_retry_checks_original_dcid()
     test_retry_with_bad_tag_is_ignored()
     test_second_retry_is_ignored()

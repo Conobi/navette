@@ -7,10 +7,11 @@ from std.sys.info import size_of
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, write_u8_at, write_u32_be_at, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
 
-# Conservative caps for wire-parsed variable-length header fields. Sized
-# generously above navette's own usage (retry tokens are <=89 bytes; QUIC v1
-# defines one version) so that legitimate peers are never rejected, while
-# still bounding the struct to a fixed, stack-allocatable size.
+# Inline capacities for wire-parsed variable-length header fields, keeping
+# the struct a fixed, stack-allocatable size. A token is copied inline only
+# when it fits (navette's own Retry tokens are <=89 bytes); a longer one,
+# which another server may legitimately send in a Retry, is still parsed
+# and located by `token_offset`. QUIC v1 defines one version.
 comptime MAX_TOKEN_LEN: Int = 232
 comptime MAX_SUPPORTED_VERSIONS: Int = 16
 comptime RETRY_INTEGRITY_TAG_LEN: Int = 16
@@ -89,8 +90,10 @@ struct PacketHeader(Copyable, Movable):
     Variable-length wire fields (token, VN supported-versions list) are
     stored in fixed-capacity `InlineArray`s with a companion `_len` field
     tracking the number of valid entries, rather than heap-backed `List`s,
-    so parsing a packet header never allocates. `token` is populated only
-    for Initial/Retry packets, `supported_versions`/`versions_len` only for
+    so parsing a packet header never allocates. `token_len` and
+    `token_offset` (from the start of the parsed span) locate the token of
+    an Initial/Retry packet, of any length; `token` holds a copy of it only
+    when `token_len <= MAX_TOKEN_LEN`, `supported_versions`/`versions_len` only for
     Version Negotiation, and `retry_integrity_tag` only for Retry (always
     exactly 16 bytes, so it carries no separate length field).
     """
@@ -101,7 +104,8 @@ struct PacketHeader(Copyable, Movable):
     var dcid: CidBuf
     var scid: CidBuf
     var token: InlineArray[UInt8, MAX_TOKEN_LEN]
-    var token_len: UInt8
+    var token_len: UInt16
+    var token_offset: UInt16
     var payload_length: UInt64
     var pn_offset: Int
     var supported_versions: InlineArray[UInt32, MAX_SUPPORTED_VERSIONS]
@@ -116,7 +120,8 @@ struct PacketHeader(Copyable, Movable):
         self.dcid = CidBuf.empty()
         self.scid = CidBuf.empty()
         self.token = InlineArray[UInt8, MAX_TOKEN_LEN](fill=Byte(0))
-        self.token_len = UInt8(0)
+        self.token_len = UInt16(0)
+        self.token_offset = UInt16(0)
         self.payload_length = UInt64(0)
         self.pn_offset = 0
         self.supported_versions = InlineArray[UInt32, MAX_SUPPORTED_VERSIONS](fill=UInt32(0))
@@ -131,6 +136,7 @@ struct PacketHeader(Copyable, Movable):
         self.scid = CidBuf(copy=copy.scid)
         self.token = InlineArray[UInt8, MAX_TOKEN_LEN](copy=copy.token)
         self.token_len = copy.token_len
+        self.token_offset = copy.token_offset
         self.payload_length = copy.payload_length
         self.pn_offset = copy.pn_offset
         self.supported_versions = InlineArray[UInt32, MAX_SUPPORTED_VERSIONS](copy=copy.supported_versions)
@@ -138,7 +144,12 @@ struct PacketHeader(Copyable, Movable):
         self.retry_integrity_tag = InlineArray[UInt8, RETRY_INTEGRITY_TAG_LEN](copy=copy.retry_integrity_tag)
 
     def token_span(self) -> Span[Byte, origin_of(self.token)]:
-        """Borrow the active token bytes (length `token_len`, not the full backing capacity)."""
+        """Borrow the inline token copy: the whole token when `token_len <= MAX_TOKEN_LEN`, else empty.
+
+        A longer token is read from the packet at `token_offset`.
+        """
+        if Int(self.token_len) > MAX_TOKEN_LEN:
+            return Span(unsafe_ptr=self.token.unsafe_ptr(), length=0)
         return Span(unsafe_ptr=self.token.unsafe_ptr(), length=Int(self.token_len))
 
     def retry_integrity_tag_span(self) -> Span[Byte, origin_of(self.retry_integrity_tag)]:
@@ -293,12 +304,14 @@ def parse_packet_header[
             if rem < RETRY_INTEGRITY_TAG_LEN:
                 raise "Retry packet too short for integrity tag"
             var token_len = rem - RETRY_INTEGRITY_TAG_LEN
-            if token_len > MAX_TOKEN_LEN:
-                raise "Retry token exceeds " + String(MAX_TOKEN_LEN) + " bytes"
+            if reader.pos + token_len > 65535:
+                raise "Retry packet longer than a UDP datagram"
+            header.token_offset = UInt16(reader.pos)
             var token_bytes = reader.read_span(token_len)
-            for i in range(token_len):
-                header.token[i] = token_bytes[i]
-            header.token_len = UInt8(token_len)
+            if token_len <= MAX_TOKEN_LEN:
+                for i in range(token_len):
+                    header.token[i] = token_bytes[i]
+            header.token_len = UInt16(token_len)
             var tag_bytes = reader.read_span(RETRY_INTEGRITY_TAG_LEN)
             for i in range(RETRY_INTEGRITY_TAG_LEN):
                 header.retry_integrity_tag[i] = tag_bytes[i]
@@ -308,14 +321,18 @@ def parse_packet_header[
         if header.packet_type == PacketType.initial():
             # Read token length (varint) and token.
             var token_len_varint = varint_decode[origin](reader)
-            if token_len_varint > UInt64(MAX_TOKEN_LEN):
-                raise "Initial token exceeds " + String(MAX_TOKEN_LEN) + " bytes"
+            if token_len_varint > UInt64(reader.remaining()):
+                raise "Initial token longer than the packet"
             var token_len = Int(token_len_varint)
+            if reader.pos + token_len > 65535:
+                raise "Initial packet longer than a UDP datagram"
+            header.token_offset = UInt16(reader.pos)
             if token_len > 0:
                 var token_bytes = reader.read_span(token_len)
-                for i in range(token_len):
-                    header.token[i] = token_bytes[i]
-            header.token_len = UInt8(token_len)
+                if token_len <= MAX_TOKEN_LEN:
+                    for i in range(token_len):
+                        header.token[i] = token_bytes[i]
+            header.token_len = UInt16(token_len)
 
         # Read payload length (varint) for Initial, Handshake, 0-RTT.
         header.payload_length = varint_decode[origin](reader)
@@ -356,8 +373,16 @@ def serialize_short_header(dcid: Span[Byte, _], mut writer: ByteWriter):
 def serialize_long_header_into(header: PacketHeader, mut buf: List[Byte]) raises:
     """Write a long header directly into a pre-allocated buffer.
 
-    Same layout as serialize_long_header but bypasses ByteWriter indirection.
+    Same layout as serialize_long_header but bypasses ByteWriter
+    indirection. An Initial carries `header.token_span()`.
     """
+    serialize_long_header_with_token_into(header, header.token_span(), buf)
+
+
+def serialize_long_header_with_token_into(
+    header: PacketHeader, token: Span[Byte, _], mut buf: List[Byte]
+) raises:
+    """`serialize_long_header_into` with the Initial's token given apart, so it may exceed `MAX_TOKEN_LEN`."""
     # Build first byte: form bit (0x80) | fixed bit (0x40) | type bits.
     var first_byte = UInt8(0xC0)  # long header + fixed bit
 
@@ -387,12 +412,12 @@ def serialize_long_header_into(header: PacketHeader, mut buf: List[Byte]) raises
 
     if header.packet_type == PacketType.initial():
         # Token length + token.
-        var tl_len = varint_len(UInt64(header.token_len))
+        var tl_len = varint_len(UInt64(len(token)))
         var tl_base = len(buf)
         buf.resize(tl_base + tl_len, Byte(0))
-        _ = varint_encode_at(buf, tl_base, UInt64(header.token_len))
-        if Int(header.token_len) > 0:
-            buf.extend(header.token_span())
+        _ = varint_encode_at(buf, tl_base, UInt64(len(token)))
+        if len(token) > 0:
+            buf.extend(token)
 
     if header.packet_type != PacketType.retry():
         # Payload length.

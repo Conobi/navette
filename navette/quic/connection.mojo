@@ -936,7 +936,7 @@ struct QuicConnection(Movable):
             diff |= tag[i] ^ want[i]
         if diff != 0:
             return
-        self._retry_token = List[Byte](header.token_span())
+        self._retry_token = List[Byte](packet[Int(header.token_offset) : Int(header.token_offset) + Int(header.token_len)])
         self._retry_scid = Optional[CidBuf](CidBuf(copy=header.scid))
         self.peer_cid = CidBuf(copy=header.scid)
         for ref e in self.cid_mgr.remote_cids:

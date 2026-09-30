@@ -25,9 +25,9 @@ from navette.quic.packet import (
     PacketType,
     PacketHeader,
     serialize_long_header_into,
+    serialize_long_header_with_token_into,
     serialize_short_header_into,
     pn_truncate,
-    MAX_TOKEN_LEN,
 )
 from navette.quic.packet_protect import PacketProtect
 
@@ -155,7 +155,7 @@ def build_packet(
     header_budget: Int,
     padding: Int = 0,
 ) raises:
-    """Build a complete encrypted QUIC packet into pkt_buf; `token` (at most 232 bytes) goes only into an Initial header."""
+    """Build a complete encrypted QUIC packet into pkt_buf; `token` (any length that fits the datagram) goes only into an Initial header."""
     pkt_buf.clear()
 
     var plaintext_len = len(payload) + padding
@@ -171,15 +171,10 @@ def build_packet(
         header.scid = CidBuf.from_span(local_cid)
         if space_idx == 0:
             header.packet_type = PacketType.initial()
-            if len(token) > MAX_TOKEN_LEN:
-                raise "build_packet: token longer than " + String(MAX_TOKEN_LEN) + " bytes"
-            for i in range(len(token)):
-                header.token[i] = token[i]
-            header.token_len = UInt8(len(token))
         else:
             header.packet_type = PacketType.handshake()
         header.payload_length = UInt64(pn_len + payload_ciphertext_len)
-        serialize_long_header_into(header, pkt_buf)
+        serialize_long_header_with_token_into(header, token, pkt_buf)
     else:
         serialize_short_header_into(peer_cid, pkt_buf)
 
