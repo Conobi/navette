@@ -766,9 +766,6 @@ struct QuicConnection(Movable):
             var header = PacketHeader()
             swap(header, hr[0])
             ph_hdr = self.prof.elapsed(ph_hdr)
-            if header.is_long_header and len(header.scid) > 0:
-                if header.packet_type == PacketType.initial():
-                    self.peer_cid = CidBuf(copy=header.scid)
             var classify = self._classify_recv_packet(
                 header, remaining_ptr, remaining_len,
             )
@@ -800,6 +797,11 @@ struct QuicConnection(Movable):
                 decrypt_ok = False
             if not decrypt_ok:
                 break
+            # Adopt the peer's SCID only from an Initial that authenticated:
+            # a forged or corrupt one must not redirect our packets.
+            if header.is_long_header and len(header.scid) > 0:
+                if header.packet_type == PacketType.initial():
+                    self.peer_cid = CidBuf(copy=header.scid)
             if not closing:
                 ph_sm = self.prof.stamp()
                 self._drive_handshake(now)
@@ -1335,8 +1337,25 @@ struct QuicConnection(Movable):
                 if not self.cid_mgr.retire_remote(current_seq):
                     return False
                 self.cid_mgr.remote_active_cid_seq = next_seq
+                self._sync_peer_cid()
                 return True
         return False
+
+    def _sync_peer_cid(mut self):
+        """Address outgoing packets to the active remote CID.
+
+        Call whenever `cid_mgr.remote_active_cid_seq` changes: packets are
+        built from `peer_cid`, and RFC 9000 Section 5.1.2 forbids sending
+        to a CID once we have retired it. Only call it on a change: on the
+        client the sequence-0 entry still holds the pre-handshake DCID,
+        not the server's SCID that `peer_cid` adopted (the active
+        sequence never returns to 0 once it leaves it).
+        """
+        var seq = self.cid_mgr.remote_active_cid_seq
+        for ref e in self.cid_mgr.remote_cids:
+            if e.sequence == seq:
+                self.peer_cid = CidBuf.from_span(Span(e.cid))
+                return
 
     # ── Path validation TX (emission) ────────────────────────────────
 
@@ -1620,12 +1639,15 @@ struct QuicConnection(Movable):
             var _vv2 = _v_cid_len.take()
             self.close_transport(_vv2.error_code, _vv2.tag, now)
             return
+        var _prev_active = self.cid_mgr.remote_active_cid_seq
         var _v_cid = self.cid_mgr.on_new_connection_id(
             nc.sequence,
             nc.retire_prior_to,
             List[Byte](nc.cid.as_span()),
             List[Byte](nc.stateless_reset_token.as_span()),
         )
+        if self.cid_mgr.remote_active_cid_seq != _prev_active:
+            self._sync_peer_cid()
         if _v_cid:
             var _vv3 = _v_cid.take()
             self.close_transport(_vv3.error_code, _vv3.tag, now)
@@ -1765,12 +1787,15 @@ struct QuicConnection(Movable):
             return
         var cid_span = data[:cid_len]
         var token_span = data[cid_len:]
+        var _prev_active = self.cid_mgr.remote_active_cid_seq
         var _v_cid = self.cid_mgr.on_new_connection_id(
             sequence,
             retire_prior_to,
             List[Byte](cid_span),
             List[Byte](token_span),
         )
+        if self.cid_mgr.remote_active_cid_seq != _prev_active:
+            self._sync_peer_cid()
         if _v_cid:
             var _vv3 = _v_cid.take()
             self.close_transport(_vv3.error_code, _vv3.tag, now)
