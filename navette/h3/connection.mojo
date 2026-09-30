@@ -43,13 +43,15 @@ from navette.h3.error import (
     H3_FRAME_ERROR,
     H3_EXCESSIVE_LOAD,
     H3_CLOSED_CRITICAL_STREAM,
+    H3_ID_ERROR,
+    H3_INTERNAL_ERROR,
+    QPACK_DECOMPRESSION_FAILED,
 )
 from navette.h3.qpack import (
     QpackEncoder,
     QpackDecoder,
     QpackHeaderField,
     QpackCodecTables,
-    QPACK_FIELD_SECTION_TOO_LARGE,
 )
 from navette.h3.guard_predicates import (
     H3StreamCtx,
@@ -85,6 +87,35 @@ comptime _H3_MAX_HEADERS_PAYLOAD: Int = H3_MAX_FIELD_SECTION_SIZE + H3_MAX_FIELD
 comptime _H3_MAX_SETTINGS_PAYLOAD: Int = 256
 # GOAWAY, CANCEL_PUSH and MAX_PUSH_ID carry a single varint.
 comptime _H3_MAX_VARINT_FRAME_PAYLOAD: Int = 8
+
+@always_inline
+def _is_http2_frame_type(frame_type: UInt64) -> Bool:
+    """HTTP/2 PRIORITY, PING, WINDOW_UPDATE and CONTINUATION types.
+
+    Reserved in HTTP/3; receiving one is H3_FRAME_UNEXPECTED
+    (RFC 9114 Section 7.2.8).
+    """
+    return (
+        frame_type == 0x02 or frame_type == 0x06
+        or frame_type == 0x08 or frame_type == 0x09
+    )
+
+
+def _single_varint(payload: List[Byte]) -> Optional[UInt64]:
+    """The payload's value if it is exactly one varint, else None.
+
+    GOAWAY, CANCEL_PUSH and MAX_PUSH_ID carry one varint; missing or
+    extra bytes are H3_FRAME_ERROR (RFC 9114 Section 7.1).
+    """
+    try:
+        var r = ByteReader(Span(payload))
+        var v = varint_decode(r)
+        if r.pos == len(payload):
+            return v
+    except:
+        pass
+    return None
+
 
 # How `_parse_frames` treats a frame payload once its header is read.
 comptime _PAYLOAD_BUFFER: UInt8 = 0  # wait for the whole (capped) payload
@@ -464,7 +495,11 @@ struct H3Connection(Movable):
                 try:
                     self._drain_stream(stream_id, now)
                 except:
-                    pass
+                    # Frame parsing and handlers cannot raise (protocol
+                    # errors close with their own code), so this is a
+                    # broken internal invariant: fail closed rather than
+                    # leave the stream half-parsed.
+                    self._quic.close_app(H3_INTERNAL_ERROR, "internal error", now)
             elif ev.type_id == QuicEvent.STREAM_RESET:
                 ref rst = ev.payload.unsafe_get[StreamResetPayload]()
                 self._release_stream(rst.stream_id, now)
@@ -712,7 +747,8 @@ struct H3Connection(Movable):
 
         Work per drain is linear in the bytes drained: frames are parsed
         in place and only an unparsed partial frame is kept (see
-        `_H3StreamBuf`). FIN releases the stream's state.
+        `_H3StreamBuf`). FIN releases the stream's state; FIN inside a
+        frame is H3_FRAME_ERROR.
         """
         # RFC 9000 §10.2.1: once CLOSING/DRAINING/CLOSED, drop further inbound
         # stream data — no more frames flow on this connection.
@@ -860,7 +896,9 @@ struct H3Connection(Movable):
         # Keep only the unparsed tail. It lies inside one frame that began
         # in this drain or is the previous tail, so copying it is bounded by
         # the bytes drained now.
-        if (self._quic.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) == 0:
+        var open = (self._quic.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) == 0
+        var mid_frame = remaining > 0 or pos < len(buf)
+        if open:
             ref sb = self._stream_bufs[key]
             sb.payload_remaining = remaining
             sb.skipping = skipping
@@ -871,7 +909,11 @@ struct H3Connection(Movable):
                 sb.buf.extend(Span(buf)[pos:])
 
         if fin:
-            if not self._stream_bufs[key].is_uni:
+            if open and mid_frame:
+                # RFC 9114 Section 7.1: a truncated last frame is a
+                # connection error, not a complete message.
+                self._quic.close_app(H3_FRAME_ERROR, "stream ended inside a frame", now)
+            elif open and not self._stream_bufs[key].is_uni:
                 var h3ev = H3Event(H3Event.STREAM_ENDED)
                 h3ev.stream_id = stream_id
                 self._h3_events.append(h3ev^)
@@ -908,7 +950,7 @@ struct H3Connection(Movable):
         mut remaining: Int,
         mut skipping: Bool,
         now: UInt64,
-    ) raises -> Int:
+    ) -> Int:
         """Dispatch every frame `buf[start:]` completes; return the new read position.
 
         One pass with a read cursor, so the cost is linear in `len(buf)`
@@ -1006,24 +1048,37 @@ struct H3Connection(Movable):
     def _payload_action(
         mut self, frame_type: UInt64, length: UInt64, is_ctrl: Bool, now: UInt64
     ) -> UInt8:
-        """Classify a frame by its header; closes the connection on oversize.
+        """Classify a frame by its header, closing the connection on a bad one.
 
-        Caps mirror quiche: HEADERS / PUSH_PROMISE above
-        `_H3_MAX_HEADERS_PAYLOAD` are H3_EXCESSIVE_LOAD, SETTINGS above
-        256 bytes and single-varint frames above 8 bytes are H3_FRAME_ERROR.
-        Unknown types and DATA on the control stream are skipped (the
-        handler still sees the type and rejects control-stream DATA).
+        Everything decidable from type and length is rejected here, before
+        any payload is buffered. Caps mirror quiche: HEADERS above
+        `_H3_MAX_HEADERS_PAYLOAD` is H3_EXCESSIVE_LOAD; SETTINGS above 256
+        bytes and single-varint frames outside 1..8 bytes are
+        H3_FRAME_ERROR. PUSH_PROMISE is never acceptable: servers must not
+        receive it, and this client never sends MAX_PUSH_ID. HTTP/2-only
+        types are H3_FRAME_UNEXPECTED. HEADERS and DATA on the control
+        stream, and unknown types, are skipped: the handler still sees the
+        type and rejects the control-stream ones from it alone.
         """
         if frame_type == H3_FRAME_DATA:
             return _PAYLOAD_SKIP if is_ctrl else _PAYLOAD_STREAM
-        if frame_type == H3_FRAME_HEADERS or frame_type == _H3_FRAME_PUSH_PROMISE:
-            var cap = UInt64(_H3_MAX_HEADERS_PAYLOAD)
-            if frame_type == _H3_FRAME_PUSH_PROMISE:
-                cap += UInt64(8)  # leading push-id varint
-            if length > cap:
+        if frame_type == H3_FRAME_HEADERS:
+            if is_ctrl:
+                return _PAYLOAD_SKIP
+            if length > UInt64(_H3_MAX_HEADERS_PAYLOAD):
                 self._quic.close_app(H3_EXCESSIVE_LOAD, "field section too large", now)
                 return _PAYLOAD_REJECT
             return _PAYLOAD_BUFFER
+        if frame_type == _H3_FRAME_PUSH_PROMISE:
+            if self._is_server or is_ctrl:
+                self._quic.close_app(H3_FRAME_UNEXPECTED, "PUSH_PROMISE not allowed", now)
+            else:
+                # RFC 9114 Section 7.2.5: no MAX_PUSH_ID sent, so any push ID is too large.
+                self._quic.close_app(H3_ID_ERROR, "PUSH_PROMISE without MAX_PUSH_ID", now)
+            return _PAYLOAD_REJECT
+        if _is_http2_frame_type(frame_type):
+            self._quic.close_app(H3_FRAME_UNEXPECTED, "HTTP/2 frame type", now)
+            return _PAYLOAD_REJECT
         if frame_type == H3_FRAME_SETTINGS:
             if length > UInt64(_H3_MAX_SETTINGS_PAYLOAD):
                 self._quic.close_app(H3_FRAME_ERROR, "SETTINGS frame too large", now)
@@ -1034,22 +1089,22 @@ struct H3Connection(Movable):
             or frame_type == H3_FRAME_CANCEL_PUSH
             or frame_type == _H3_FRAME_MAX_PUSH_ID
         ):
-            if length > UInt64(_H3_MAX_VARINT_FRAME_PAYLOAD):
-                self._quic.close_app(H3_FRAME_ERROR, "frame too large", now)
+            if length == 0 or length > UInt64(_H3_MAX_VARINT_FRAME_PAYLOAD):
+                self._quic.close_app(H3_FRAME_ERROR, "bad varint frame length", now)
                 return _PAYLOAD_REJECT
             return _PAYLOAD_BUFFER
         return _PAYLOAD_SKIP
 
     def _dispatch_frame(
         mut self, stream_id: UInt64, is_ctrl: Bool, var frame: H3RawFrame, now: UInt64
-    ) raises:
+    ):
         """Route a whole frame to the control- or request-stream handler."""
         if is_ctrl:
             self._handle_control_frame(stream_id, frame^, now)
         else:
             self._handle_request_frame(stream_id, frame^, now)
 
-    def _handle_control_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64) raises:
+    def _handle_control_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64):
         """Process one frame received on the peer control stream."""
         # F32 — first frame on the peer ctrl stream MUST be SETTINGS
         # (RFC 9114 §6.2.1). Tracks first-frame state via the existing
@@ -1082,7 +1137,12 @@ struct H3Connection(Movable):
                 self._quic.close_app(v.error_code, v.tag, now)
                 return
             self._peer_ctrl_settings = True
-            var peer_settings = SettingsFrame.decode(frame.payload)
+            var peer_settings: SettingsFrame
+            try:
+                peer_settings = SettingsFrame.decode(frame.payload)
+            except:
+                self._quic.close_app(H3_FRAME_ERROR, "malformed SETTINGS", now)
+                return
             # RFC 9297 §2.2: detect H3_DATAGRAM=1 in the peer's SETTINGS
             # so subsequent send_datagram calls can gate on the negotiated
             # flag. Values other than 0/1 are reserved but the only
@@ -1094,9 +1154,22 @@ struct H3Connection(Movable):
             var h3ev = H3Event(H3Event.SETTINGS_RECEIVED)
             self._h3_events.append(h3ev^)
 
-        elif frame.frame_type == H3_FRAME_GOAWAY:
-            var r = ByteReader(Span(frame.payload))
-            var last_sid = varint_decode(r)
+        elif (
+            frame.frame_type == H3_FRAME_GOAWAY
+            or frame.frame_type == H3_FRAME_CANCEL_PUSH
+            or frame.frame_type == _H3_FRAME_MAX_PUSH_ID
+        ):
+            var value = _single_varint(frame.payload)
+            if not value:
+                self._quic.close_app(H3_FRAME_ERROR, "malformed frame payload", now)
+                return
+            if frame.frame_type == _H3_FRAME_MAX_PUSH_ID and not self._is_server:
+                # RFC 9114 Section 7.2.7: only clients send MAX_PUSH_ID.
+                self._quic.close_app(H3_FRAME_UNEXPECTED, "MAX_PUSH_ID sent by server", now)
+                return
+            if frame.frame_type != H3_FRAME_GOAWAY:
+                return  # push is never enabled: nothing to cancel or grant
+            var last_sid = value.value()
             self._peer_goaway_sid = Optional[UInt64](last_sid)
             var h3ev = H3Event(H3Event.GOAWAY_RECEIVED)
             h3ev.last_stream_id = last_sid
@@ -1123,7 +1196,7 @@ struct H3Connection(Movable):
 
         # else: unknown frame types are ignored (RFC 9114 §7.2.8)
 
-    def _handle_request_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64) raises:
+    def _handle_request_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64):
         """Process one frame received on a request/response bidi stream."""
         # F31 — DATA before HEADERS on a request-bidi stream is illegal
         # (RFC 9114 §4.1). The predicate keys on (frame_type, headers_seen)
@@ -1161,16 +1234,19 @@ struct H3Connection(Movable):
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     t_start_qpack = monotonic_us()
-            var fields: List[QpackHeaderField]
+            var decoded: Optional[List[QpackHeaderField]]
             try:
-                fields = self._dec.decode(frame.payload, H3_MAX_FIELD_SECTION_SIZE)
-            except e:
+                decoded = self._dec.decode_bounded(frame.payload, H3_MAX_FIELD_SECTION_SIZE)
+            except:
+                # RFC 9204 Section 2.2.3 (quiche closes the same way).
+                self._quic.close_app(QPACK_DECOMPRESSION_FAILED, "QPACK decompression failed", now)
+                return
+            if not decoded:
                 # RFC 9114 Section 4.2.2 limit we advertised; quiche closes
                 # with H3_EXCESSIVE_LOAD too.
-                if String(e) == QPACK_FIELD_SECTION_TOO_LARGE:
-                    self._quic.close_app(H3_EXCESSIVE_LOAD, "field section too large", now)
-                    return
-                raise e.copy()
+                self._quic.close_app(H3_EXCESSIVE_LOAD, "field section too large", now)
+                return
+            var fields = decoded.unsafe_take()
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     self.profile_ptr.value()[].record_drain_qpack_decode(monotonic_us() - t_start_qpack)
@@ -1186,7 +1262,11 @@ struct H3Connection(Movable):
             swap(h3ev.data, frame.payload)
             self._h3_events.append(h3ev^)
 
-        elif frame.frame_type == H3_FRAME_SETTINGS or frame.frame_type == H3_FRAME_GOAWAY:
-            # Forbidden on request streams (RFC 9114 §7.2.5)
-            self._quic.close_app(H3_FRAME_UNEXPECTED, "SETTINGS/GOAWAY on request stream", now)
+        elif (
+            frame.frame_type == H3_FRAME_SETTINGS
+            or frame.frame_type == H3_FRAME_GOAWAY
+            or frame.frame_type == _H3_FRAME_MAX_PUSH_ID
+        ):
+            # Control-stream only (RFC 9114 Sections 7.2.4, 7.2.6, 7.2.7).
+            self._quic.close_app(H3_FRAME_UNEXPECTED, "control frame on request stream", now)
         # else: unknown, ignore

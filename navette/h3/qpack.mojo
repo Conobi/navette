@@ -3,7 +3,7 @@
 # RFC 9204 (QPACK). Huffman table from navette.codec.huffman (RFC 7541 Appendix B).
 
 
-from std.collections import Span
+from std.collections import Optional, Span
 from std.memory.alloc import unsafe_alloc
 from navette.util.byte_string import bytes_to_string
 from navette.util.null_ptr import null_ptr
@@ -187,7 +187,7 @@ comptime QPACK_INT_MAX: UInt64 = (UInt64(1) << 62) - 1
 # overlong encoding (or a CPU-burning stream of 0x80 bytes).
 comptime _QPACK_INT_MAX_SHIFT: UInt64 = 63
 # Raised by `QpackDecoder.decode` when the decoded field section outgrows
-# its `max_size`; callers map it to H3_EXCESSIVE_LOAD.
+# its `max_size`. `decode_bounded` reports that case as None instead.
 comptime QPACK_FIELD_SECTION_TOO_LARGE = "QPACK: field section exceeds max size"
 
 
@@ -468,7 +468,16 @@ struct QpackDecoder(Movable):
     def decode(
         mut self, data: List[Byte], max_size: Int = Int.MAX
     ) raises -> List[QpackHeaderField]:
-        """Decode a QPACK field section block.
+        """Decode a field section; raises QPACK_FIELD_SECTION_TOO_LARGE past `max_size`."""
+        var fields = self.decode_bounded(data, max_size)
+        if not fields:
+            raise QPACK_FIELD_SECTION_TOO_LARGE
+        return fields.unsafe_take()
+
+    def decode_bounded(
+        mut self, data: List[Byte], max_size: Int
+    ) raises -> Optional[List[QpackHeaderField]]:
+        """Decode a QPACK field section block, or None once it outgrows `max_size`.
 
         Skips the 2-byte prefix (Required Insert Count + Delta Base),
         then decodes each field instruction until data is exhausted.
@@ -480,8 +489,12 @@ struct QpackDecoder(Movable):
             max_size: Limit on the decoded size (name + value + 32 per
                 field, RFC 9114 Section 4.2.2). Checked field by field, so
                 one-byte static references cannot expand a small frame into
-                an unbounded field list; exceeding it raises
-                QPACK_FIELD_SECTION_TOO_LARGE.
+                an unbounded field list.
+
+        Raises:
+            On any malformed or unsupported encoding (a QPACK
+            decompression failure, RFC 9204 Section 2.2.3). Exceeding
+            `max_size` is not an error here: the caller picks the code.
         """
         if len(data) < 2:
             raise "QPACK: field section too short"
@@ -511,7 +524,7 @@ struct QpackDecoder(Movable):
             if len(result) > 0:
                 size += _field_size(result[len(result) - 1])
                 if size > max_size:
-                    raise QPACK_FIELD_SECTION_TOO_LARGE
+                    return None
             var b = data[pos]
 
             if (b & 0x80) != 0:
@@ -575,5 +588,5 @@ struct QpackDecoder(Movable):
         if len(result) > 0:
             size += _field_size(result[len(result) - 1])
             if size > max_size:
-                raise QPACK_FIELD_SECTION_TOO_LARGE
+                return None
         return result^
