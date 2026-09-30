@@ -650,9 +650,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     # Egress backlog — packets queued for the next _submit_egress.
     var _egress_backlog: List[EgressPacket]
 
-    # Cross-transport injection staging (from inject_response).
-    var _inject_egress: List[EgressPacket]
-
     # Maximum datagrams that may be packed into one GSO super-buffer.
     # Starts at 1 (no GSO); wired from UdpSocketState in start().
     var _gso_max_segments: Int
@@ -791,7 +788,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self._dgram_refcounts = List[UInt16]()
 
         self._egress_backlog = List[EgressPacket]()
-        self._inject_egress = List[EgressPacket]()
 
         self._gso_max_segments = 1
         self._socket_state = Optional[UdpSocketState](None)
@@ -1077,11 +1073,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         #    drain) and reap connections that closed while doing so.
         self._flush_ingress()
 
-        # 3. Drain inject_egress (from inject_response cross-transport path).
-        while len(self._inject_egress) > 0:
-            self._egress_backlog.append(self._inject_egress.pop())
-
-        # 4. Timer pass — by clock, not by kernel completion: run when no
+        # 3. Timer pass — by clock, not by kernel completion: run when no
         #    timer is live or the earliest deadline has passed.
         var now = self._now()
         if self._timer_pass_due(now):
@@ -1090,13 +1082,13 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             except:
                 pass
 
-        # 5. Re-arm the timer to the new minimum deadline.
+        # 4. Re-arm the timer to the new minimum deadline.
         self._rearm_timer()
 
-        # 6. Submit egress from backlog via DatagramSink.
+        # 5. Submit egress from backlog via DatagramSink.
         self._submit_egress()
 
-        # 7. Release buffer leases whose refcount reached 0.
+        # 6. Release buffer leases whose refcount reached 0.
         # GRO-coalesced datagrams share one lease across N segments;
         # the refcount for each entry was decremented in _flush_ingress
         # as each segment was consumed. Non-GRO entries have refcount 1.
@@ -1961,6 +1953,10 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
         """Drain a connection's datagrams into the egress backlog, then refresh its cached deadline.
 
+        The one path from a connection to the egress backlog: ingress,
+        the timer pass and `inject_response` all go through it, so every
+        datagram is subject to the destination fallback and the gate below.
+
         RFC 9000 §8.1 anti-amplification: for each datagram the server
         intends to send to the current peer addr, gate via
         `can_send_to(target, n)`. If the peer's address has a pending
@@ -2134,8 +2130,12 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         different Completion — produces the response (or a 502 on connect
         failure). It routes to the owning connection's
         `H3HandlerServer.inject_response`, which stages status/headers/body
-        into the stream's `ResponseWriter`, then drains datagrams into
-        `_inject_egress` for the next flush() cycle.
+        into the stream's `ResponseWriter`, then drains the connection
+        through `_drain_and_send` like any other egress: the destination
+        falls back to the validated address when the current one is no
+        longer usable, and an address under validation gets at most 3x
+        what it sent (RFC 9000 Sections 8.1, 9.3.2). The datagrams leave
+        at the next flush().
 
         `conn_id` is resolved via the generation-guarded DCID demux map
         (the server SCID surfaced as `caps.conn_id`). A stale or
@@ -2163,28 +2163,10 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             self.conn_slots[conn_idx].h3[].inject_response(
                 sid, status^, headers^, body^, end
             )
-            var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(
-                now
-            )
-            var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
-            for i in range(len(datagrams)):
-                var pkt = List[Byte]()
-                swap(pkt, datagrams[i])
-                if len(pkt) == 0:
-                    continue
-                var addr_copy = List[Byte](
-                    copy=self.conn_slots[conn_idx].addr
-                )
-                self._inject_egress.append(
-                    EgressPacket(pkt^, addr_copy^, conn_idx, ecn)
-                )
         finally:
-            # New sendable data or a PTO armed by the drain must reach the
-            # timer even if staging or draining raised midway. This also
-            # runs when `h3[].inject_response` raised before mutating
-            # anything: one spurious refresh, accepted over a second
-            # try/except just to skip it.
-            self._sync_cid_keys(conn_idx, now)
-            self._refresh_deadline(conn_idx, now)
+            # Drain (and refresh the slot's deadline) even when staging
+            # raised midway, so anything it did queue or arm reaches the
+            # timer; `_drain_and_send` refreshes in its own `finally`.
+            self._drain_and_send(conn_idx, now)
 
 
