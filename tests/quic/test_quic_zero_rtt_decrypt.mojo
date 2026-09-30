@@ -27,7 +27,10 @@ from navette.tls.config import QuicServerConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.event import QuicEvent
 from std.collections import Span
-from navette.quic.frame import Frame, StreamFrame, CryptoFrame, AckFrame, AckRange
+from navette.quic.codec import ByteWriter
+from navette.quic.frame import (
+    Frame, StreamFrame, CryptoFrame, AckFrame, FrameCursor, serialize_frame,
+)
 from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
 from navette.quic.guard_tags import (
     GUARD_TAG_CRYPTO_IN_ZERO_RTT,
@@ -54,6 +57,29 @@ def _synth_dcid() -> List[Byte]:
     return dcid^
 
 
+def _dispatch_encoded(
+    mut conn: QuicConnection, frame: Frame, space_idx: Int, now: UInt64,
+) raises:
+    """Serialize `frame` and route it through `_dispatch_frame` via a
+    FrameCursor, exactly as the packet-receive loop does after decryption.
+    """
+    var w = ByteWriter()
+    serialize_frame(frame, w)
+    var buf = w.finish()
+    var cursor = FrameCursor(Span(buf))
+    var tid = cursor.next()
+    assert_true(Bool(tid), "encoded frame must parse back")
+    # STREAM (0x08-0x0f) encodes OFF/LEN/FIN in the low 3 type bits.
+    var got = Int(tid.value())
+    var want = Int(frame.type_id)
+    if want >= 0x08 and want <= 0x0F:
+        got = got & ~0x07
+        want = want & ~0x07
+    assert_equal_int(got, want, "cursor type_id must match the encoded frame")
+    conn._dispatch_frame(cursor, space_idx, now)
+    assert_false(Bool(cursor.next()), "exactly one frame per dispatch")
+
+
 def _make_server_conn(
     lib: TlsBackend, max_early_data: UInt32
 ) raises -> QuicConnection:
@@ -78,6 +104,12 @@ def _make_server_conn(
     )
 
 
+comptime _INITIAL_LEN = 1200
+"""RFC 9000 Section 14.1 minimum: a server drops Initials in smaller datagrams."""
+comptime _INITIAL_PAYLOAD_LEN = _INITIAL_LEN - 22 - 16
+"""PING + PADDING plaintext between the 22-byte header+PN and the AEAD tag."""
+
+
 def _build_ping_initial(
     client_protect: PacketProtect, pn: UInt64
 ) raises -> List[Byte]:
@@ -85,24 +117,23 @@ def _build_ping_initial(
 
     Layout mirrors test_quic_connection.mojo::test_batch_crypto_roundtrip:
     18-byte clear header (first byte 0xC3: Initial, pn_len=4, reserved
-    bits 0) + 4-byte PN + 32-byte payload (PING 0x01 + 31 PADDING) +
-    16-byte AEAD tag = 70 bytes. DCID is the canonical `_synth_dcid()`,
-    matching the server fixture's Initial-keys derivation. The packet is
-    conn-handle-free: no CRYPTO frames, so processing it never touches
-    `conn_handle` (decrypt uses slot-0 keys handles only) — which is what
-    keeps it processable under the negative-handle pinned fault.
+    bits 0) + 4-byte PN + PING and PADDING up to 1200 bytes + 16-byte AEAD
+    tag. The packet is padded to the 1200-byte minimum because the server
+    skips Initials in smaller datagrams, including replays from the 0-RTT
+    buffer. DCID is the canonical `_synth_dcid()`, matching the server
+    fixture's Initial-keys derivation. The packet is conn-handle-free: no
+    CRYPTO frames, so processing it never touches `conn_handle` (decrypt
+    uses slot-0 keys handles only), which keeps it processable under the
+    negative-handle pinned fault.
 
     Args:
         client_protect: A PacketProtect with client-side Initial keys
             derived from `_synth_dcid()`.
         pn: Packet number (must be <= 255; written into the low PN byte).
-
-    Returns:
-        The 70-byte wire-format packet.
     """
-    var buf_owned = Owned[UInt8](70)
+    var buf_owned = Owned[UInt8](_INITIAL_LEN)
     var buf = buf_owned.ptr()
-    for i in range(70):
+    for i in range(_INITIAL_LEN):
         buf[i] = UInt8(0)
     buf[0] = UInt8(0xC3)  # long header | fixed bit | Initial | pn_len=4
     buf[1] = UInt8(0x00)  # version 0x00000001
@@ -115,21 +146,25 @@ def _build_ping_initial(
         buf[6 + i] = dcid[i]
     buf[14] = UInt8(0)    # SCID len = 0
     buf[15] = UInt8(0)    # token length varint = 0
-    buf[16] = UInt8(0x40) # payload length varint (2-byte form), hi
-    buf[17] = UInt8(52)   # 4 PN + 32 payload + 16 tag
+    # Payload length varint (2-byte form): 4 PN + payload + 16 tag.
+    var length_field = 4 + _INITIAL_PAYLOAD_LEN + 16
+    buf[16] = UInt8(0x40 | (length_field >> 8))
+    buf[17] = UInt8(length_field & 0xFF)
     # PN bytes 18..21 (big-endian; pn <= 255 so only the low byte is set).
     buf[21] = UInt8(Int(pn) & 0xFF)
-    # Payload at 22..53: PING (0x01) then 31 PADDING (0x00).
+    # Payload at 22..: PING (0x01) then PADDING (0x00).
     buf[22] = UInt8(0x01)
 
     var ct_len = client_protect.encrypt_payload_in_place(
-        0, pn, buf, 22, 32, 70
+        0, pn, buf, 22, _INITIAL_PAYLOAD_LEN, _INITIAL_LEN
     )
-    assert_equal_int(ct_len, 48, "ciphertext = payload 32 + tag 16")
-    client_protect.protect_header_ptr(0, buf, 70, 18, 4)
+    assert_equal_int(
+        ct_len, _INITIAL_PAYLOAD_LEN + 16, "ciphertext = payload + tag 16"
+    )
+    client_protect.protect_header_ptr(0, buf, _INITIAL_LEN, 18, 4)
 
-    var out = List[Byte](capacity=70)
-    for i in range(70):
+    var out = List[Byte](capacity=_INITIAL_LEN)
+    for i in range(_INITIAL_LEN):
         out.append(buf[i])
     _ = buf_owned
     return out^
@@ -171,7 +206,8 @@ def test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer() raises:
     reach `_handle_stream_frame` (not the F30 guard) and land in the
     per-stream recv_buf with FIN observed.
 
-    Scope: direct dispatch via `_dispatch_frame` rather than driving an
+    Scope: direct dispatch via `_dispatch_frame` (FrameCursor over the
+    encoded frame) rather than driving an
     AEAD-encrypted 0-RTT packet through `recv_from_buffer`. The
     wire-format path is covered by the F30 scenario harness.
     """
@@ -191,8 +227,7 @@ def test_decrypt_zero_rtt_stream_routes_to_per_stream_buffer() raises:
     var frame = Frame.stream(sf)
 
     var now = UInt64(2_000_000)
-    var _no_ack = List[AckRange]()
-    conn._dispatch_frame(frame^, Span(_no_ack), Span(payload), ZERO_RTT_SPACE_IDX, now)
+    _dispatch_encoded(conn, frame, ZERO_RTT_SPACE_IDX, now)
 
     # The F30 guard must NOT fire for STREAM in 0-RTT — connection still alive.
     assert_false(
@@ -232,8 +267,7 @@ def test_decrypt_zero_rtt_crypto_trips_f30_guard() raises:
     var frame = Frame.crypto(cf)
 
     var now = UInt64(2_000_000)
-    var _no_ack = List[AckRange]()
-    conn._dispatch_frame(frame^, Span(_no_ack), Span(data), ZERO_RTT_SPACE_IDX, now)
+    _dispatch_encoded(conn, frame, ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
         Bool(conn.close.pending),
@@ -277,9 +311,7 @@ def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
     var frame = Frame.ack(af)
 
     var now = UInt64(2_000_000)
-    var _no_ack = List[AckRange]()
-    var _no_reason = List[Byte]()
-    conn._dispatch_frame(frame^, Span(_no_ack), Span(_no_reason), ZERO_RTT_SPACE_IDX, now)
+    _dispatch_encoded(conn, frame, ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
         Bool(conn.close.pending),
@@ -308,9 +340,7 @@ def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
     af_ecn.has_ecn = True
     var frame_ecn = Frame.ack(af_ecn)
 
-    var _no_ack2 = List[AckRange]()
-    var _no_reason2 = List[Byte]()
-    conn2._dispatch_frame(frame_ecn^, Span(_no_ack2), Span(_no_reason2), ZERO_RTT_SPACE_IDX, now)
+    _dispatch_encoded(conn2, frame_ecn, ZERO_RTT_SPACE_IDX, now)
 
     assert_true(
         Bool(conn2.close.pending),
@@ -798,16 +828,13 @@ def test_coalesced_survivors_still_processed() raises:
 def test_one_rtt_ack_dispatch_unaffected_by_guard() raises:
     """AC one-rtt-acks-unaffected: an ACK frame dispatched with
     `space_idx=2` (1-RTT / Application space) MUST NOT trip the
-    ACK-in-0-RTT guard — `close.pending` stays unset after dispatch.
+    ACK-in-0-RTT guard.
 
-    Scope: the 0-RTT guard is checked BEFORE `_handle_ack`; if `_handle_ack`
-    subsequently raises (e.g. "ACK for unsent packet" when the sent-pkt table
-    is empty), that raise originates downstream of the guard and does not
-    contradict the guard's non-firing. The test wraps `_dispatch_frame` in
-    a try/except so it can inspect `close.pending` after the call regardless
-    of whether `_handle_ack` itself raises. A `close.pending` that is unset
-    when the except branch is entered confirms the guard did not run — no
-    close_transport call was made before the handler raised.
+    Scope: the 0-RTT guard is checked BEFORE `_handle_ack`. On a fresh
+    connection the ACK names a packet number never sent, so `_handle_ack`
+    may legitimately close with PROTOCOL_VIOLATION (optimistic-ACK defence)
+    or raise. Either is downstream of the guard, so the test only requires
+    that any pending close does NOT carry the [QUIC-ACK-IN-0RTT] tag.
     """
     var tls = TlsBackend("lib/librustls_mojo.so")
     var conn = _make_server_conn(tls, UInt32(0xFFFFFFFF))
@@ -818,18 +845,31 @@ def test_one_rtt_ack_dispatch_unaffected_by_guard() raises:
 
     var now = UInt64(2_000_000)
     # space_idx=2 is the 1-RTT Application space; the 0-RTT guard must not fire.
+    var w = ByteWriter()
+    serialize_frame(frame, w)
+    var buf = w.finish()
+    var cursor = FrameCursor(Span(buf))
+    var tid = cursor.next()
+    assert_true(
+        Bool(tid) and tid.value() == frame.type_id,
+        "encoded ACK must parse back as ACK",
+    )
     try:
-        var _no_ack3 = List[AckRange]()
-        var _no_reason3 = List[Byte]()
-        conn._dispatch_frame(frame^, Span(_no_ack3), Span(_no_reason3), 2, now)
+        conn._dispatch_frame(cursor, 2, now)
     except:
-        # _handle_ack may raise on an empty sent-packet table — that is a
-        # downstream handler concern, not the guard. Check guard state below.
+        # A raise from _handle_ack is downstream of the guard. Check the
+        # guard state below.
         pass
 
+    var close_reason = String("")
+    if conn.close.pending:
+        var pc = conn.close.pending.value().copy()
+        for i in range(len(pc.reason)):
+            close_reason = close_reason + chr(Int(pc.reason[i]))
     assert_false(
-        Bool(conn.close.pending),
-        "ACK in 1-RTT space MUST NOT trip the 0-RTT guard — connection must stay open",
+        String(GUARD_TAG_ACK_IN_ZERO_RTT) in close_reason,
+        "ACK in 1-RTT space MUST NOT trip the 0-RTT guard; closed with: "
+        + close_reason,
     )
     _ = conn.is_server
     print("  test_one_rtt_ack_dispatch_unaffected_by_guard: PASS")
