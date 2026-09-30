@@ -17,6 +17,7 @@ from tests._test_util import load_test_ca
 
 
 def _fill(b: UInt8, n: Int) -> List[Byte]:
+    """`n` copies of `b`: a CID or token with a recognisable pattern."""
     var out = List[Byte](capacity=n)
     for _ in range(n):
         out.append(b)
@@ -24,6 +25,8 @@ def _fill(b: UInt8, n: Int) -> List[Byte]:
 
 
 def _mgr(lib: SharedLibrary, local_limit: UInt64) raises -> CidManager:
+    """Manager with our active_connection_id_limit set to `local_limit`
+    (clamped by the manager) and a peer limit of 4."""
     return CidManager(lib, _fill(0xAA, 8), _fill(0xBB, 8), local_limit, UInt64(4))
 
 

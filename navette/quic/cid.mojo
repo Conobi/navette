@@ -37,7 +37,6 @@ comptime RETIRE_QUEUE_MULTIPLIER = 3
 comptime MAX_RETIRE_QUEUE = 64
 
 
-
 def clamp_local_active_limit(limit: UInt64) -> UInt64:
     """Our active_connection_id_limit held to [2, MAX_RETIRE_QUEUE].
 

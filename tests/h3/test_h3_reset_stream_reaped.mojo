@@ -15,10 +15,12 @@ comptime _INITIAL_BIDI = 100
 
 
 def _server_streams(p: RawPair) -> Int:
+    """Streams the server's QUIC layer still holds (freed ones excluded)."""
     return len(p.srv._quic.stream_map.streams)
 
 
 def _server_fin(mut p: RawPair, sid: UInt64) raises:
+    """End the server's response on `sid` with an empty FIN and deliver it."""
     p.srv.send_data(sid, List[Byte](), True)
     p.pump(4)
 
