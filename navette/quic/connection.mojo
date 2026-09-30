@@ -1630,8 +1630,8 @@ struct QuicConnection(Movable):
 
     def note_authenticated_ingress(
         mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
-    ) raises -> Bool:
-        """Path bookkeeping for a datagram that authenticated; True when the send destination should move to `from_addr`.
+    ) raises:
+        """Path bookkeeping for a datagram that authenticated, moving the send destination to `from_addr` when allowed.
 
         Call it only after the datagram decrypted: an unauthenticated
         datagram must not start a challenge or credit a path. On an
@@ -1643,31 +1643,22 @@ struct QuicConnection(Movable):
         migration disabled, not yet established) is never a destination:
         the send gate would have no budget to hold it to. The destination
         moves only for `last_datagram_may_migrate` (RFC 9000 Section 9.3),
-        to `peer_addr` or an address under validation; `path.dest`
-        mirrors that move, so `send()` sizes, charges and fills (PATH_CHALLENGE)
-        datagrams for the address the driver will send them to. False once
-        closing, draining or closed.
+        to `peer_addr` or an address under validation, so `send()` sizes,
+        charges and fills (PATH_CHALLENGE) datagrams for the address the
+        driver sends them to. Nothing moves once closing, draining or
+        closed.
         """
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
-            return False
+            return
         if not (from_addr == self.path.peer_addr):
             if (self.state & CONN_ESTABLISHED) == 0 or self.local_params.disable_active_migration:
-                return False
+                return
             if not self.has_pending_path_challenge(from_addr):
                 if not self.start_path_challenge(PathKey(copy=from_addr), now):
-                    return False
+                    return
             self.path.validator.record_received_bytes(from_addr, datagram_len)
         if self.last_datagram_may_migrate:
             self.path.dest = from_addr^
-        return self.last_datagram_may_migrate
-
-    def is_usable_destination(self, target: PathKey) -> Bool:
-        """True when `target` may be sent to: the validated `peer_addr` or an address under validation.
-
-        Anything else (an expired or failed challenge) must fall back to
-        `peer_addr`, the last validated address (RFC 9000 Section 9.3.2).
-        """
-        return self.path.is_usable(target)
 
     def _challenge_interval(self) -> UInt64:
         """Base Application PTO, without backoff: the first PATH_CHALLENGE retransmit delay (each later one doubles)."""
@@ -3219,7 +3210,7 @@ struct QuicConnection(Movable):
                 or len(self.stream_map.control_reset) > 0
                 or len(self.stream_map.control_stop_sending) > 0):
             return True
-        if self.path.pending_response_count() > 0 or self.path.challenge_due(now):
+        if len(self.path.pending_responses) > 0 or self.path.challenge_due(now):
             return True
         if self._outbound_dg_head < len(self.pending_outbound_datagrams):
             return True
@@ -3315,7 +3306,7 @@ struct QuicConnection(Movable):
     ) raises:
         """Append PATH_RESPONSEs (as many as fit, 9 bytes each; the rest stay
         queued) and the destination's PATH_CHALLENGE when due."""
-        if self.path.pending_response_count() > 0 and budget - used >= 9:
+        if len(self.path.pending_responses) > 0 and budget - used >= 9:
             var path_responses = self.path.emit_response_frames((budget - used) // 9)
             for ref pr in path_responses:
                 frames.append(pr.copy())

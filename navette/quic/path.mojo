@@ -400,15 +400,12 @@ struct PathValidator(Movable):
 struct PathState(Movable):
     """Per-connection path validation and address tracking state.
 
-    Peer challenges awaiting a PATH_RESPONSE sit in a ring of
-    `MAX_PENDING_RESPONSES` (oldest overwritten), so a PATH_CHALLENGE
-    flood costs a fixed 24 bytes of state.
+    At most `MAX_PENDING_RESPONSES` peer challenges await a PATH_RESPONSE
+    (oldest dropped), so a PATH_CHALLENGE flood costs bounded state.
     """
 
     var validator: PathValidator
-    var _responses: InlineArray[InlineArray[UInt8, PATH_TOKEN_LEN], MAX_PENDING_RESPONSES]
-    var _resp_head: Int  # index of the oldest queued response
-    var _resp_count: Int
+    var pending_responses: List[List[Byte]]
     var peer_addr: PathKey
     var current_recv_addr: PathKey
     # Where the driver sends: `peer_addr`, or an address under validation
@@ -419,47 +416,22 @@ struct PathState(Movable):
     def __init__(out self):
         """No validated path, nothing pending; `peer_addr` is the zero sentinel until seeded."""
         self.validator = PathValidator()
-        self._responses = InlineArray[InlineArray[UInt8, PATH_TOKEN_LEN], MAX_PENDING_RESPONSES](
-            fill=InlineArray[UInt8, PATH_TOKEN_LEN](fill=UInt8(0))
-        )
-        self._resp_head = 0
-        self._resp_count = 0
+        self.pending_responses = List[List[Byte]]()
         self.peer_addr = PathKey.zero()
         self.current_recv_addr = PathKey.zero()
         self.dest = PathKey.zero()
 
     def on_challenge_received(mut self, data: Span[Byte, _]):
-        """Queue a PATH_CHALLENGE's data for echo; drops the oldest queued one when full.
-
-        `data` is the frame's 8 bytes (the parser guarantees the length;
-        extra bytes are ignored, missing ones read as zero).
-        """
-        if self._resp_count == MAX_PENDING_RESPONSES:
-            self._resp_head = (self._resp_head + 1) % MAX_PENDING_RESPONSES
-            self._resp_count -= 1
-        var at = (self._resp_head + self._resp_count) % MAX_PENDING_RESPONSES
-        for k in range(PATH_TOKEN_LEN):
-            self._responses[at][k] = data[k] if k < len(data) else UInt8(0)
-        self._resp_count += 1
-
-    def pending_response_count(self) -> Int:
-        return self._resp_count
-
-    def pending_response(self, i: Int) -> List[Byte]:
-        """Copy of the `i`-th queued response data, oldest first; `i < pending_response_count()`."""
-        ref slot = self._responses[(self._resp_head + i) % MAX_PENDING_RESPONSES]
-        var out = List[Byte](capacity=PATH_TOKEN_LEN)
-        for k in range(PATH_TOKEN_LEN):
-            out.append(slot[k])
-        return out^
+        """Stash an 8-byte PATH_CHALLENGE token for echo as PATH_RESPONSE; drops the oldest when full."""
+        if len(self.pending_responses) == MAX_PENDING_RESPONSES:
+            _ = self.pending_responses.pop(0)
+        self.pending_responses.append(List[Byte](data))
 
     def emit_response_frames(mut self, max_n: Int = MAX_PENDING_RESPONSES) raises -> List[Frame]:
         """Dequeue up to `max_n` PATH_RESPONSE frames, oldest first; the rest stay queued."""
         var out = List[Frame]()
-        while self._resp_count > 0 and len(out) < max_n:
-            out.append(Frame.path_response(self.pending_response(0)))
-            self._resp_head = (self._resp_head + 1) % MAX_PENDING_RESPONSES
-            self._resp_count -= 1
+        while len(self.pending_responses) > 0 and len(out) < max_n:
+            out.append(Frame.path_response(self.pending_responses.pop(0)))
         return out^
 
     def send_dest(self) -> PathKey:

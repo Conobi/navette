@@ -3910,19 +3910,19 @@ def test_path_challenge_recorded_for_response() raises:
         data.append(UInt8(0x10 + i))
     conn.on_path_challenge_received(Span(data), UInt64(1000))
     assert_equal_int(
-        conn.path.pending_response_count(),
+        len(conn.path.pending_responses),
         1,
         "expected exactly one pending PATH_RESPONSE",
     )
     assert_equal_int(
-        len(conn.path.pending_response(0)),
+        len(conn.path.pending_responses[0]),
         8,
         "expected pending PATH_RESPONSE token to be 8 bytes",
     )
     # Verify exact bytes preserved.
     for i in range(8):
         assert_equal_int(
-            Int(conn.path.pending_response(0)[i]),
+            Int(conn.path.pending_responses[0][i]),
             Int(UInt8(0x10 + i)),
             "PATH_RESPONSE token byte mismatch at index " + String(i),
         )
@@ -3949,7 +3949,7 @@ def test_path_response_handler_no_op_without_pending_challenge() raises:
         "path.validator.pending must stay empty (no challenges started yet)",
     )
     assert_equal_int(
-        conn.path.pending_response_count(),
+        len(conn.path.pending_responses),
         0,
         "queued PATH_RESPONSEs must stay empty when handling a response",
     )
@@ -3964,7 +3964,7 @@ def test_emit_path_response_drains_pending() raises:
         data.append(UInt8(0x55))
     conn.on_path_challenge_received(Span(data), UInt64(1000))
     assert_equal_int(
-        conn.path.pending_response_count(),
+        len(conn.path.pending_responses),
         1,
         "expected one pending PATH_RESPONSE after challenge RX",
     )
@@ -3975,7 +3975,7 @@ def test_emit_path_response_drains_pending() raises:
         "emitted frame must be PATH_RESPONSE",
     )
     assert_equal_int(
-        conn.path.pending_response_count(),
+        len(conn.path.pending_responses),
         0,
         "queued PATH_RESPONSEs must be drained after emit",
     )
@@ -3988,7 +3988,9 @@ def test_start_path_challenge_queues_emission() raises:
     var target = PathKey.from_v4(
         UInt8(127), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
     )
-    conn.start_path_challenge(target^, UInt64(1000))
+    # A challenge is sent only toward the send destination.
+    conn.path.dest = PathKey(copy=target)
+    _ = conn.start_path_challenge(target^, UInt64(1000))
     assert_equal_int(
         len(conn.path.validator.pending),
         1,

@@ -45,12 +45,12 @@ def test_response_ring_keeps_three_newest() raises:
     var ps = _path_state()
     for i in range(10_000):
         ps.on_challenge_received(Span(_tok8(i)))
-    assert_equal_int(ps.pending_response_count(), MAX_PENDING_RESPONSES, "ring of 3")
-    assert_equal_int(Int(ps.pending_response(0)[0]), 9_997 & 0xFF, "oldest kept is the third newest")
+    assert_equal_int(len(ps.pending_responses), MAX_PENDING_RESPONSES, "ring of 3")
+    assert_equal_int(Int(ps.pending_responses[0][0]), 9_997 & 0xFF, "oldest kept is the third newest")
     var frames = ps.emit_response_frames(max_n=2)
     assert_equal_int(len(frames), 2, "emits what fits")
-    assert_equal_int(ps.pending_response_count(), 1, "the rest stays queued")
-    assert_equal_int(Int(ps.pending_response(0)[0]), 9_999 & 0xFF, "newest left")
+    assert_equal_int(len(ps.pending_responses), 1, "the rest stays queued")
+    assert_equal_int(Int(ps.pending_responses[0][0]), 9_999 & 0xFF, "newest left")
     print("  test_response_ring_keeps_three_newest: PASS")
 
 
@@ -86,7 +86,7 @@ def test_challenge_flood_property() raises:
             else:
                 _ = ps.validator.on_response(Span(rng.bytes(8)), _path_key(rng.below(10)), now)
             var where = " (seed " + String(seed) + ", case " + String(idx) + ", step " + String(step) + ")"
-            assert_true(ps.pending_response_count() <= MAX_PENDING_RESPONSES, "responses <= 3" + where)
+            assert_true(len(ps.pending_responses) <= MAX_PENDING_RESPONSES, "responses <= 3" + where)
             assert_true(len(ps.validator.pending) <= MAX_PENDING_CHALLENGES, "pending <= 4" + where)
     print("  test_challenge_flood_property: PASS (" + String(iters) + " cases)")
 
@@ -168,7 +168,7 @@ struct Pair(Movable):
     def feed_server(mut self, dg: List[Byte], var from_addr: PathKey) raises -> Bool:
         """What H3UdpServer does per datagram: drop check, feed, then path bookkeeping only if it authenticated.
 
-        True when the server would move its send destination to `from_addr`.
+        True when the server's send destination is then `from_addr`.
         """
         if self.server.should_drop_from(from_addr):
             return False
@@ -177,7 +177,8 @@ struct Pair(Movable):
         except:
             pass
         if self.server.last_datagram_authenticated:
-            return self.server.note_authenticated_ingress(from_addr^, len(dg), self.now)
+            self.server.note_authenticated_ingress(PathKey(copy=from_addr), len(dg), self.now)
+            return self.server.path.dest == from_addr
         return False
 
 
@@ -275,6 +276,9 @@ def test_only_newest_non_probing_may_migrate() raises:
     var p = Pair(disable_migration=False)
     _settle(p)
     _ = p.client.start_path_challenge(_away(), p.now)
+    # A challenge travels only on the path it validates, within its 3x budget.
+    p.client.path.dest = _away()
+    p.client.path.validator.record_received_bytes(_away(), 1_000)
     var probe = p.client_datagrams()
     assert_true(len(probe) >= 1, "client produced a probe")
     _ = p.feed_server(probe[0], _away())
@@ -313,16 +317,16 @@ def test_pending_challenges_expire_on_the_timer() raises:
     for ref d in _stream_datagrams(p):
         _ = p.feed_server(d, _away())
     assert_equal_int(len(p.server.path.validator.pending), 1, "challenge pending")
-    assert_true(p.server.is_usable_destination(_away()), "usable while under validation")
+    assert_true(p.server.path.is_usable(_away()), "usable while under validation")
     var t = p.server.timeout(p.now)
     assert_true(Bool(t), "a deadline is armed")
     p.now += UInt64(3_100_000)
     var out = List[List[Byte]]()
     _ = p.server.send(p.now, out)
     assert_equal_int(len(p.server.path.validator.pending), 0, "expired on the timer")
-    assert_true(not p.server.is_usable_destination(_away()), "an expired address is no destination")
+    assert_true(not p.server.path.is_usable(_away()), "an expired address is no destination")
     assert_true(not p.server.can_send_to(_away(), 1), "and gets nothing")
-    assert_true(p.server.is_usable_destination(_home()), "the validated address stays")
+    assert_true(p.server.path.is_usable(_home()), "the validated address stays")
     print("  test_pending_challenges_expire_on_the_timer: PASS")
 
 

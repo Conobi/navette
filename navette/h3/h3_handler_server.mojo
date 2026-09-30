@@ -254,23 +254,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     # --- Path-validation pass-through (RFC 9000 §8 + §9) ---------------------
 
-    def should_drop_from(self, from_addr: PathKey) -> Bool:
-        """`QuicConnection.should_drop_from`: call before feeding the datagram."""
-        return self._h3.should_drop_from(from_addr)
-
-    def note_authenticated_ingress(
-        mut self, var from_addr: PathKey, datagram_len: Int, now: UInt64
-    ) raises -> Bool:
-        """`QuicConnection.note_authenticated_ingress`: call after the feed, only when it authenticated; True moves the destination."""
-        return self._h3.note_authenticated_ingress(from_addr^, datagram_len, now)
-
-    def is_usable_destination(self, target: PathKey) -> Bool:
-        """`QuicConnection.is_usable_destination`: False means fall back to the validated address."""
-        return self._h3.is_usable_destination(target)
-
-    def last_datagram_authenticated(self) -> Bool:
-        """True when a packet of the last datagram fed decrypted."""
-        return self._h3.last_datagram_authenticated()
+    def quic(ref self) -> ref [self._h3._quic] QuicConnection:
+        """The connection's QUIC layer: the UDP server's demux, path and handshake bookkeeping read it directly."""
+        return self._h3._quic
 
     def set_current_recv_addr(mut self, var addr: PathKey):
         """Stamp the per-receive source-addr cursor on the QUIC layer."""
@@ -279,10 +265,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     def bootstrap_peer_addr(mut self, var addr: PathKey):
         """Seed `peer_addr` on a freshly-accepted connection."""
         self._h3.bootstrap_peer_addr(addr^)
-
-    def send_destination(self) -> PathKey:
-        """Address the QUIC layer sized and charged its next datagrams for; see `QuicConnection.send_destination`."""
-        return self._h3.send_destination()
 
     def peer_addr_copy(self) -> PathKey:
         """Return a copy of the currently-validated peer 4-tuple."""

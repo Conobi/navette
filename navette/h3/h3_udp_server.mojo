@@ -34,7 +34,7 @@ and egress (DatagramSink with batched sendmmsg + ECN/GSO cmsgs).
     │  └─ _submit_egress: build Message + ECN/GSO cmsg, push_msg + flush
     │  └─ release buffer leases (_live_datagrams.clear)
     │
-    └─ conn_slots[i]: ConnSlot[H] (h3 ptr + addr + dcids + generation)
+    └─ conn_slots[i]: ConnSlot[H] (h3 ptr + dcids + generation)
          └─ owns a QuicConnection + an H instance
 ```
 
@@ -230,25 +230,19 @@ def _timer_arm_ms(deadline: Optional[UInt64], now: UInt64) -> UInt64:
     return ms
 
 
-def _sockaddr_matches(
-    addr: List[Byte],
-    name_ptr: Pointer[UInt8, MutUntrackedOrigin],
-    name_len: Int,
-) -> Bool:
-    """Length-and-bytes comparison of a stored sockaddr blob with a delivery's."""
-    if len(addr) != name_len:
-        return False
-    for j in range(name_len):
-        if addr[j] != name_ptr[unsafe_offset=j]:
-            return False
-    return True
+def _path_key_to_sockaddr(key: PathKey) -> List[Byte]:
+    """The Linux sockaddr_in / sockaddr_in6 blob for `key`, the inverse of `_sockaddr_to_path_key`.
 
-
-def _copy_sockaddr(name_ptr: Pointer[UInt8, MutUntrackedOrigin], name_len: Int) -> List[Byte]:
-    """Own a delivery's sockaddr blob."""
-    var out = List[Byte](capacity=name_len)
-    for j in range(name_len):
-        out.append(name_ptr[unsafe_offset=j])
+    IPv6 flowinfo and scope id are zero, so a link-local peer is not
+    reachable through it.
+    """
+    var v6 = key.family == Int32(10)
+    var out = List[Byte](length=28 if v6 else 16, fill=Byte(0))
+    out[0] = UInt8(key.family & 0xFF)
+    out[2] = UInt8(key.port >> 8)
+    out[3] = UInt8(key.port & 0xFF)
+    for i in range(16 if v6 else 4):
+        out[(8 + i) if v6 else (4 + i)] = key.addr[i if v6 else 12 + i]
     return out^
 
 
@@ -493,20 +487,12 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     `dirty_pass` is the id of the last ingress pass that fed the slot; it
     deduplicates the slot in that pass's drain list.
 
-    `addr` is where egress goes; `validated_addr` is the raw blob of the
-    connection's validated peer address (`peer_addr`), refreshed from
-    every authenticated datagram that comes from it, which `addr` falls
-    back to once its own address stops being usable (RFC 9000 Section
-    9.3.2).
-
     `Copyable` is required by `List[ConnSlot[H]]` storage; aliasing
     `h3` across copies matches the prior `List[UnsafePointer[...]]`
     semantics (the underlying pointer was already trivially copied
     when the list grew).
     """
     var h3: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin]
-    var addr: List[Byte]
-    var validated_addr: List[Byte]
     var dcids: List[UInt64]
     var generation: UInt64
     var unvalidated: Bool
@@ -518,14 +504,11 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     def __init__(
         out self,
         h3: Pointer[H3HandlerServer[Self.H], MutUntrackedOrigin],
-        var addr: List[Byte],
         var dcids: List[UInt64],
         generation: UInt64,
         unvalidated: Bool = False,
     ):
         self.h3 = h3
-        self.validated_addr = List[Byte](copy=addr)
-        self.addr = addr^
         self.dcids = dcids^
         self.generation = generation
         self.unvalidated = unvalidated
@@ -536,8 +519,6 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
 
     def __init__(out self, *, copy: Self):
         self.h3 = copy.h3
-        self.addr = List[Byte](copy=copy.addr)
-        self.validated_addr = List[Byte](copy=copy.validated_addr)
         self.dcids = List[UInt64](copy=copy.dcids)
         self.generation = copy.generation
         self.unvalidated = copy.unvalidated
@@ -1691,15 +1672,13 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         var gen = self.next_generation
         self.next_generation += UInt64(1)
         var dcids = List[UInt64]()
-        dcids.append(demux_key(h3_ptr[]._h3._quic.initial_dcid.as_span(), self._demux_sip))
-        dcids.append(demux_key(h3_ptr[]._h3._quic.local_cid.as_span(), self._demux_sip))
+        dcids.append(demux_key(h3_ptr[].quic().initial_dcid.as_span(), self._demux_sip))
+        dcids.append(demux_key(h3_ptr[].quic().local_cid.as_span(), self._demux_sip))
         for key in dcids:
             self.conn_dcid_map[key] = _DcidEntry(idx=conn_idx, generation=gen)
 
-        # Raw sockaddr blob (16 or 28 bytes) for sendmsg routing;
-        # `_set_msg_peer_raw()` parses this layout.
         var unvalidated = len(self._guard.value().retry_scid) == 0
-        self.conn_slots.append(ConnSlot[Self.H](h3_ptr, List[Byte](name), dcids^, gen, unvalidated))
+        self.conn_slots.append(ConnSlot[Self.H](h3_ptr, dcids^, gen, unvalidated))
         if unvalidated:
             self._unvalidated += 1
             ref stats = self._guard.value().stats
@@ -1789,7 +1768,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
             # A connection that disabled migration drops a new source
             # address unread (RFC 9000 Section 9); no state is touched.
-            if self.conn_slots[conn_idx].h3[].should_drop_from(from_path):
+            if self.conn_slots[conn_idx].h3[].quic().should_drop_from(from_path):
                 self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
                 continue
 
@@ -1814,38 +1793,20 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             # peer's address.
             if self.conn_slots[conn_idx].unvalidated and self.conn_slots[
                 conn_idx
-            ].h3[]._h3._quic.is_established():
+            ].h3[].quic().is_established():
                 self.conn_slots[conn_idx].unvalidated = False
                 self._unvalidated -= 1
 
-            # Path bookkeeping and the sendmsg destination move only on a
-            # datagram that decrypted: a spoofed source with a valid DCID
-            # and garbage payload must neither start a PATH_CHALLENGE nor
-            # redirect our traffic. On an authenticated one, a new address
-            # starts path validation and earns anti-amplification credit.
-            # `conn_slots[i].addr` follows the source only when the QUIC
-            # layer says so: the newest non-probing packet (RFC 9000
-            # Section 9.3), from the validated address or one under
-            # validation, so egress there stays within 3x what it sent.
-            # The blob is frozen once the connection is closing (checked
-            # AFTER the feed, so the datagram that triggers the close
-            # cannot move it), and only rebuilt when the bytes differ.
-            if self.conn_slots[conn_idx].h3[].last_datagram_authenticated():
-                var move = False
+            # Path bookkeeping runs only on a datagram that decrypted: a
+            # spoofed source with a valid DCID and garbage payload must
+            # neither start a PATH_CHALLENGE nor move the send destination,
+            # which the QUIC layer owns (`send_destination`).
+            ref quic = self.conn_slots[conn_idx].h3[].quic()
+            if quic.last_datagram_authenticated:
                 try:
-                    move = self.conn_slots[conn_idx].h3[].note_authenticated_ingress(
-                        PathKey(copy=from_path), pd.payload_len, now
-                    )
+                    quic.note_authenticated_ingress(PathKey(copy=from_path), pd.payload_len, now)
                 except e:
                     print("H3UdpServer: path bookkeeping error:", e)
-                ref slot = self.conn_slots[conn_idx]
-                if slot.h3[].peer_addr_copy() == from_path and not _sockaddr_matches(
-                    slot.validated_addr, pd.name_ptr, pd.name_len
-                ):
-                    slot.validated_addr = _copy_sockaddr(pd.name_ptr, pd.name_len)
-                if move and not slot.h3[].is_closing_or_draining():
-                    if not _sockaddr_matches(slot.addr, pd.name_ptr, pd.name_len):
-                        slot.addr = _copy_sockaddr(pd.name_ptr, pd.name_len)
 
             # Egress is deferred to `_drain_dirty`: list the slot once.
             if self.conn_slots[conn_idx].dirty_pass != pass_id:
@@ -1897,46 +1858,17 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         """Drain a connection's datagrams into the egress backlog, then refresh its cached deadline.
 
         The one path from a connection to the egress backlog: ingress,
-        the timer pass and `inject_response` all go through it, so every
-        datagram gets the destination fallback and the check below.
-
-        RFC 9000 Section 8.1 anti-amplification is enforced by the QUIC
-        layer: `send()` sizes every datagram to the 3x budget of its
-        destination (`send_destination()`, the address under validation
-        that sent the newest non-probing packet, else the validated one)
-        and charges it there. Here the raw sockaddr is resolved the same
-        way: an address that is neither validated nor under validation is
-        replaced by the last validated one (`validated_addr`, RFC 9000
-        Section 9.3.2). Datagrams the QUIC layer built for a different
-        destination than the one resolved are dropped (fail closed: they
-        were charged to another address's budget); the two are kept in
-        step by construction, so this does not happen in practice.
+        the timer pass and `inject_response` all go through it. Datagrams
+        go to the QUIC layer's `send_destination()`: `send()` sized each to
+        that address's anti-amplification budget (RFC 9000 Section 8.1)
+        and charged it there, falling back to the validated address once
+        another stops being usable (Section 9.3.2).
         """
         try:
-            var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(
-                now
-            )
-
-            # Resolve the structured peer key once per flush: the address
-            # sendmsg will route to. One whose validation expired or
-            # failed falls back to the last validated address; without
-            # that the connection would be black-holed.
-            var target_key = _sockaddr_to_path_key(
-                self.conn_slots[conn_idx].addr.unsafe_ptr(),
-                0,
-                len(self.conn_slots[conn_idx].addr),
-            )
-            if not self.conn_slots[conn_idx].h3[].is_usable_destination(target_key):
-                self.conn_slots[conn_idx].addr = List[Byte](
-                    copy=self.conn_slots[conn_idx].validated_addr
-                )
-                target_key = self.conn_slots[conn_idx].h3[].peer_addr_copy()
-            if not (target_key == self.conn_slots[conn_idx].h3[].send_destination()):
-                return
-
-            # ECN mark from the connection's probing/capability state.
-            var ecn = self.conn_slots[conn_idx].h3[]._h3._quic.ecn_mark()
-
+            ref quic = self.conn_slots[conn_idx].h3[].quic()
+            var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(now)
+            var dest = _path_key_to_sockaddr(quic.send_destination())
+            var ecn = quic.ecn_mark()
             for i in range(len(datagrams)):
                 # Move the payload out of the drained list (swap with an
                 # empty husk) rather than copying 1200 bytes per datagram.
@@ -1944,11 +1876,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 swap(pkt, datagrams[i])
                 if len(pkt) == 0:
                     continue
-                var addr_copy = List[Byte](
-                    copy=self.conn_slots[conn_idx].addr
-                )
                 self._egress_backlog.append(
-                    EgressPacket(pkt^, addr_copy^, conn_idx, ecn)
+                    EgressPacket(pkt^, dest.copy(), conn_idx, ecn)
                 )
         finally:
             # A raise above (drain, anti-amp accounting) still leaves a
@@ -1967,7 +1896,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         life: `caps.conn_id` names it through the SCID. A key another live
         connection holds is left to it.
         """
-        var epoch = self.conn_slots[conn_idx].h3[]._h3._quic.cid_mgr.cid_epoch
+        var epoch = self.conn_slots[conn_idx].h3[].quic().cid_mgr.cid_epoch
         if epoch == self.conn_slots[conn_idx].cid_epoch_seen:
             return
         self.conn_slots[conn_idx].cid_epoch_seen = epoch
@@ -1976,7 +1905,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 self.conn_slots[conn_idx].dcids.pop(), _DcidEntry(idx=-1, generation=0)
             )
         var gen = self.conn_slots[conn_idx].generation
-        for ref e in self.conn_slots[conn_idx].h3[]._h3._quic.cid_mgr.local_cids:
+        for ref e in self.conn_slots[conn_idx].h3[].quic().cid_mgr.local_cids:
             var key = demux_key(Span(e.cid), self._demux_sip)
             if self._find_conn_by_dcid(key) < 0:
                 self.conn_dcid_map[key] = _DcidEntry(idx=conn_idx, generation=gen)
@@ -2016,11 +1945,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         failure). It routes to the owning connection's
         `H3HandlerServer.inject_response`, which stages status/headers/body
         into the stream's `ResponseWriter`, then drains the connection
-        through `_drain_and_send` like any other egress: the destination
-        falls back to the validated address when the current one is no
-        longer usable, and an address under validation gets at most 3x
-        what it sent (RFC 9000 Sections 8.1, 9.3.2). The datagrams leave
-        at the next flush().
+        through `_drain_and_send` like any other egress; the datagrams
+        leave at the next flush().
 
         `conn_id` is resolved via the generation-guarded DCID demux map
         (the server SCID surfaced as `caps.conn_id`). A stale or

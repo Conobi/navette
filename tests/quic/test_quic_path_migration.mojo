@@ -112,7 +112,7 @@ def _new_address_seen(mut p: _Pair, migrate: Bool) raises -> PathKey:
     crediting it enough bytes that the 3x budget is not what limits egress."""
     var b = _addr(2, 6000)
     p.server.last_datagram_may_migrate = migrate
-    _ = p.server.note_authenticated_ingress(PathKey(copy=b), 1_000_000, p.now)
+    p.server.note_authenticated_ingress(PathKey(copy=b), 1_000_000, p.now)
     assert_equal_int(len(p.server.path.validator.pending), 1, "challenge started")
     return b^
 

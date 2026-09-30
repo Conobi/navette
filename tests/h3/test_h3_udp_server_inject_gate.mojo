@@ -23,6 +23,7 @@ from tests.h3.test_h3_udp_server import (
 from navette.http.status import StatusCode
 from navette.http.headers import Headers
 from navette.quic.cid import dcid_to_u64
+from navette.h3.h3_udp_server import _path_key_to_sockaddr
 
 
 def _body(n: Int) -> List[Byte]:
@@ -71,7 +72,7 @@ def test_inject_to_pending_address_is_budgeted() raises:
     var other = h.new_socket()
     var sent = _move_to(h, c, other)
     assert_true(
-        not _addrs_eq(h.server_addr(0), h.srv[].conn_slots[0].validated_addr),
+        not _addrs_eq(h.server_addr(0), _path_key_to_sockaddr(h.server_conn(0)[].peer_addr_copy())),
         "destination moved to the address under validation",
     )
     var before = _bytes_at(h, other, 2)
@@ -102,7 +103,7 @@ def test_inject_after_expiry_falls_back() raises:
     assert_equal_int(at_other, 0, "nothing goes to the expired address")
     assert_true(home > 0, "the response goes to the validated address")
     assert_true(
-        _addrs_eq(h.server_addr(0), h.srv[].conn_slots[0].validated_addr),
+        _addrs_eq(h.server_addr(0), _path_key_to_sockaddr(h.server_conn(0)[].peer_addr_copy())),
         "destination reverted to the validated address",
     )
     _ = other^

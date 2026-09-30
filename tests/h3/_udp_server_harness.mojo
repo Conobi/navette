@@ -24,7 +24,7 @@ from bouclette import WatchLoop, Socket, SocketAddrV6
 
 from navette.h3.connection import H3Connection
 from navette.h3.h3_handler_server import H3HandlerServer
-from navette.h3.h3_udp_server import H3UdpServer
+from navette.h3.h3_udp_server import H3UdpServer, _path_key_to_sockaddr
 from navette.http.handler import StreamHandler
 from navette.protect.config import ProtectionConfig
 from navette.quic.connection import QuicConnection
@@ -222,8 +222,8 @@ struct UdpServerHarness[H: StreamHandler](Movable):
         return self.srv[].conn_slots[i].h3
 
     def server_addr(self, i: Int) -> List[Byte]:
-        """Copy of slot `i`'s raw sockaddr blob."""
-        return List[Byte](copy=self.srv[].conn_slots[i].addr)
+        """Slot `i`'s send destination as a raw sockaddr blob."""
+        return _path_key_to_sockaddr(self.srv[].conn_slots[i].h3[].quic().send_destination())
 
     # ── Client side ───────────────────────────────────────────────
 
