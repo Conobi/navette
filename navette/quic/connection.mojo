@@ -3853,14 +3853,12 @@ struct QuicConnection(Movable):
     def is_expected_dcid(self, dcid: Span[Byte, _]) -> Bool:
         """True if `dcid` is one of our live CIDs.
 
-        Live means `local_cid`, any active CID we issued, and the client's
-        Initial DCID until the handshake is confirmed (the client stops
-        using it after the first server Initial, RFC 9000 Section 7.2).
-        The H3 server keeps its demux keys to this same set.
+        Live means `local_cid`, the client's Initial DCID and any active
+        CID we issued: the H3 server's demux keys.
         """
         if _span_eq(dcid, self.local_cid.as_span()):
             return True
-        if not self.handshake_confirmed and _span_eq(dcid, self.initial_dcid.as_span()):
+        if _span_eq(dcid, self.initial_dcid.as_span()):
             return True
         for ref e in self.cid_mgr.local_cids:
             if _span_eq(dcid, Span(e.cid)):

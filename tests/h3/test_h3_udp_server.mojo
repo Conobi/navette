@@ -1454,7 +1454,8 @@ def _slot_with(deadline: UInt64) -> ConnSlot[StubHandler]:
     var s = ConnSlot[StubHandler](
         null_ptr[H3HandlerServer[StubHandler], MutUntrackedOrigin](),
         List[Byte](),
-        0,
+        List[UInt64](),
+        UInt64(0),
     )
     s.next_deadline_us = deadline
     return s^

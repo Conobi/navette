@@ -10,7 +10,6 @@ from std.collections import Span
 from navette.protect.config import ProtectionConfig
 from navette.quic.cid import demux_key
 from navette.quic.cid_buf import CidBuf
-from navette.h3.conn_table import KEYS_PER_CONN
 from navette.quic.event import QuicEvent, ConnectionClosedPayload
 from navette.quic.packet import PacketType, parse_packet_header
 
@@ -236,7 +235,6 @@ def test_unvalidated_slot_created_below_threshold() raises:
     assert_equal_int(h.srv[].unvalidated_handshaking(), 1, "unvalidated")
     var stats = h.srv[].protection_stats()
     assert_equal_int(Int(stats.unvalidated_handshaking_peak), 1, "unvalidated peak")
-    assert_equal_int(Int(stats.handshaking_peak), 1, "handshaking peak")
     _ = sock^
     _ = h.slot_count()
     print("PASS: test_unvalidated_slot_created_below_threshold")
@@ -386,27 +384,6 @@ def test_retired_cid_no_longer_routes() raises:
     print("PASS: test_retired_cid_no_longer_routes")
 
 
-def test_initial_dcid_key_removed_after_handshake() raises:
-    var h = _cid_harness()
-    var c = _established_with_cids(h)
-    var orig = List[Byte](c.h3._quic.initial_dcid.as_span())
-    # The key outlives confirmation by 3 PTOs, then goes at the next drain.
-    h.advance(UInt64(5_000_000))
-    _ = h.pump(c)
-    ref table = h.srv[]._table
-    assert_true(table.key_count(h.srv[].conn_slots[0].id) <= KEYS_PER_CONN, "keys within the per-connection bound")
-    assert_equal_int(
-        h.srv[]._find_conn_by_dcid(demux_key(Span(orig), h.srv[]._demux_sip)), -1, "Initial DCID no longer routes"
-    )
-    h.send_raw(c.sock, raw_initial(orig, 1200))
-    _settle(h, 1)
-    assert_equal_int(h.slot_count(), 2, "a fresh Initial for the old DCID makes a new slot")
-    assert_equal_int(h.srv[]._table.invariant_violation().byte_length(), 0, "table invariants hold")
-    _ = c^
-    _ = h.slot_count()
-    print("PASS: test_initial_dcid_key_removed_after_handshake")
-
-
 def main() raises:
     test_small_initials_dropped()
     test_version_negotiation()
@@ -422,4 +399,3 @@ def main() raises:
     test_quic_leak_single_slot()
     test_client_rotates_to_issued_cids()
     test_retired_cid_no_longer_routes()
-    test_initial_dcid_key_removed_after_handshake()
