@@ -120,6 +120,7 @@ struct CidManager(Movable):
     var highest_retire_prior_to: UInt64    # highest retire_prior_to from peer
     var _lib: SharedLibrary                # ref-counted RustlsLibrary for HMAC-SHA256
     var server_secret: List[Byte]         # 32-byte key for HMAC-SHA256 reset tokens
+    var cid_epoch: UInt64                  # bumped whenever `local_cids` gains or loses an entry
 
     def __init__(
         out self,
@@ -185,6 +186,7 @@ struct CidManager(Movable):
         )
         self.retire_queue_cap = Int(min(scaled, UInt64(MAX_RETIRE_QUEUE)))
         self.highest_retire_prior_to = UInt64(0)
+        self.cid_epoch = UInt64(0)
         self.set_peer_active_limit(peer_active_limit)
 
     def set_peer_active_limit(mut self, limit: UInt64):
@@ -237,6 +239,7 @@ struct CidManager(Movable):
         self.local_next_seq += UInt64(1)
         var entry_copy = CidEntry(copy=entry)
         self.local_cids.append(entry_copy^)
+        self.cid_epoch += UInt64(1)
         return entry^
 
     # ── Remote CID reception ──────────────────────────────────────────────────
@@ -377,10 +380,9 @@ struct CidManager(Movable):
         `packet_dcid` is the DCID of the packet carrying the frame (empty
         when unknown). A sequence never issued, or one naming
         `packet_dcid`, is a PROTOCOL_VIOLATION; a sequence already retired
-        is ignored. The retired entry is dropped from `local_cids` (the
-        place to unregister it from server demux, once issued CIDs are
-        registered there) and a replacement is issued if the active count
-        fell below `issue_limit()`.
+        is ignored. The retired entry is dropped from `local_cids` (bumping
+        `cid_epoch`, so the server unregisters its demux key) and a
+        replacement is issued if the active count fell below `issue_limit()`.
         """
         if sequence >= self.local_next_seq:
             return _verdict(PROTOCOL_VIOLATION, CID_REASON_RETIRE_UNISSUED)
@@ -391,6 +393,7 @@ struct CidManager(Movable):
                 ):
                     return _verdict(PROTOCOL_VIOLATION, CID_REASON_RETIRE_OWN_DCID)
                 _ = self.local_cids.pop(i)
+                self.cid_epoch += UInt64(1)
                 if self.active_local_count() < self.issue_limit():
                     _ = self.issue_new_cid()
                 return None
