@@ -68,9 +68,6 @@ struct IngressGuard(Movable):
     # `QuicConnection.server` (`retry_scid` empty when no Retry was sent).
     var orig_dcid: List[Byte]
     var retry_scid: List[Byte]
-    # An optional extension point: the embedding application may demand
-    # address validation for every new connection.
-    var require_validation: Bool
     var unvalidated_retry_threshold: Int
     var _lib: SharedLibrary
     var _secret: InlineArray[UInt8, 16]
@@ -86,7 +83,6 @@ struct IngressGuard(Movable):
         self.out = List[Byte](capacity=STATELESS_OUT_CAP)
         self.orig_dcid = List[Byte](capacity=_MAX_V1_CID_LEN)
         self.retry_scid = List[Byte](capacity=_MAX_V1_CID_LEN)
-        self.require_validation = False
         self.unvalidated_retry_threshold = UNVALIDATED_RETRY_THRESHOLD
         self._lib = SharedLibrary(copy=lib)
         self._secret = InlineArray[UInt8, 16](fill=UInt8(0))
@@ -121,10 +117,10 @@ struct IngressGuard(Movable):
         yet, `admitted` all of them. Order: a token that opens under our
         secret but fails address validation gets INVALID_TOKEN (RFC 9000
         Section 8.1.3); no usable token gets a Retry when `unvalidated`
-        reached the threshold, the application requires validation or the
-        server is at `conn_cap`, else an unvalidated connection; a valid
-        token gets a validated connection, or CONNECTION_REFUSED at the
-        cap. Raises only on an FFI failure.
+        reached the threshold or the server is at `conn_cap`, else an
+        unvalidated connection; a valid token gets a validated
+        connection, or CONNECTION_REFUSED at the cap. Raises only on an
+        FFI failure.
         """
         # Long header, fixed bit, type Initial; then version 1.
         if len(pkt) < 6 or (pkt[0] & 0xF0) != 0xC0 or (pkt[1] | pkt[2] | pkt[3]) != 0 or pkt[4] != 1:
@@ -148,13 +144,6 @@ struct IngressGuard(Movable):
         var token = header.token_span()
 
         var addr_hash = retry_addr_hash(peer_name)
-        var usable = UInt8(0)
-        for i in range(32):
-            usable |= addr_hash[i]
-        if usable == 0:
-            # No parsable IP in the sockaddr: nothing to bind a token to.
-            return ADMIT_DROP
-
         self.orig_dcid.clear()
         self.retry_scid.clear()
         var class_ = TOKEN_NONE
@@ -170,7 +159,6 @@ struct IngressGuard(Movable):
             self.stats.tokens_none += 1
             if (
                 unvalidated >= self.unvalidated_retry_threshold
-                or self.require_validation
                 or admitted >= conn_cap
             ):
                 return self._retry(dcid, scid, Span(addr_hash), now_us, backlog)

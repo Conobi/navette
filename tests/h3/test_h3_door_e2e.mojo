@@ -110,7 +110,7 @@ def test_unknown_version_dropped() raises:
 
 def test_retry_round_trip() raises:
     var h = _harness()
-    h.srv[].set_require_validation(True)
+    h.srv[]._test_retry_threshold(0)
     var c = _retried_client(h)
     assert_equal_int(h.slot_count(), 0, "a Retry keeps no state")
     assert_true(h.handshake(c), "handshake completes after Retry")
@@ -124,7 +124,7 @@ def test_retry_round_trip() raises:
 
 def test_invalid_token_close_wrong_port() raises:
     var h = _harness()
-    h.srv[].set_require_validation(True)
+    h.srv[]._test_retry_threshold(0)
     var c = _retried_client(h)
     var dgs = h.client_capture(c)
     assert_true(len(dgs) > 0, "the client has its token-carrying Initial ready")
@@ -144,7 +144,7 @@ def test_invalid_token_close_wrong_port() raises:
 
 def test_expired_token_close() raises:
     var h = _harness()
-    h.srv[].set_require_validation(True)
+    h.srv[]._test_retry_threshold(0)
     var c = _retried_client(h)
     var dgs = h.client_capture(c)
     h.advance(11_000_000)
@@ -162,7 +162,7 @@ def test_expired_token_close() raises:
 def test_corrupted_token_gets_retry() raises:
     """RFC 9000 erratum 7861: a token that does not decrypt is treated as absent."""
     var h = _harness()
-    h.srv[].set_require_validation(True)
+    h.srv[]._test_retry_threshold(0)
     var c = _retried_client(h)
     var none_before = Int(h.srv[].protection_stats().tokens_none)
     var dgs = h.client_capture(c)
@@ -182,7 +182,7 @@ def test_corrupted_token_gets_retry() raises:
 
 def test_foreign_token_gets_retry() raises:
     var h = _harness()
-    h.srv[].set_require_validation(True)
+    h.srv[]._test_retry_threshold(0)
     var sock = h.new_socket()
     var token = List[Byte](length=61, fill=Byte(0x33))
     token[0] = 0x02

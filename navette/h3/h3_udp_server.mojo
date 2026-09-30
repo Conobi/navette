@@ -574,12 +574,11 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     var conn_dcid_map: Dict[UInt64, _DcidEntry]
     var next_generation: UInt64
 
-    # Protection limits (validated in start()) and the door: pre-state
-    # checks, admission and stateless replies. The guard is built in
-    # start() (it needs the TLS library and the CSPRNG).
+    # Protection limits (validated in start()) and the door: admission
+    # and stateless replies. The guard is built in start() (it needs the
+    # TLS library and the CSPRNG).
     var protection: ProtectionConfig
     var _guard: Optional[IngressGuard]
-    var _require_validation: Bool
     # Slots whose `unvalidated` flag is set.
     var _unvalidated: Int
 
@@ -737,7 +736,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self.next_generation = UInt64(0)
         self.protection = protection.copy()
         self._guard = Optional[IngressGuard](None)
-        self._require_validation = False
         self._unvalidated = 0
 
         self._tls = tls^
@@ -849,7 +847,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self.protection.validate()
         if not self._guard:
             self._guard = Optional(IngressGuard(self._tls.shared()))
-            self._guard.value().require_validation = self._require_validation
 
         # Store loop pointer for re-arming in flush(). A retry must use
         # the loop the first attempt registered its resources with.
@@ -1707,12 +1704,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     def unvalidated_handshaking(self) -> Int:
         """Live connections whose peer address is not validated yet (no Retry token, handshake not done)."""
         return self._unvalidated
-
-    def set_require_validation(mut self, on: Bool):
-        """Answer every token-less Initial with a Retry (an extension point for the embedding application)."""
-        self._require_validation = on
-        if self._guard:
-            self._guard.value().require_validation = on
 
     def _test_retry_threshold(mut self, n: Int):
         """Test-only (after `start()`): lower the unvalidated count at which Initials get a Retry."""

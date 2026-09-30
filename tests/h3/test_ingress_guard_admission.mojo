@@ -45,7 +45,7 @@ def _initial_with_token(mut g: IngressGuard, mut rng: Rng, kind: Int, now: UInt6
 
 
 def test_admission_oracle_property(lib: SharedLibrary) raises:
-    """Property: admit_initial matches the admission order over random (token, counts, cap, require_validation)."""
+    """Property: admit_initial matches the admission order over random (token, counts, cap, threshold)."""
     var g = IngressGuard(lib)
     var rng = Rng(UInt64(0xAD17))
     for i in range(prop_iters(300)):
@@ -53,7 +53,7 @@ def test_admission_oracle_property(lib: SharedLibrary) raises:
         var unval = rng.below(300)
         var cap = 64 + rng.below(64)
         var admitted = rng.below(cap + 1)
-        g.require_validation = rng.chance(10)
+        g.unvalidated_retry_threshold = 0 if rng.chance(10) else 256
         var now = UInt64(10_000_000 + i * 50_000)  
         var pkt = _initial_with_token(g, rng, kind, now)
         g.begin_pass()
@@ -65,7 +65,7 @@ def test_admission_oracle_property(lib: SharedLibrary) raises:
             want = ADMIT_REPLY
         elif kind == 2:
             want = ADMIT_CREATE if admitted < cap else ADMIT_REPLY
-        elif unval >= 256 or g.require_validation or admitted >= cap:
+        elif unval >= g.unvalidated_retry_threshold or admitted >= cap:
             want = ADMIT_REPLY
         else:
             want = ADMIT_CREATE
@@ -80,7 +80,7 @@ def test_retry_output_and_valid_round_trip(lib: SharedLibrary) raises:
     var now = UInt64(5_000_000)
     var dcid = filled(0xD1, 20)
     var pkt = initial(1200, dcid)
-    g.require_validation = True
+    g.unvalidated_retry_threshold = 0
     assert_equal_int(g.admit_initial(Span(pkt), Span(_addr_a()), now, 0, 0, 64, backlog=0), ADMIT_REPLY, "retry")
     assert_equal_int(Int(g.stats.retry_sent), 1, "retry_sent")
     var retry = parse_packet_header(Span(g.out), 8)[0].copy()
@@ -139,7 +139,7 @@ def test_close_and_refuse(lib: SharedLibrary) raises:
 def test_new_connection_filter(lib: SharedLibrary) raises:
     """Only a full-size v1 Initial with an 8-20 byte DCID reaches admission; the rest is dropped and counted."""
     var g = IngressGuard(lib)
-    g.require_validation = True
+    g.unvalidated_retry_threshold = 0
     var a = Span(_addr_a())
     assert_equal_int(g.admit_initial(Span(short_packet(40)), a, 1, 0, 0, 64, backlog=0), ADMIT_DROP, "short header")
     assert_equal_int(g.admit_initial(Span(handshake(300)), a, 1, 0, 0, 64, backlog=0), ADMIT_DROP, "Handshake")
@@ -159,7 +159,7 @@ def test_new_connection_filter(lib: SharedLibrary) raises:
 
 def test_response_cap_per_pass(lib: SharedLibrary) raises:
     var g = IngressGuard(lib)
-    g.require_validation = True
+    g.unvalidated_retry_threshold = 0
     var pkt = initial_n(8, 1200)
     g.begin_pass()
     var retries = 0
@@ -179,7 +179,7 @@ def test_response_cap_per_pass(lib: SharedLibrary) raises:
 
 def test_malformed_sockaddr_drops(lib: SharedLibrary) raises:
     var g = IngressGuard(lib)
-    g.require_validation = True
+    g.unvalidated_retry_threshold = 0
     var bad = filled(0x02, 3)
     assert_equal_int(g.admit_initial(Span(initial_n(8, 1200)), Span(bad), 1_000_000, 0, 0, 64, backlog=0), ADMIT_DROP, "3-byte name")
     assert_equal_int(len(g.out), 0, "nothing in g.out")
