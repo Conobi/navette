@@ -42,6 +42,7 @@ from navette.h3.error import (
     H3_STREAM_CREATION_ERROR,
     H3_FRAME_ERROR,
     H3_EXCESSIVE_LOAD,
+    H3_CLOSED_CRITICAL_STREAM,
 )
 from navette.h3.qpack import (
     QpackEncoder,
@@ -466,6 +467,7 @@ struct H3Connection(Movable):
                     pass
             elif ev.type_id == QuicEvent.STREAM_RESET:
                 ref rst = ev.payload.unsafe_get[StreamResetPayload]()
+                self._release_stream(rst.stream_id, now)
                 if self._is_request_stream(rst.stream_id):
                     var h3ev = H3Event(H3Event.STREAM_RESET)
                     h3ev.stream_id = rst.stream_id
@@ -710,7 +712,7 @@ struct H3Connection(Movable):
 
         Work per drain is linear in the bytes drained: frames are parsed
         in place and only an unparsed partial frame is kept (see
-        `_H3StreamBuf`).
+        `_H3StreamBuf`). FIN releases the stream's state.
         """
         # RFC 9000 §10.2.1: once CLOSING/DRAINING/CLOSED, drop further inbound
         # stream data — no more frames flow on this connection.
@@ -740,7 +742,14 @@ struct H3Connection(Movable):
         comptime if PROFILE_ACCEPT:
             if self.profile_ptr is not None:
                 t_start_ffi = monotonic_us()
-        var recv_result = self._quic.recv_stream_data(stream_id)
+        var recv_result: Tuple[List[Byte], Bool]
+        try:
+            recv_result = self._quic.recv_stream_data(stream_id)
+        except:
+            # QUIC already reaped the stream: a RESET_STREAM processed after
+            # this readable event was queued. Its STREAM_RESET event
+            # releases the H3 state.
+            return
         comptime if PROFILE_ACCEPT:
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].record_drain_recv_ffi(monotonic_us() - t_start_ffi)
@@ -758,6 +767,8 @@ struct H3Connection(Movable):
         # QPACK streams carry nothing we act on with a zero-capacity
         # dynamic table. Their bytes are dropped, never buffered.
         if self._stream_bufs[key].discard:
+            if fin:
+                self._release_stream(stream_id, now)
             comptime if PROFILE_ACCEPT:
                 if self.profile_ptr is not None:
                     self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
@@ -778,6 +789,8 @@ struct H3Connection(Movable):
         if self._stream_bufs[key].is_uni:
             if not self._stream_bufs[key].type_byte:
                 if len(buf) == 0:
+                    if fin:
+                        self._release_stream(stream_id, now)
                     # B3a + B1 exit (return path 1 — UNI empty buf).
                     comptime if PROFILE_ACCEPT:
                         if self.profile_ptr is not None:
@@ -810,6 +823,8 @@ struct H3Connection(Movable):
                 else:
                     self._stream_bufs[key].discard = True
                 if self._stream_bufs[key].discard:
+                    if fin:
+                        self._release_stream(stream_id, now)
                     # B3a + B1 exit (return path 2 — discarded UNI type).
                     comptime if PROFILE_ACCEPT:
                         if self.profile_ptr is not None:
@@ -855,16 +870,34 @@ struct H3Connection(Movable):
                 sb.buf = List[Byte](capacity=len(buf) - pos)
                 sb.buf.extend(Span(buf)[pos:])
 
-        # FIN on bidi request stream → STREAM_ENDED event
-        if not self._stream_bufs[key].is_uni and fin:
-            var h3ev = H3Event(H3Event.STREAM_ENDED)
-            h3ev.stream_id = stream_id
-            self._h3_events.append(h3ev^)
+        if fin:
+            if not self._stream_bufs[key].is_uni:
+                var h3ev = H3Event(H3Event.STREAM_ENDED)
+                h3ev.stream_id = stream_id
+                self._h3_events.append(h3ev^)
+            self._release_stream(stream_id, now)
 
         # B1 exit (fall-through path 4).
         comptime if PROFILE_ACCEPT:
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
+
+    def _release_stream(mut self, stream_id: UInt64, now: UInt64):
+        """Forget a stream's receive state once the peer finished or reset it.
+
+        No-op for streams already released. Ending a peer control or QPACK
+        stream is a connection error (RFC 9114 Section 6.2.1, RFC 9204
+        Section 4.2).
+        """
+        var key = Int(stream_id)
+        _ = self._stream_bufs.pop(key, _H3StreamBuf())
+        _ = self._request_headers_seen.pop(key, False)
+        if (
+            (self._peer_ctrl_sid and self._peer_ctrl_sid.value() == stream_id)
+            or (self._peer_qenc_sid and self._peer_qenc_sid.value() == stream_id)
+            or (self._peer_qdec_sid and self._peer_qdec_sid.value() == stream_id)
+        ):
+            self._quic.close_app(H3_CLOSED_CRITICAL_STREAM, "critical stream closed", now)
 
     def _parse_frames(
         mut self,
