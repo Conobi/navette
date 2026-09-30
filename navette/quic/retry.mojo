@@ -54,6 +54,13 @@ comptime RETRY_REJECT_FUTURE: Int = 5
 comptime RETRY_REJECT_EXPIRED: Int = 6
 comptime RETRY_REJECT_UNDERSIZED: Int = 7
 
+# RFC 9001 Section 5.8: the fixed QUIC v1 Retry integrity key and nonce.
+comptime RETRY_INTEGRITY_KEY: InlineArray[UInt8, 16] = [
+    0xBE, 0x0C, 0x69, 0x0B, 0x9F, 0x66, 0x57, 0x5A, 0x1D, 0x76, 0x6B, 0x54, 0xE3, 0x68, 0xC8, 0x4E
+]
+comptime RETRY_INTEGRITY_NONCE: InlineArray[UInt8, 12] = [
+    0x46, 0x15, 0x99, 0xD3, 0x5D, 0x63, 0x2B, 0xF2, 0x23, 0x98, 0x25, 0xBB
+]
 comptime _NONCE_LEN: Int = 12
 comptime _TAG_LEN: Int = 16
 comptime _HASH_LEN: Int = 32
@@ -336,41 +343,8 @@ def compute_retry_integrity_tag(
     """
     var rlib = lib.inner_ptr()
 
-    # Fixed key: 0xbe0c690b9f66575a1d766b54e368c84e
-    var key_buf = Owned[UInt8](16)
-    var key_ptr = key_buf.ptr()
-    key_ptr[unsafe_offset=0] = 0xBE
-    key_ptr[unsafe_offset=1] = 0x0C
-    key_ptr[unsafe_offset=2] = 0x69
-    key_ptr[unsafe_offset=3] = 0x0B
-    key_ptr[unsafe_offset=4] = 0x9F
-    key_ptr[unsafe_offset=5] = 0x66
-    key_ptr[unsafe_offset=6] = 0x57
-    key_ptr[unsafe_offset=7] = 0x5A
-    key_ptr[unsafe_offset=8] = 0x1D
-    key_ptr[unsafe_offset=9] = 0x76
-    key_ptr[unsafe_offset=10] = 0x6B
-    key_ptr[unsafe_offset=11] = 0x54
-    key_ptr[unsafe_offset=12] = 0xE3
-    key_ptr[unsafe_offset=13] = 0x68
-    key_ptr[unsafe_offset=14] = 0xC8
-    key_ptr[unsafe_offset=15] = 0x4E
-
-    # Fixed nonce: 0x461599d35d632bf2239825bb
-    var nonce_buf = Owned[UInt8](12)
-    var nonce_ptr = nonce_buf.ptr()
-    nonce_ptr[unsafe_offset=0] = 0x46
-    nonce_ptr[unsafe_offset=1] = 0x15
-    nonce_ptr[unsafe_offset=2] = 0x99
-    nonce_ptr[unsafe_offset=3] = 0xD3
-    nonce_ptr[unsafe_offset=4] = 0x5D
-    nonce_ptr[unsafe_offset=5] = 0x63
-    nonce_ptr[unsafe_offset=6] = 0x2B
-    nonce_ptr[unsafe_offset=7] = 0xF2
-    nonce_ptr[unsafe_offset=8] = 0x23
-    nonce_ptr[unsafe_offset=9] = 0x98
-    nonce_ptr[unsafe_offset=10] = 0x25
-    nonce_ptr[unsafe_offset=11] = 0xBB
+    var key = materialize[RETRY_INTEGRITY_KEY]()
+    var nonce = materialize[RETRY_INTEGRITY_NONCE]()
 
     # Build pseudo-Retry: orig_dcid_len (1) || orig_dcid || retry_packet_without_tag
     var aad_len = 1 + len(orig_dcid) + len(retry_packet_without_tag)
@@ -391,9 +365,9 @@ def compute_retry_integrity_tag(
     out_len_ptr[unsafe_offset=0] = Int32(0)
 
     var rc = rlib[].aes_gcm_128_seal(
-        key_ptr,
+        key.unsafe_ptr(),
         Int32(16),
-        nonce_ptr,
+        nonce.unsafe_ptr(),
         Int32(12),
         aad_ptr,
         Int32(aad_len),

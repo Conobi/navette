@@ -10,6 +10,7 @@ from std.collections import InlineArray, Span
 
 from navette.quic.codec import varint_len, varint_encode_at
 from navette.quic.packet_protect import PacketProtect
+from navette.quic.retry import RETRY_INTEGRITY_KEY, RETRY_INTEGRITY_NONCE
 from navette.tls.lib import SharedLibrary
 
 comptime RETRY_SCID_LEN: Int = 8
@@ -18,13 +19,6 @@ comptime _QUIC_V1: UInt32 = 1
 comptime _TAG_LEN: Int = 16
 comptime _MAX_PN_LEN: Int = 4
 comptime _FRAME_CONNECTION_CLOSE: UInt8 = 0x1C
-# RFC 9001 Section 5.8, QUIC v1.
-comptime _RETRY_KEY: InlineArray[UInt8, 16] = [
-    0xBE, 0x0C, 0x69, 0x0B, 0x9F, 0x66, 0x57, 0x5A, 0x1D, 0x76, 0x6B, 0x54, 0xE3, 0x68, 0xC8, 0x4E
-]
-comptime _RETRY_NONCE: InlineArray[UInt8, 12] = [
-    0x46, 0x15, 0x99, 0xD3, 0x5D, 0x63, 0x2B, 0xF2, 0x23, 0x98, 0x25, 0xBB
-]
 
 
 def _append_u32_be(mut out: List[Byte], v: UInt32):
@@ -68,8 +62,8 @@ def build_retry(
     _append_cid(out, retry_scid)
     out.extend(token)
 
-    var key = materialize[_RETRY_KEY]()
-    var nonce = materialize[_RETRY_NONCE]()
+    var key = materialize[RETRY_INTEGRITY_KEY]()
+    var nonce = materialize[RETRY_INTEGRITY_NONCE]()
     var tag = InlineArray[UInt8, _TAG_LEN](fill=UInt8(0))
     var tag_len = InlineArray[Int32, 1](fill=Int32(0))
     var no_plaintext = InlineArray[UInt8, 1](fill=UInt8(0))
