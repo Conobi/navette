@@ -8,6 +8,7 @@ come after every assertion that dereferences `h.srv`.
 from std.collections import Span
 
 from navette.protect.config import ProtectionConfig
+from navette.quic.cid import demux_key
 from navette.quic.event import QuicEvent, ConnectionClosedPayload
 from navette.quic.packet import PacketType, parse_packet_header
 
@@ -285,6 +286,26 @@ def test_refused_when_no_free_id() raises:
     print("PASS: test_refused_when_no_free_id")
 
 
+def test_quic_leak_single_slot() raises:
+    """Pin: long-header packets with foreign DCIDs coalesced after a client's first Initial create no state."""
+    var h = _harness()
+    var c = h.new_client()
+    var dgs = h.client_capture(c)
+    var dg = dgs[0].copy()
+    for i in range(10):
+        dg.extend(Span(raw_initial(_dcid(0x40 + UInt8(i), 8), 26)))
+    assert_true(len(dg) <= 1472, "fits the receive window")
+    h.send_raw(c.sock, dg)
+    _settle(h)
+    assert_equal_int(h.slot_count(), 1, "one connection, for the first packet's DCID")
+    assert_equal_int(
+        h.srv[]._find_conn_by_dcid(demux_key(Span(_dcid(0x40, 8)), h.srv[]._demux_sip)), -1, "foreign DCID not routed"
+    )
+    _ = c^
+    _ = h.slot_count()
+    print("PASS: test_quic_leak_single_slot")
+
+
 def main() raises:
     test_small_initials_dropped()
     test_version_negotiation()
@@ -297,3 +318,4 @@ def main() raises:
     test_unvalidated_slot_created_below_threshold()
     test_handshake_timeout_frees_unvalidated()
     test_refused_when_no_free_id()
+    test_quic_leak_single_slot()

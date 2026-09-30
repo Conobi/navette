@@ -411,6 +411,9 @@ struct QuicConnection(Movable):
     var peer_cid: CidBuf
     # The SCID of the first Initial that authenticated; None until then.
     var _initial_peer_scid: Optional[CidBuf]
+    # Whether any packet of the last datagram given to `recv` decrypted:
+    # path bookkeeping must act only on authenticated datagrams.
+    var last_datagram_authenticated: Bool
     # The client's original DCID on a client (it keys the Retry integrity
     # tag and must come back as original_destination_connection_id), the
     # DCID the Initial keys derive from on a server.
@@ -519,6 +522,7 @@ struct QuicConnection(Movable):
         self.local_cid = CidBuf(copy=local_cid)
         self.peer_cid = CidBuf(copy=peer_cid)
         self._initial_peer_scid = None
+        self.last_datagram_authenticated = False
         self.initial_dcid = CidBuf(copy=initial_dcid)
         self._retry_token = List[Byte]()
         self._retry_scid = None
@@ -773,6 +777,7 @@ struct QuicConnection(Movable):
         var ph_fp = UInt64(0)
         var ph_sm = UInt64(0)
         self.bytes_received += UInt64(buf_len)
+        self.last_datagram_authenticated = False
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
             comptime if PROFILE_ACCEPT:
                 if self.prof.ptr is not None:
@@ -786,6 +791,11 @@ struct QuicConnection(Movable):
             self.idle_timer = now
         var lowest_recv_space = 3
         var offset = 0
+        # RFC 9000 Section 12.2: every packet of a datagram carries the
+        # first packet's DCID; one that does not belongs to another
+        # connection (or an injector) and ends the datagram.
+        var first_dcid = CidBuf.empty()
+        var have_first_dcid = False
         while offset < buf_len:
             if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
                 break
@@ -802,6 +812,12 @@ struct QuicConnection(Movable):
             var header = PacketHeader()
             swap(header, hr[0])
             ph_hdr = self.prof.elapsed(ph_hdr)
+            if have_first_dcid:
+                if header.dcid != first_dcid:
+                    break
+            else:
+                first_dcid = CidBuf(copy=header.dcid)
+                have_first_dcid = True
             if header.is_long_header and header.packet_type == PacketType.retry():
                 # A Retry fills the rest of the datagram; a server never gets one.
                 if not self.is_server:
@@ -818,7 +834,7 @@ struct QuicConnection(Movable):
             var space_idx = classify[1]
             var key_slot = classify[2]
             var pkt_len = classify[3]
-            if self._is_initial_from_other_scid(header):
+            if self._is_initial_from_other_scid(header) or self._is_small_datagram_initial(header, buf_len):
                 offset += pkt_len
                 continue
             var decrypt_ok = True
@@ -841,6 +857,7 @@ struct QuicConnection(Movable):
                 decrypt_ok = False
             if not decrypt_ok:
                 break
+            self.last_datagram_authenticated = True
             if (
                 not self._initial_peer_scid
                 and header.is_long_header
@@ -905,6 +922,16 @@ struct QuicConnection(Movable):
                 if frame.is_crypto():
                     crypto.append(frame.as_crypto().copy())
         self.crypto_streams[0].rewind(crypto)
+
+    @always_inline
+    def _is_small_datagram_initial(self, ref header: PacketHeader, datagram_len: Int) -> Bool:
+        """On a server, an Initial in a datagram under 1,200 bytes: skipped, coalesced or not (RFC 9000 Section 14.1)."""
+        return (
+            self.is_server
+            and datagram_len < MIN_INITIAL_PACKET_SIZE
+            and header.is_long_header
+            and header.packet_type == PacketType.initial()
+        )
 
     @always_inline
     def _is_initial_from_other_scid(self, ref header: PacketHeader) -> Bool:
