@@ -4349,13 +4349,13 @@ def test_path_validation_rejects_wrong_addr() raises:
     print("  test_path_validation_rejects_wrong_addr: PASS")
 
 
-def test_path_validation_defers_without_spare_cid() raises:
-    """AC15: PATH_RESPONSE match WITHOUT a spare remote CID defers promotion.
+def test_path_validation_keeps_cid_without_spare() raises:
+    """A PATH_RESPONSE match WITHOUT a spare remote CID still promotes the path.
 
-    RFC 9000 §9.5 MUST: a different DCID is required on a new path.
-    With no spare, the connection cannot rotate, and the validated path
-    must NOT take effect — peer_addr stays put. Validation completes
-    once the client issues a fresh NEW_CONNECTION_ID.
+    The challenge is consumed by the match, so deferring would leave the
+    address neither validated nor under validation and the send gate would
+    stall the connection. RFC 9000 Section 9.5 lets the current CID be kept
+    for a peer-initiated address change (a NAT rebinding).
     """
     var conn = _build_server_for_rx_test()
     # NO spare remote CID seeded; only seq=0 exists.
@@ -4379,28 +4379,17 @@ def test_path_validation_defers_without_spare_cid() raises:
         Span(token), PathKey(copy=addr_b), UInt64(2000)
     )
 
-    # The matched challenge is REMOVED (validator's on_response is the
-    # one that pops + marks `current`); CID rotation fails → peer_addr
-    # does NOT swap.
     var peer_now = PathKey(copy=conn.path.peer_addr)
-    var addr_a_cmp = PathKey.from_v4(
-        UInt8(10), UInt8(0), UInt8(0), UInt8(1), UInt16(5000)
-    )
     assert_true(
-        peer_now == addr_a_cmp,
-        "peer_addr stays on the old path when no spare DCID is available",
+        peer_now == addr_b,
+        "peer_addr follows the validated path even without a spare DCID",
     )
     assert_equal_int(
         Int(conn.cid_mgr.remote_active_cid_seq), 0,
-        "remote_active_cid_seq unchanged — no rotation occurred",
+        "remote_active_cid_seq unchanged: the current CID is kept",
     )
-    # Validator did record the validated path internally (the response
-    # was a real match); the deferral is at the connection layer.
-    assert_true(
-        Bool(conn.path.validator.current),
-        "validator marks the path validated even when conn defers promotion",
-    )
-    print("  test_path_validation_defers_without_spare_cid: PASS")
+    assert_equal_int(len(conn.path.validator.pending), 0, "challenge consumed")
+    print("  test_path_validation_keeps_cid_without_spare: PASS")
 
 
 def test_is_closing_reflects_bitfield() raises:
@@ -4917,7 +4906,7 @@ def main() raises:
     test_initial_burst_server_only()
     test_path_validation_full_round_trip()
     test_path_validation_rejects_wrong_addr()
-    test_path_validation_defers_without_spare_cid()
+    test_path_validation_keeps_cid_without_spare()
     test_is_closing_reflects_bitfield()
     test_anti_amp_per_path_in_flusher()
     test_send_datagram_refused_when_peer_disabled()

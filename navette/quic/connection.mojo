@@ -1505,38 +1505,29 @@ struct QuicConnection(Movable):
     def on_path_response_received(
         mut self, data: Span[Byte, _], var from_addr: PathKey, now: UInt64
     ) raises:
-        """Validate a PATH_RESPONSE and, on match, swap the validated path.
+        """Validate a PATH_RESPONSE and, on match, make its address the peer address.
 
-        RFC 9000 §8.2: the 8-byte data MUST match a pending challenge AND
-        the response MUST arrive from the address the challenge targeted.
-        Non-matches are silently dropped (no error, no state change).
+        RFC 9000 Section 8.2: the 8-byte data MUST match a pending challenge
+        AND the response MUST arrive from the address the challenge
+        targeted. Non-matches are silently dropped (no error, no state
+        change).
 
-        On a successful match `path.validator.on_response` removes the
-        challenge from the pending list and records the new `current`
-        ValidatedPath. RFC 9000 §9.5 then MANDATES that the server switch
-        to a fresh DCID on the new path — reusing the same DCID across
-        paths makes the connection trivially linkable. We therefore call
-        `_rotate_to_spare_remote_cid` to advance `cid_mgr.remote_active_cid_seq`
-        to an unused Active remote CID (queuing RETIRE_CONNECTION_ID for
-        the previous sequence). If no spare exists, the validation result
-        is deferred: `peer_addr` does NOT swap, and the client
-        must issue a NEW_CONNECTION_ID before the migration can complete.
+        A match always promotes `peer_addr`: the challenge was popped, so
+        holding the address back would leave it neither validated nor
+        under validation, and the default-deny send gate would stall the
+        connection. The DCID is rotated to a spare when one exists
+        (RFC 9000 Section 9.5, unlinkability); without one (none issued,
+        all retired, or zero-length CIDs) the current CID is kept, which
+        Section 9.5 allows for a peer-initiated address change such as a
+        NAT rebinding.
         """
         var maybe = self.path.validator.on_response(
             data, PathKey(copy=from_addr), now
         )
         if not Bool(maybe):
-            return  # silent drop — RFC 9000 §8.2 token/addr mismatch.
-
-        # CID rotation per RFC 9000 §9.5 (MUST NOT reuse DCID on different
-        # paths). Failure to find a spare defers the validation: the new
-        # path is held back until the peer supplies a fresh NEW_CID.
-        var rotated = self._rotate_to_spare_remote_cid(now)
-        if not rotated:
-            return
-
-        # Promotion: the validated path is now the active peer addr. This
-        # is the ONLY site that mutates `peer_addr`.
+            return  # silent drop — RFC 9000 Section 8.2 token/addr mismatch.
+        _ = self._rotate_to_spare_remote_cid(now)
+        # The only site that moves `peer_addr` after the handshake.
         self.path.peer_addr = from_addr^
 
     def _rotate_to_spare_remote_cid(mut self, now: UInt64) raises -> Bool:
@@ -1548,7 +1539,8 @@ struct QuicConnection(Movable):
         `retire_remote`. Returns False when no spare exists or the retire
         backlog is full.
 
-        Caller: `on_path_response_received` after a verified match.
+        Caller: `on_path_response_received` after a verified match; a
+        False return keeps the current CID.
         """
         var current_seq = self.cid_mgr.remote_active_cid_seq
         for i in range(len(self.cid_mgr.remote_cids)):
