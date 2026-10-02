@@ -368,6 +368,20 @@ def test_was_received_tracks_ranges_and_window() raises:
     print("    PASS test_was_received_tracks_ranges_and_window")
 
 
+def test_was_received_newer_than_newest_is_never_a_duplicate() raises:
+    """A PN above the largest received is new, even with the range table full; the largest itself is a duplicate."""
+    var space = PacketNumberSpace(EncryptionLevel.application())
+    _assert_false(space.was_received(UInt64(0)), "PN 0 before anything arrived")
+    for i in range(100):
+        space.on_packet_received(UInt64(10 + 2 * i), False)
+    var largest = UInt64(space.largest_recv_pn)
+    _assert_true(space.was_received(largest), "the largest PN is a duplicate")
+    for d in range(1, 5):
+        _assert_false(space.was_received(largest + UInt64(d)), "a PN above the largest is new")
+    _assert_false(space.was_received(UInt64((1 << 62) - 1)), "the largest legal PN is new")
+    print("    PASS test_was_received_newer_than_newest_is_never_a_duplicate")
+
+
 def test_ack_range_merge() raises:
     """Receiving PNs that fill a gap should merge ranges."""
     var space = PacketNumberSpace(EncryptionLevel.initial())
@@ -622,6 +636,7 @@ def main() raises:
     test_on_ack_received()
     test_duplicate_pn_ignored()
     test_was_received_tracks_ranges_and_window()
+    test_was_received_newer_than_newest_is_never_a_duplicate()
     test_ack_range_merge()
     test_pn_space_last_ae_acked_initially_zero()
     test_pn_space_any_ae_acked_in_range_boundaries()

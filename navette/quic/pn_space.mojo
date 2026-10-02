@@ -344,8 +344,11 @@ struct PacketNumberSpace(Copyable, Movable):
         A PN inside a tracked range was received. Once the range table is
         full its oldest ranges have been evicted, so a PN below the oldest
         tracked range counts as received: dropping a stray late packet is
-        harmless, processing a replay is not.
+        harmless, processing a replay is not. A PN above the largest
+        received (the common case) is new without a range scan.
         """
+        if Int(pn) > self.largest_recv_pn:
+            return False
         for i in range(self.ack_ranges_len):
             if pn >= self.ack_ranges[i].start and pn <= self.ack_ranges[i].end:
                 return True
