@@ -1862,18 +1862,20 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         try:
             ref quic = self.conn_slots[conn_idx].h3[].quic()
             var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(now)
-            var dest = _path_key_to_sockaddr(quic.send_destination())
-            var ecn = quic.ecn_mark()
-            for i in range(len(datagrams)):
-                # Move the payload out of the drained list (swap with an
-                # empty husk) rather than copying 1200 bytes per datagram.
-                var pkt = List[Byte]()
-                swap(pkt, datagrams[i])
-                if len(pkt) == 0:
-                    continue
-                self._egress_backlog.append(
-                    EgressPacket(pkt^, dest.copy(), conn_idx, ecn)
-                )
+            # An empty drain (a timer pass with nothing due) needs no sockaddr.
+            if len(datagrams) > 0:
+                var dest = _path_key_to_sockaddr(quic.send_destination())
+                var ecn = quic.ecn_mark()
+                for i in range(len(datagrams)):
+                    # Move the payload out of the drained list (swap with an
+                    # empty husk) rather than copying 1200 bytes per datagram.
+                    var pkt = List[Byte]()
+                    swap(pkt, datagrams[i])
+                    if len(pkt) == 0:
+                        continue
+                    self._egress_backlog.append(
+                        EgressPacket(pkt^, dest.copy(), conn_idx, ecn)
+                    )
         finally:
             # A raise above (drain, anti-amp accounting) still leaves a
             # fresh cache: the PTO armed by the dropped datagrams must be
