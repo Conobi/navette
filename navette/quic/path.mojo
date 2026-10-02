@@ -42,6 +42,15 @@ comptime MAX_PENDING_RESPONSES: Int = 3
 # ── PathKey — canonical comparable identifier for a peer 4-tuple ──────────────
 
 
+@always_inline
+def _addr_vector(addr: InlineArray[UInt8, 16]) -> SIMD[DType.uint8, 16]:
+    """The address as one vector, without unsafe loads: LLVM folds the lane inserts into a single 16-byte load."""
+    var v = SIMD[DType.uint8, 16]()
+    comptime for i in range(16):
+        v[i] = addr[i]
+    return v
+
+
 struct PathKey(Copyable, Movable):
     """Canonical comparable identifier for a peer (family, addr, port).
 
@@ -72,14 +81,12 @@ struct PathKey(Copyable, Movable):
         self.port = copy.port
         self.scope_id = copy.scope_id
 
+    @always_inline
     def __eq__(self, other: Self) -> Bool:
-        """Byte-exact equality across family, addr, port, scope id."""
+        """Byte-exact equality across family, addr, port, scope id; the address is one 16-byte vector compare."""
         if self.family != other.family or self.port != other.port or self.scope_id != other.scope_id:
             return False
-        for i in range(16):
-            if self.addr[i] != other.addr[i]:
-                return False
-        return True
+        return _addr_vector(self.addr) == _addr_vector(other.addr)
 
     @staticmethod
     def zero() -> Self:

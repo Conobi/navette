@@ -154,6 +154,18 @@ def test_pathkey_equality() raises:
     assert_false(a == c, "PathKeys with different ports are unequal")
 
 
+def test_pathkey_equality_sees_every_address_byte() raises:
+    """Flipping any one of the 16 address bytes makes the keys unequal."""
+    var base = InlineArray[UInt8, 16](fill=UInt8(0xA5))
+    var a = PathKey(Int32(10), InlineArray[UInt8, 16](copy=base), UInt16(443))
+    for i in range(16):
+        var flipped = InlineArray[UInt8, 16](copy=base)
+        flipped[i] = flipped[i] ^ UInt8(1)
+        var b = PathKey(Int32(10), flipped^, UInt16(443))
+        assert_false(a == b, "keys differing only at address byte " + String(i) + " are unequal")
+    assert_true(a == PathKey(Int32(10), base^, UInt16(443)), "identical keys are equal")
+
+
 def main() raises:
     print("test_path_validator:")
     test_start_challenge_produces_eight_byte_token()
@@ -176,4 +188,6 @@ def main() raises:
     print("  test_gc_keeps_fresh_challenges: PASS")
     test_pathkey_equality()
     print("  test_pathkey_equality: PASS")
+    test_pathkey_equality_sees_every_address_byte()
+    print("  test_pathkey_equality_sees_every_address_byte: PASS")
     print("path_validator tests passed")
