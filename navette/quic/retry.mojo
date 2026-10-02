@@ -8,7 +8,6 @@ from std.collections import InlineArray, Span
 
 from navette.util.owned_alloc import Owned
 from navette.util.secure_random import fill_random
-from navette.util.sha256 import sha256
 from navette.util.sockaddr import sockaddr_ip, SOCKADDR_PORT_OFFSET
 from navette.tls.lib import SharedLibrary
 
@@ -32,10 +31,10 @@ def _copy_span_to_ptr(
 comptime RETRY_TOKEN_TYPE: UInt8 = 0x01
 comptime RETRY_TOKEN_LIFETIME_US: UInt64 = 10_000_000
 # Length of the shortest genuine token (empty original DCID): type (1) +
-# nonce (12) + dcid_len (1) + addr_hash (32) + timestamp (8) + AEAD tag
-# (16). A type-0x01 token shorter than this cannot be ours, so it is
+# nonce (12) + dcid_len (1) + peer address (18) + timestamp (8) + AEAD
+# tag (16). A type-0x01 token shorter than this cannot be ours, so it is
 # NONE (answer with a Retry), never INVALID (an INVALID_TOKEN close).
-comptime RETRY_TOKEN_MIN_LEN: Int = 70
+comptime RETRY_TOKEN_MIN_LEN: Int = 56
 # Length of the longest genuine token (20-byte original DCID). A longer
 # type-0x01 token cannot be ours either, so it is NONE as well.
 comptime RETRY_TOKEN_MAX_LEN: Int = RETRY_TOKEN_MIN_LEN + 20
@@ -63,9 +62,10 @@ comptime RETRY_INTEGRITY_NONCE: InlineArray[UInt8, 12] = [
 ]
 comptime _NONCE_LEN: Int = 12
 comptime _TAG_LEN: Int = 16
-comptime _HASH_LEN: Int = 32
-# dcid_len (1) + orig_dcid (<= 20) + addr_hash (32) + timestamp (8).
-comptime _MAX_PT_LEN: Int = 61
+comptime _ADDR_LEN: Int = 18
+"""Sealed peer address: the IP as 16 bytes (IPv4 in its IPv4-mapped form) then the big-endian port; fixed so a token's length never reveals the address family."""
+# dcid_len (1) + orig_dcid (<= 20) + peer address (18) + timestamp (8).
+comptime _MAX_PT_LEN: Int = 47
 comptime _AAD_LABEL = "navette-retry-v2"
 comptime _AAD_LEN: Int = 17
 
@@ -98,35 +98,30 @@ struct RetryTokenScratch(Movable):
         self.out_len = InlineArray[Int32, 1](fill=Int32(0))
 
 
-def retry_addr_hash(sockaddr: Span[Byte, _]) -> InlineArray[UInt8, 32]:
-    """SHA-256 of the peer's IP address bytes (4, or 16) and port (big-endian).
+def _write_peer_addr(sockaddr: Span[Byte, _], mut dst: InlineArray[UInt8, _MAX_PT_LEN], off: Int) -> Bool:
+    """Write the `_ADDR_LEN`-byte normalised peer address at `dst[off:]`; False, writing nothing, when `sockaddr` holds no parsable IP.
 
-    `flowinfo` and `scope_id` are not read, and an IPv4-mapped IPv6
-    address hashes as its 4 IPv4 bytes, so the token survives the
-    dual-stack socket reporting the same peer either way. A malformed
-    blob (no parsable IP) yields all zeros instead of a digest:
-    `generate_retry_token` refuses it and classification rejects it as
-    an address mismatch, so two malformed names can never share a token.
+    `flowinfo` and `scope_id` are not read, and an IPv4 peer is written
+    as `::ffff:a.b.c.d` whether the socket reported it as `sockaddr_in`
+    or IPv4-mapped `sockaddr_in6`, so a token survives the dual-stack
+    socket reporting the same peer either way.
     """
     var ip = sockaddr_ip(sockaddr)
     var ip_off = ip[0]
     var ip_len = ip[1]
     if ip_len == 0:
-        return InlineArray[UInt8, 32](fill=UInt8(0))
-    var msg = InlineArray[UInt8, 18](fill=UInt8(0))
+        return False
+    var pad = 16 - ip_len
+    for i in range(pad):
+        dst[off + i] = 0
+    if ip_len == 4:
+        dst[off + 10] = 0xFF
+        dst[off + 11] = 0xFF
     for i in range(ip_len):
-        msg[i] = sockaddr[ip_off + i]
-    msg[ip_len] = sockaddr[SOCKADDR_PORT_OFFSET]
-    msg[ip_len + 1] = sockaddr[SOCKADDR_PORT_OFFSET + 1]
-    return sha256(Span(msg)[: ip_len + 2])
-
-
-def _is_unusable_addr_hash(client_addr_hash: Span[Byte, _]) -> Bool:
-    """True for the all-zero hash `retry_addr_hash` returns for a malformed sockaddr (no SHA-256 preimage is known)."""
-    var acc = UInt8(0)
-    for i in range(len(client_addr_hash)):
-        acc |= client_addr_hash[i]
-    return acc == 0
+        dst[off + pad + i] = sockaddr[ip_off + i]
+    dst[off + 16] = sockaddr[SOCKADDR_PORT_OFFSET]
+    dst[off + 17] = sockaddr[SOCKADDR_PORT_OFFSET + 1]
+    return True
 
 
 def generate_retry_token(
@@ -135,34 +130,32 @@ def generate_retry_token(
     mut scratch: RetryTokenScratch,
     server_secret: Span[Byte, _],
     orig_dcid: Span[Byte, _],
-    client_addr_hash: Span[Byte, _],
+    peer_sockaddr: Span[Byte, _],
     now_us: UInt64,
 ) raises:
-    """Append a Retry token for `orig_dcid` issued at `now_us` (µs) to `buf`.
+    """Append a Retry token binding `orig_dcid` to the peer at `peer_sockaddr` (raw Linux sockaddr), issued at `now_us` (µs), to `buf`.
 
     Token: `type (0x01) ‖ nonce (12) ‖ AES-128-GCM(dcid_len ‖ orig_dcid ‖
-    addr_hash (32) ‖ timestamp µs (8, BE))`, AAD = label ‖ type: 70 bytes
-    plus the DCID length (`RETRY_TOKEN_MIN_LEN` .. `RETRY_TOKEN_MAX_LEN`). Raises only on a
-    caller error (secret, hash or DCID length, or the all-zero hash of a
-    malformed peer address), an FFI failure, or a failed kernel RNG draw.
+    peer IP (16) ‖ port (2, BE) ‖ timestamp µs (8, BE))`, AAD = label ‖
+    type: 56 bytes plus the DCID length (`RETRY_TOKEN_MIN_LEN` ..
+    `RETRY_TOKEN_MAX_LEN`). The address is sealed, not hashed: the AEAD
+    already hides it from the client and authenticates it. Raises only on
+    a caller error (secret or DCID length, or a sockaddr with no parsable
+    IP), an FFI failure, or a failed kernel RNG draw.
     """
     if len(server_secret) != 16:
         raise "server_secret must be 16 bytes"
-    if len(client_addr_hash) != _HASH_LEN:
-        raise "client_addr_hash must be 32 bytes"
     if len(orig_dcid) > 20:
         raise "orig_dcid too long"
-    if _is_unusable_addr_hash(client_addr_hash):
-        raise "unusable peer address: malformed sockaddr"
 
-    var pt_len = 1 + len(orig_dcid) + _HASH_LEN + 8
+    var pt_len = 1 + len(orig_dcid) + _ADDR_LEN + 8
     scratch.pt[0] = UInt8(len(orig_dcid))
     for i in range(len(orig_dcid)):
         scratch.pt[1 + i] = orig_dcid[i]
     var off = 1 + len(orig_dcid)
-    for i in range(_HASH_LEN):
-        scratch.pt[off + i] = client_addr_hash[i]
-    off += _HASH_LEN
+    if not _write_peer_addr(peer_sockaddr, scratch.pt, off):
+        raise "unusable peer address: malformed sockaddr"
+    off += _ADDR_LEN
     for i in range(8):
         scratch.pt[off + i] = UInt8((now_us >> UInt64(56 - 8 * i)) & 0xFF)
     for i in range(16):
@@ -193,7 +186,7 @@ def _open_retry_token(
     mut scratch: RetryTokenScratch,
     server_secret: Span[Byte, _],
     token: Span[Byte, _],
-    client_addr_hash: Span[Byte, _],
+    peer_sockaddr: Span[Byte, _],
     now_us: UInt64,
     lifetime_us: UInt64,
 ) raises -> Int:
@@ -202,13 +195,15 @@ def _open_retry_token(
     Checks both length bounds itself rather than trusting callers: the
     nonce and ciphertext copies index the token and the fixed scratch
     buffers, so an unchecked short or long token reads or writes out of
-    bounds.
+    bounds. A presenter with no parsable IP is an address reject, so
+    malformed names never share a token.
     """
     if len(token) < RETRY_TOKEN_MIN_LEN:
         return RETRY_REJECT_UNDERSIZED
     if len(token) > RETRY_TOKEN_MAX_LEN:
         return RETRY_REJECT_OVERSIZED
-    if _is_unusable_addr_hash(client_addr_hash):
+    var expected = InlineArray[UInt8, _MAX_PT_LEN](uninitialized=True)
+    if not _write_peer_addr(peer_sockaddr, expected, 0):
         return RETRY_REJECT_ADDRESS
     var ct_len = len(token) - 1 - _NONCE_LEN
     for i in range(_NONCE_LEN):
@@ -229,15 +224,15 @@ def _open_retry_token(
         return RETRY_REJECT_AUTH
     var pt_len = Int(scratch.out_len[0])
     var dcid_len = Int(scratch.pt[0])
-    if pt_len < 1 + _HASH_LEN + 8 or 1 + dcid_len + _HASH_LEN + 8 != pt_len:
+    if pt_len < 1 + _ADDR_LEN + 8 or 1 + dcid_len + _ADDR_LEN + 8 != pt_len:
         return RETRY_REJECT_LENGTH
-    var hash_off = 1 + dcid_len
-    for i in range(_HASH_LEN):
-        if scratch.pt[hash_off + i] != client_addr_hash[i]:
+    var addr_off = 1 + dcid_len
+    for i in range(_ADDR_LEN):
+        if scratch.pt[addr_off + i] != expected[i]:
             return RETRY_REJECT_ADDRESS
     var ts = UInt64(0)
     for i in range(8):
-        ts = (ts << 8) | UInt64(scratch.pt[hash_off + _HASH_LEN + i])
+        ts = (ts << 8) | UInt64(scratch.pt[addr_off + _ADDR_LEN + i])
     if now_us < ts:
         return RETRY_REJECT_FUTURE
     if now_us - ts > lifetime_us:
@@ -252,7 +247,7 @@ def classify_retry_token(
     mut scratch: RetryTokenScratch,
     server_secret: Span[Byte, _],
     token: Span[Byte, _],
-    client_addr_hash: Span[Byte, _],
+    peer_sockaddr: Span[Byte, _],
     now_us: UInt64,
     lifetime_us: UInt64,
 ) raises -> Int:
@@ -269,8 +264,6 @@ def classify_retry_token(
     """
     if len(server_secret) != 16:
         raise "server_secret must be 16 bytes"
-    if len(client_addr_hash) != _HASH_LEN:
-        raise "client_addr_hash must be 32 bytes"
     if (
         len(token) < RETRY_TOKEN_MIN_LEN
         or len(token) > RETRY_TOKEN_MAX_LEN
@@ -278,7 +271,7 @@ def classify_retry_token(
     ):
         return TOKEN_NONE
     var why = _open_retry_token(
-        orig_dcid_out, lib, scratch, server_secret, token, client_addr_hash, now_us, lifetime_us
+        orig_dcid_out, lib, scratch, server_secret, token, peer_sockaddr, now_us, lifetime_us
     )
     if why == RETRY_REJECT_OK:
         return TOKEN_VALID
@@ -293,7 +286,7 @@ def validate_retry_token(
     mut scratch: RetryTokenScratch,
     server_secret: Span[Byte, _],
     token: Span[Byte, _],
-    client_addr_hash: Span[Byte, _],
+    peer_sockaddr: Span[Byte, _],
     now_us: UInt64,
     max_age_us: UInt64,
 ) raises:
@@ -305,8 +298,6 @@ def validate_retry_token(
     """
     if len(server_secret) != 16:
         raise "server_secret must be 16 bytes"
-    if len(client_addr_hash) != _HASH_LEN:
-        raise "client_addr_hash must be 32 bytes"
     if len(token) < RETRY_TOKEN_MIN_LEN:
         raise "token too short"
     if len(token) > RETRY_TOKEN_MAX_LEN:
@@ -314,14 +305,14 @@ def validate_retry_token(
     if token[0] != RETRY_TOKEN_TYPE:
         raise "not a navette retry token"
     var why = _open_retry_token(
-        buf, lib, scratch, server_secret, token, client_addr_hash, now_us, max_age_us
+        buf, lib, scratch, server_secret, token, peer_sockaddr, now_us, max_age_us
     )
     if why == RETRY_REJECT_AUTH:
         raise "token authentication failed"
     if why == RETRY_REJECT_LENGTH:
         raise "token plaintext length mismatch"
     if why == RETRY_REJECT_ADDRESS:
-        raise "token address hash mismatch"
+        raise "token address mismatch"
     if why == RETRY_REJECT_FUTURE:
         raise "token timestamp in the future"
     if why == RETRY_REJECT_EXPIRED:

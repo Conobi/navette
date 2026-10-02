@@ -71,7 +71,6 @@ from navette.quic.retry import (
     RETRY_TOKEN_LIFETIME_US,
     RetryTokenScratch,
     generate_retry_token,
-    retry_addr_hash,
     validate_retry_token,
     compute_retry_integrity_tag,
 )
@@ -591,17 +590,13 @@ def test_handshake_with_retry() raises:
     for i in range(16):
         server_secret.append(UInt8(Int(py=py_secret[i])))
 
-    #    client_addr_hash: SHA-256 of 127.0.0.1 and port 12345.
-    var sa = List[Byte](length=16, fill=Byte(0))
-    sa[0] = 2
-    sa[2] = UInt8(12345 >> 8)
-    sa[3] = UInt8(12345 & 0xFF)
-    sa[4] = 127
-    sa[7] = 1
-    var digest = retry_addr_hash(Span(sa))
-    var client_addr_hash = List[Byte](capacity=32)
-    for i in range(32):
-        client_addr_hash.append(digest[i])
+    #    client address: sockaddr_in for 127.0.0.1, port 12345.
+    var client_addr = List[Byte](length=16, fill=Byte(0))
+    client_addr[0] = 2
+    client_addr[2] = UInt8(12345 >> 8)
+    client_addr[3] = UInt8(12345 & 0xFF)
+    client_addr[4] = 127
+    client_addr[7] = 1
 
     var scratch = RetryTokenScratch()
     var token = List[Byte]()
@@ -611,7 +606,7 @@ def test_handshake_with_retry() raises:
         scratch,
         Span(server_secret),
         Span(client_initial_dcid),
-        Span(client_addr_hash),
+        Span(client_addr),
         now,
     )
 
@@ -623,7 +618,7 @@ def test_handshake_with_retry() raises:
         scratch,
         Span(server_secret),
         Span(token),
-        Span(client_addr_hash),
+        Span(client_addr),
         now + UInt64(2_000_000),
         RETRY_TOKEN_LIFETIME_US,
     )

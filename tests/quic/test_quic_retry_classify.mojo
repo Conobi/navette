@@ -14,7 +14,6 @@ from navette.quic.retry import (
     TOKEN_VALID,
     classify_retry_token,
     generate_retry_token,
-    retry_addr_hash,
 )
 from tests._test_util import assert_true, assert_equal_int
 from tests.protect._prop import Rng, prop_iters, sockaddr_in
@@ -28,21 +27,13 @@ def _other_secret() -> List[Byte]:
     return List[Byte](length=16, fill=Byte(0xAB))
 
 
-def _hash_of(sa: List[Byte]) -> List[Byte]:
-    var h = retry_addr_hash(Span(sa))
-    var out = List[Byte](capacity=32)
-    for i in range(32):
-        out.append(h[i])
-    return out^
-
-
 def _addr_a() -> List[Byte]:
-    return _hash_of(sockaddr_in(192, 0, 2, 1, 4433))
+    return sockaddr_in(192, 0, 2, 1, 4433)
 
 
 def _addr_b() -> List[Byte]:
     """Same IP as `_addr_a`, other port."""
-    return _hash_of(sockaddr_in(192, 0, 2, 1, 4434))
+    return sockaddr_in(192, 0, 2, 1, 4434)
 
 
 def _mint(lib: SharedLibrary, mut scratch: RetryTokenScratch, addr: List[Byte], now_us: UInt64) raises -> List[Byte]:

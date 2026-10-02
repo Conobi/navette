@@ -5,7 +5,7 @@ from std.collections import Span
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.h3.ingress_guard import IngressGuard, ADMIT_CREATE, ADMIT_REPLY, ADMIT_DROP
 from navette.quic.packet import PacketType, parse_packet_header
-from navette.quic.retry import generate_retry_token, retry_addr_hash
+from navette.quic.retry import generate_retry_token
 from tests._test_util import assert_true, assert_equal_int
 from tests.h3._wire import filled, initial, initial_n, long_packet, handshake, short_packet
 from tests.protect._prop import Rng, prop_iters, sockaddr_in
@@ -21,9 +21,8 @@ def _addr_other_port() -> List[Byte]:
 
 def _mint(mut g: IngressGuard, orig: List[Byte], addr: List[Byte], now: UInt64) raises -> List[Byte]:
     """A token sealed with the guard's own secret, as its Retry would carry."""
-    var h = retry_addr_hash(Span(addr))
     var tok = List[Byte]()
-    generate_retry_token(tok, g._lib, g._scratch, Span(g._secret), Span(orig), Span(h), now)
+    generate_retry_token(tok, g._lib, g._scratch, Span(g._secret), Span(orig), Span(addr), now)
     return tok^
 
 

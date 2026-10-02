@@ -10,7 +10,7 @@
 #   P2 — Tag/ciphertext tamper: flipping any bit in token[13:] → validate raises.
 #   P2b — Type/nonce tamper: flipping any bit in token[:13] → validate raises.
 #   P3 — Cross-secret rejection: distinct server_secret → validate raises.
-#   P4 — Address-hash mismatch: distinct client_addr_hash → validate raises.
+#   P4 — Address mismatch: one flipped IP or port bit → validate raises.
 #   P5 — Expiry: now_v > now_g + max_age → validate raises.
 #   P6 — Nonce uniqueness probe: two generate() calls with identical inputs
 #        produce tokens whose nonces (bytes 1..12) differ.
@@ -20,11 +20,11 @@
 #        (RFC 9000 erratum 7861) and earns a Retry, not INVALID_TOKEN.
 #   C3 — classify: a type byte other than 0x01 is NONE.
 #   C4 — classify: a truncated or extended token is NONE, whether it
-#        falls outside the 70..90 byte bounds or no longer opens.
+#        falls outside the 56..76 byte bounds or no longer opens.
 #   C5 — classify: wrong address or expiry is INVALID (the token opens);
 #        a rotated secret is NONE (it does not).
-#   C6 — the all-zero address hash (malformed peer sockaddr): generate
-#        raises, and the genuine token classifies INVALID against it.
+#   C6 — a malformed peer sockaddr (no parsable IP): generate raises,
+#        and the genuine token classifies INVALID against it.
 #   Non-VALID results never append to the output buffer.
 #
 # Default: 100 iterations (~1 minute under ASSERT=all). Deep runs:
@@ -55,23 +55,43 @@ def _random_bytes(mut rng: SplitMix64, n: Int) -> List[Byte]:
     return out^
 
 
+def _random_peer(mut rng: SplitMix64) -> List[Byte]:
+    """A random Linux `sockaddr_in` (16 bytes) or `sockaddr_in6` (28 bytes, random flowinfo and scope_id)."""
+    var v6 = rng.next_below(UInt64(2)) == 1
+    var sa = _random_bytes(rng, 28 if v6 else 16)
+    sa[0] = 10 if v6 else 2  # AF_INET6 / AF_INET, little-endian
+    sa[1] = 0
+    return sa^
+
+
+def _other_peer(mut rng: SplitMix64, sa: List[Byte]) -> List[Byte]:
+    """`sa` with one bit flipped in its port or IP bytes."""
+    var ip_off = 8 if len(sa) == 28 else 4
+    var ip_len = 16 if len(sa) == 28 else 4
+    var pick = Int(rng.next_below(UInt64(2 + ip_len)))
+    var idx = 2 + pick if pick < 2 else ip_off + pick - 2
+    var out = sa.copy()
+    out[idx] ^= UInt8(1 << Int(rng.next_below(UInt64(8))))
+    return out^
+
+
 def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: RetryTokenScratch) raises -> ObserveResult:
     """Each invocation exercises P1-P5 on freshly-generated inputs."""
     var secret = _random_bytes(rng, 16)
     var dcid_len = Int(rng.next_below(UInt64(21)))  # 0-20
     var orig_dcid = _random_bytes(rng, dcid_len)
-    var addr_hash = _random_bytes(rng, 32)
+    var peer = _random_peer(rng)
     var now_g = rng.next_u64() % UInt64(1000000)
 
     # P1: inverse identity
     var token = List[Byte]()
     try:
-        generate_retry_token(token, lib, scratch, Span(secret), Span(orig_dcid), Span(addr_hash), now_g)
+        generate_retry_token(token, lib, scratch, Span(secret), Span(orig_dcid), Span(peer), now_g)
     except e:
         return ObserveResult(False, String("P1: generate_retry_token raised: ") + String(e))
     var recovered = List[Byte]()
     try:
-        validate_retry_token(recovered, lib, scratch, Span(secret), Span(token), Span(addr_hash), now_g, UInt64(10000))
+        validate_retry_token(recovered, lib, scratch, Span(secret), Span(token), Span(peer), now_g, UInt64(10000))
     except e:
         return ObserveResult(False, String("P1: validate raised on its own token: ") + String(e))
     if len(recovered) != dcid_len:
@@ -89,7 +109,7 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: 
         var raised = False
         try:
             var _p2 = List[Byte]()
-            validate_retry_token(_p2, lib, scratch, Span(secret), Span(tampered), Span(addr_hash), now_g, UInt64(10000))
+            validate_retry_token(_p2, lib, scratch, Span(secret), Span(tampered), Span(peer), now_g, UInt64(10000))
         except:
             raised = True
         if not raised:
@@ -103,7 +123,7 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: 
     var raised_2b = False
     try:
         var _p2b = List[Byte]()
-        validate_retry_token(_p2b, lib, scratch, Span(secret), Span(nonce_tampered), Span(addr_hash), now_g, UInt64(10000))
+        validate_retry_token(_p2b, lib, scratch, Span(secret), Span(nonce_tampered), Span(peer), now_g, UInt64(10000))
     except:
         raised_2b = True
     if not raised_2b:
@@ -117,31 +137,29 @@ def _check_all_properties(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: 
     var raised_3 = False
     try:
         var _p3 = List[Byte]()
-        validate_retry_token(_p3, lib, scratch, Span(secret2), Span(token), Span(addr_hash), now_g, UInt64(10000))
+        validate_retry_token(_p3, lib, scratch, Span(secret2), Span(token), Span(peer), now_g, UInt64(10000))
     except:
         raised_3 = True
     if not raised_3:
         return ObserveResult(False, String("P3: cross-secret accepted"))
 
-    # P4: address-hash mismatch
-    var hash2 = _random_bytes(rng, 32)
-    if hash2[0] == addr_hash[0]:
-        hash2[0] = hash2[0] ^ UInt8(0xFF)
+    # P4: address mismatch
+    var peer2 = _other_peer(rng, peer)
     var raised_4 = False
     try:
         var _p4 = List[Byte]()
-        validate_retry_token(_p4, lib, scratch, Span(secret), Span(token), Span(hash2), now_g, UInt64(10000))
+        validate_retry_token(_p4, lib, scratch, Span(secret), Span(token), Span(peer2), now_g, UInt64(10000))
     except:
         raised_4 = True
     if not raised_4:
-        return ObserveResult(False, String("P4: addr-hash mismatch accepted"))
+        return ObserveResult(False, String("P4: address mismatch accepted"))
 
     # P5: expiry
     var now_v = now_g + UInt64(100)
     var raised_5 = False
     try:
         var _p5 = List[Byte]()
-        validate_retry_token(_p5, lib, scratch, Span(secret), Span(token), Span(addr_hash), now_v, UInt64(5))
+        validate_retry_token(_p5, lib, scratch, Span(secret), Span(token), Span(peer), now_v, UInt64(5))
     except:
         raised_5 = True
     if not raised_5:
@@ -155,7 +173,7 @@ def _classify_expect(
     mut scratch: RetryTokenScratch,
     secret: List[Byte],
     token: List[Byte],
-    addr_hash: List[Byte],
+    peer: List[Byte],
     now: UInt64,
     max_age: UInt64,
     want: Int,
@@ -164,7 +182,7 @@ def _classify_expect(
     """Empty when classify returns `want` (and appends only when VALID), else a failure message."""
     var out = List[Byte]()
     var got = classify_retry_token(
-        out, lib, scratch, Span(secret), Span(token), Span(addr_hash), now, max_age
+        out, lib, scratch, Span(secret), Span(token), Span(peer), now, max_age
     )
     if got != want:
         return label + String(": classify ") + String(got) + String(" != ") + String(want)
@@ -178,15 +196,15 @@ def _check_classify(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: RetryT
     var secret = _random_bytes(rng, 16)
     var dcid_len = Int(rng.next_below(UInt64(21)))
     var orig_dcid = _random_bytes(rng, dcid_len)
-    var addr_hash = _random_bytes(rng, 32)
+    var peer = _random_peer(rng)
     var now_g = rng.next_u64() % UInt64(1000000)
     var age = UInt64(10000)
     var token = List[Byte]()
-    generate_retry_token(token, lib, scratch, Span(secret), Span(orig_dcid), Span(addr_hash), now_g)
+    generate_retry_token(token, lib, scratch, Span(secret), Span(orig_dcid), Span(peer), now_g)
 
     # C1
     var out = List[Byte]()
-    var c1 = classify_retry_token(out, lib, scratch, Span(secret), Span(token), Span(addr_hash), now_g, age)
+    var c1 = classify_retry_token(out, lib, scratch, Span(secret), Span(token), Span(peer), now_g, age)
     if c1 != TOKEN_VALID:
         return ObserveResult(False, String("C1: genuine token classified ") + String(c1))
     if len(out) != dcid_len:
@@ -199,14 +217,14 @@ def _check_classify(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: RetryT
     var flipped = token.copy()
     var fb = 1 + Int(rng.next_below(UInt64(len(token) - 1)))
     flipped[fb] = flipped[fb] ^ UInt8(1 << Int(rng.next_below(UInt64(8))))
-    var why = _classify_expect(lib, scratch, secret, flipped, addr_hash, now_g, age, TOKEN_NONE, String("C2 bit flip"))
+    var why = _classify_expect(lib, scratch, secret, flipped, peer, now_g, age, TOKEN_NONE, String("C2 bit flip"))
     if why.byte_length() > 0:
         return ObserveResult(False, why)
     # C3
     var retyped = token.copy()
     # 2..256, where 256 wraps to 0: every type byte except 0x01.
     retyped[0] = UInt8(rng.next_below(UInt64(255))) + 2
-    why = _classify_expect(lib, scratch, secret, retyped, addr_hash, now_g, age, TOKEN_NONE, String("C3 retyped"))
+    why = _classify_expect(lib, scratch, secret, retyped, peer, now_g, age, TOKEN_NONE, String("C3 retyped"))
     if why.byte_length() > 0:
         return ObserveResult(False, why)
     # C4
@@ -214,7 +232,7 @@ def _check_classify(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: RetryT
     var truncated = List[Byte](capacity=cut)
     for i in range(cut):
         truncated.append(token[i])
-    why = _classify_expect(lib, scratch, secret, truncated, addr_hash, now_g, age, TOKEN_NONE, String("C4 truncated to ") + String(cut))
+    why = _classify_expect(lib, scratch, secret, truncated, peer, now_g, age, TOKEN_NONE, String("C4 truncated to ") + String(cut))
     if why.byte_length() > 0:
         return ObserveResult(False, why)
     var extended = token.copy()
@@ -222,35 +240,37 @@ def _check_classify(mut rng: SplitMix64, lib: SharedLibrary, mut scratch: RetryT
     for _ in range(extra):
         extended.append(rng.next_u8())
     why = _classify_expect(
-        lib, scratch, secret, extended, addr_hash, now_g, age, TOKEN_NONE, String("C4 extended to ") + String(len(extended))
+        lib, scratch, secret, extended, peer, now_g, age, TOKEN_NONE, String("C4 extended to ") + String(len(extended))
     )
     if why.byte_length() > 0:
         return ObserveResult(False, why)
     # C5
-    var hash2 = addr_hash.copy()
-    hash2[Int(rng.next_below(UInt64(32)))] ^= UInt8(1 << Int(rng.next_below(UInt64(8))))
-    why = _classify_expect(lib, scratch, secret, token, hash2, now_g, age, TOKEN_INVALID, String("C5 address"))
+    var peer2 = _other_peer(rng, peer)
+    why = _classify_expect(lib, scratch, secret, token, peer2, now_g, age, TOKEN_INVALID, String("C5 address"))
     if why.byte_length() > 0:
         return ObserveResult(False, why)
     var secret2 = secret.copy()
     secret2[Int(rng.next_below(UInt64(16)))] ^= UInt8(1 << Int(rng.next_below(UInt64(8))))
-    why = _classify_expect(lib, scratch, secret2, token, addr_hash, now_g, age, TOKEN_NONE, String("C5 secret"))
+    why = _classify_expect(lib, scratch, secret2, token, peer, now_g, age, TOKEN_NONE, String("C5 secret"))
     if why.byte_length() > 0:
         return ObserveResult(False, why)
-    why = _classify_expect(lib, scratch, secret, token, addr_hash, now_g + age + 1, age, TOKEN_INVALID, String("C5 expired"))
+    why = _classify_expect(lib, scratch, secret, token, peer, now_g + age + 1, age, TOKEN_INVALID, String("C5 expired"))
     if why.byte_length() > 0:
         return ObserveResult(False, why)
     # C6
-    var zero_hash = List[Byte](length=32, fill=Byte(0))
+    var malformed = _random_bytes(rng, Int(rng.next_below(UInt64(29))))
+    if len(malformed) >= 2:
+        malformed[0] = 1  # AF_UNIX: no IP to bind
+        malformed[1] = 0
     var zero_raised = False
     try:
         var _c6 = List[Byte]()
-        generate_retry_token(_c6, lib, scratch, Span(secret), Span(orig_dcid), Span(zero_hash), now_g)
+        generate_retry_token(_c6, lib, scratch, Span(secret), Span(orig_dcid), Span(malformed), now_g)
     except:
         zero_raised = True
     if not zero_raised:
-        return ObserveResult(False, String("C6: generate accepted the all-zero address hash"))
-    why = _classify_expect(lib, scratch, secret, token, zero_hash, now_g, age, TOKEN_INVALID, String("C6 zero hash"))
+        return ObserveResult(False, String("C6: generate accepted a malformed peer address"))
+    why = _classify_expect(lib, scratch, secret, token, malformed, now_g, age, TOKEN_INVALID, String("C6 malformed peer"))
     if why.byte_length() > 0:
         return ObserveResult(False, why)
     return ObserveResult(True, String(""))
@@ -264,16 +284,17 @@ def _check_p6(lib: SharedLibrary, mut scratch: RetryTokenScratch) raises -> Obse
     var orig_dcid = List[Byte]()
     for i in range(8):
         orig_dcid.append(UInt8(0xA0 + i))
-    var addr_hash = List[Byte]()
-    for i in range(32):
-        addr_hash.append(UInt8(i))
-    var t1 = List[Byte]()
-    generate_retry_token(t1, lib, scratch, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
-    var t2 = List[Byte]()
-    generate_retry_token(t2, lib, scratch, Span(secret), Span(orig_dcid), Span(addr_hash), UInt64(0))
+    var peer = List[Byte](length=16, fill=Byte(0))
+    peer[0] = 2  # AF_INET
+    peer[4] = 127
+    peer[7] = 1
+    var first = List[Byte]()
+    generate_retry_token(first, lib, scratch, Span(secret), Span(orig_dcid), Span(peer), UInt64(0))
+    var second = List[Byte]()
+    generate_retry_token(second, lib, scratch, Span(secret), Span(orig_dcid), Span(peer), UInt64(0))
     var same = True
     for i in range(1, 13):
-        if t1[i] != t2[i]:
+        if first[i] != second[i]:
             same = False
             break
     if same:

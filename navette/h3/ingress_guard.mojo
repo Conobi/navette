@@ -21,7 +21,6 @@ from navette.quic.retry import (
     RetryTokenScratch,
     classify_retry_token,
     generate_retry_token,
-    retry_addr_hash,
 )
 from navette.quic.stateless import RETRY_SCID_LEN, build_retry, build_stateless_close_initial
 from navette.tls.lib import SharedLibrary
@@ -143,14 +142,13 @@ struct IngressGuard(Movable):
         var scid = header.scid.as_span()
         var token = header.token_span()
 
-        var addr_hash = retry_addr_hash(peer_name)
         self.orig_dcid.clear()
         self.retry_scid.clear()
         var class_ = TOKEN_NONE
         if len(token) > 0:
             class_ = classify_retry_token(
                 self.orig_dcid, self._lib, self._scratch, Span(self._secret),
-                token, Span(addr_hash), now_us, RETRY_TOKEN_LIFETIME_US,
+                token, peer_name, now_us, RETRY_TOKEN_LIFETIME_US,
             )
         if class_ == TOKEN_INVALID:
             self.stats.tokens_invalid += 1
@@ -161,7 +159,7 @@ struct IngressGuard(Movable):
                 unvalidated >= self.unvalidated_retry_threshold
                 or admitted >= conn_cap
             ):
-                return self._retry(dcid, scid, Span(addr_hash), now_us, backlog)
+                return self._retry(dcid, scid, peer_name, now_us, backlog)
             self.orig_dcid.extend(dcid)
             return ADMIT_CREATE
         self.stats.tokens_valid += 1
@@ -176,7 +174,7 @@ struct IngressGuard(Movable):
         mut self,
         dcid: Span[Byte, _],
         scid: Span[Byte, _],
-        addr_hash: Span[Byte, _],
+        peer_name: Span[Byte, _],
         now_us: UInt64,
         backlog: Int,
     ) raises -> Int:
@@ -187,7 +185,7 @@ struct IngressGuard(Movable):
         self._token.clear()
         try:
             generate_retry_token(
-                self._token, self._lib, self._scratch, Span(self._secret), dcid, addr_hash, now_us
+                self._token, self._lib, self._scratch, Span(self._secret), dcid, peer_name, now_us
             )
         except:
             return ADMIT_DROP

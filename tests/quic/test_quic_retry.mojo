@@ -1,7 +1,7 @@
 # tests/quic/test_quic_retry.mojo
 #
 # Tests for QUIC Retry tokens (type byte, µs lifetime, NONE/VALID/INVALID
-# classification, address hash) and the Retry integrity tag
+# classification, address binding) and the Retry integrity tag
 # (navette/quic/retry.mojo).
 
 from navette.tls.lib import TlsBackend, SharedLibrary
@@ -24,13 +24,12 @@ from navette.quic.retry import (
     classify_retry_token,
     compute_retry_integrity_tag,
     generate_retry_token,
-    retry_addr_hash,
     validate_retry_token,
     _open_retry_token,
 )
 from oracle.test_util import hex_decode, hex_encode
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
-from tests.protect._prop import Rng, sockaddr_in, sockaddr_in6, mapped_v6
+from tests.protect._prop import Rng, prop_iters, sockaddr_in, sockaddr_in6, mapped_v6
 
 
 # --- Helpers ---
@@ -44,25 +43,17 @@ def _make_secret() -> List[Byte]:
     return s^
 
 
-def _hash_of(sa: List[Byte]) -> List[Byte]:
-    var h = retry_addr_hash(Span(sa))
-    var out = List[Byte](capacity=32)
-    for i in range(32):
-        out.append(h[i])
-    return out^
-
-
 def _addr_a() -> List[Byte]:
-    return _hash_of(sockaddr_in(192, 0, 2, 1, 4433))
+    return sockaddr_in(192, 0, 2, 1, 4433)
 
 
 def _addr_b() -> List[Byte]:
-    return _hash_of(sockaddr_in(192, 0, 2, 1, 4434))
+    return sockaddr_in(192, 0, 2, 1, 4434)
 
 
 def _addr_c() -> List[Byte]:
     """Same port as `_addr_a`, different IP."""
-    return _hash_of(sockaddr_in(198, 51, 100, 1, 4433))
+    return sockaddr_in(198, 51, 100, 1, 4433)
 
 
 def _classify(
@@ -161,16 +152,16 @@ def test_token_tampered(lib: SharedLibrary) raises:
     print("  test_token_tampered: PASS")
 
 
-# === Token format, classification, lifetime units, address hash ===
+# === Token format, classification, lifetime units, address binding ===
 
 
 def test_token_format(lib: SharedLibrary) raises:
-    """Type byte 0x01 first; 90 bytes with a 20-byte DCID (1 + 12 + 61 + 16)."""
+    """Type byte 0x01 first; 76 bytes with a 20-byte DCID (1 + 12 + 47 + 16)."""
     var scratch = RetryTokenScratch()
     var dcid = List[Byte](length=20, fill=Byte(0x42))
     var token = _token(lib, scratch, dcid, _addr_a(), UInt64(7))
     assert_true(token[0] == RETRY_TOKEN_TYPE, "type byte first")
-    assert_equal_int(len(token), 90, "90-byte token")
+    assert_equal_int(len(token), 76, "76-byte token")
     print("  test_token_format: PASS")
 
 
@@ -238,29 +229,29 @@ def test_classify_oversized_is_none(lib: SharedLibrary) raises:
 
 
 def test_classify_max_length_boundary(lib: SharedLibrary) raises:
-    """The longest genuine token (20-byte DCID) is 90 bytes and VALID; 91 bytes are NONE; validate says 'too long'."""
+    """The longest genuine token (20-byte DCID) is 76 bytes and VALID; 77 bytes are NONE; validate says 'too long'."""
     var scratch = RetryTokenScratch()
     var genuine = _token(lib, scratch, List[Byte](length=20, fill=Byte(0x42)), _addr_a(), UInt64(1000))
     assert_equal_int(len(genuine), RETRY_TOKEN_MAX_LEN, "longest genuine token is the maximum")
-    assert_equal_int(RETRY_TOKEN_MAX_LEN, 90, "1 + 12 + (1 + 20 + 32 + 8) + 16")
-    assert_equal_int(_classify(lib, scratch, genuine, _addr_a(), UInt64(1000)), TOKEN_VALID, "genuine 90 bytes")
-    var forged_90 = List[Byte](length=90, fill=Byte(0x33))
-    forged_90[0] = RETRY_TOKEN_TYPE
-    assert_equal_int(_classify(lib, scratch, forged_90, _addr_a(), UInt64(1000)), TOKEN_NONE, "forged 90 bytes")
-    var long_91 = genuine.copy()
-    long_91.append(0x00)
-    assert_equal_int(_classify(lib, scratch, long_91, _addr_a(), UInt64(1000)), TOKEN_NONE, "91 bytes")
+    assert_equal_int(RETRY_TOKEN_MAX_LEN, 76, "1 + 12 + (1 + 20 + 18 + 8) + 16")
+    assert_equal_int(_classify(lib, scratch, genuine, _addr_a(), UInt64(1000)), TOKEN_VALID, "genuine 76 bytes")
+    var forged_76 = List[Byte](length=76, fill=Byte(0x33))
+    forged_76[0] = RETRY_TOKEN_TYPE
+    assert_equal_int(_classify(lib, scratch, forged_76, _addr_a(), UInt64(1000)), TOKEN_NONE, "forged 76 bytes")
+    var long_77 = genuine.copy()
+    long_77.append(0x00)
+    assert_equal_int(_classify(lib, scratch, long_77, _addr_a(), UInt64(1000)), TOKEN_NONE, "77 bytes")
     var raised = False
     try:
         var _discard = List[Byte]()
         validate_retry_token(
-            _discard, lib, scratch, Span(_make_secret()), Span(long_91), Span(_addr_a()),
+            _discard, lib, scratch, Span(_make_secret()), Span(long_77), Span(_addr_a()),
             UInt64(1000), RETRY_TOKEN_LIFETIME_US,
         )
     except e:
         raised = True
-        assert_true("too long" in String(e), "91 bytes: expected 'too long', got: " + String(e))
-    assert_true(raised, "validate rejects a 91-byte token")
+        assert_true("too long" in String(e), "77 bytes: expected 'too long', got: " + String(e))
+    assert_true(raised, "validate rejects a 77-byte token")
     print("  test_classify_max_length_boundary: PASS")
 
 
@@ -271,8 +262,8 @@ def test_malformed_peer_address_is_unusable(lib: SharedLibrary) raises:
     unix_family[0] = 1  # AF_UNIX
     var truncated_v6 = List[Byte](length=10, fill=Byte(0))
     truncated_v6[0] = 10  # AF_INET6, too short
-    var bad_a = _hash_of(unix_family)
-    var bad_b = _hash_of(truncated_v6)
+    var bad_a = unix_family^
+    var bad_b = truncated_v6^
     var dcid = hex_decode("0102030405060708")
     var raised = False
     try:
@@ -299,23 +290,23 @@ def test_malformed_peer_address_is_unusable(lib: SharedLibrary) raises:
 
 
 def test_classify_min_length_boundary(lib: SharedLibrary) raises:
-    """The shortest genuine token (empty DCID) is 70 bytes and VALID; 70 forged bytes and 69 bytes are NONE.
+    """The shortest genuine token (empty DCID) is 56 bytes and VALID; 56 forged bytes and 55 bytes are NONE.
 
-    1 (type) + 12 (nonce) + 1 (dcid_len) + 32 (addr hash) + 8 (timestamp)
+    1 (type) + 12 (nonce) + 1 (dcid_len) + 18 (peer IP and port) + 8 (timestamp)
     + 16 (AEAD tag): a foreign type-0x01 token shorter than that cannot be
     ours, so it earns a Retry, not an INVALID_TOKEN close.
     """
     var scratch = RetryTokenScratch()
     var genuine = _token(lib, scratch, List[Byte](), _addr_a(), UInt64(1000))
     assert_equal_int(len(genuine), RETRY_TOKEN_MIN_LEN, "shortest genuine token is the minimum")
-    assert_equal_int(RETRY_TOKEN_MIN_LEN, 70, "1 + 12 + 1 + 32 + 8 + 16")
-    assert_equal_int(_classify(lib, scratch, genuine, _addr_a(), UInt64(1000)), TOKEN_VALID, "genuine 70 bytes")
-    var forged_70 = List[Byte](length=70, fill=Byte(0x33))
-    forged_70[0] = RETRY_TOKEN_TYPE
-    assert_equal_int(_classify(lib, scratch, forged_70, _addr_a(), UInt64(1000)), TOKEN_NONE, "forged 70 bytes")
-    var short_69 = List[Byte](length=69, fill=Byte(0x33))
-    short_69[0] = RETRY_TOKEN_TYPE
-    assert_equal_int(_classify(lib, scratch, short_69, _addr_a(), UInt64(1000)), TOKEN_NONE, "69 bytes")
+    assert_equal_int(RETRY_TOKEN_MIN_LEN, 56, "1 + 12 + 1 + 18 + 8 + 16")
+    assert_equal_int(_classify(lib, scratch, genuine, _addr_a(), UInt64(1000)), TOKEN_VALID, "genuine 56 bytes")
+    var forged_56 = List[Byte](length=56, fill=Byte(0x33))
+    forged_56[0] = RETRY_TOKEN_TYPE
+    assert_equal_int(_classify(lib, scratch, forged_56, _addr_a(), UInt64(1000)), TOKEN_NONE, "forged 56 bytes")
+    var short_55 = List[Byte](length=55, fill=Byte(0x33))
+    short_55[0] = RETRY_TOKEN_TYPE
+    assert_equal_int(_classify(lib, scratch, short_55, _addr_a(), UInt64(1000)), TOKEN_NONE, "55 bytes")
     var short_29 = List[Byte](length=29, fill=Byte(0x33))
     short_29[0] = RETRY_TOKEN_TYPE
     assert_equal_int(_classify(lib, scratch, short_29, _addr_a(), UInt64(1000)), TOKEN_NONE, "29 bytes")
@@ -323,13 +314,13 @@ def test_classify_min_length_boundary(lib: SharedLibrary) raises:
     try:
         var _discard = List[Byte]()
         validate_retry_token(
-            _discard, lib, scratch, Span(_make_secret()), Span(short_69), Span(_addr_a()),
+            _discard, lib, scratch, Span(_make_secret()), Span(short_55), Span(_addr_a()),
             UInt64(1000), RETRY_TOKEN_LIFETIME_US,
         )
     except e:
         raised = True
-        assert_true("too short" in String(e), "69 bytes: expected 'too short', got: " + String(e))
-    assert_true(raised, "validate rejects a 69-byte token")
+        assert_true("too short" in String(e), "55 bytes: expected 'too short', got: " + String(e))
+    assert_true(raised, "validate rejects a 55-byte token")
     print("  test_classify_min_length_boundary: PASS")
 
 
@@ -366,7 +357,7 @@ def test_reject_reasons_are_codes(lib: SharedLibrary) raises:
     assert_equal_int(_reason(lib, scratch, big, _addr_a(), issued), RETRY_REJECT_OVERSIZED, "oversized")
     # The helper bounds-checks on its own: a token too short to hold the
     # type byte and nonce must be rejected, not indexed past its end.
-    for n in [0, 1, 12, 13, 69]:
+    for n in [0, 1, 12, 13, 55]:
         var short = List[Byte](length=n, fill=Byte(0x01))
         assert_equal_int(
             _reason(lib, scratch, short, _addr_a(), issued), RETRY_REJECT_UNDERSIZED, "undersized " + String(n)
@@ -383,38 +374,27 @@ def test_reject_reasons_are_codes(lib: SharedLibrary) raises:
     print("  test_reject_reasons_are_codes: PASS")
 
 
-def test_addr_hash_reads_ip_and_port_only() raises:
-    """The hash ignores flowinfo and scope_id; IPv4-mapped equals native IPv4; the port does (500 cases)."""
-    var rng = Rng(0xADD7)
-    for ci in range(500):
-        var ip = rng.bytes(4)
-        var port = rng.below(65536)
-        var native = _hash_of(sockaddr_in(ip[0], ip[1], ip[2], ip[3], port))
-        var as_mapped = _hash_of(
-            sockaddr_in6(mapped_v6(ip[0], ip[1], ip[2], ip[3]), port, UInt32(rng.below(1 << 20)), UInt32(rng.below(16)))
-        )
-        assert_equal_str(hex_encode(native), hex_encode(as_mapped), "mapped == native, case " + String(ci))
-        var v6 = rng.bytes(16)
-        v6[0] = v6[0] | 0x20
-        var h1 = _hash_of(sockaddr_in6(v6, port, UInt32(rng.below(1 << 20)), UInt32(rng.below(16))))
-        var h2 = _hash_of(sockaddr_in6(v6, port, UInt32(rng.below(1 << 20)), UInt32(rng.below(16))))
-        assert_equal_str(hex_encode(h1), hex_encode(h2), "flowinfo/scope ignored, case " + String(ci))
-        var other_port = _hash_of(sockaddr_in6(v6, (port + 1) % 65536, 0, 0))
-        assert_true(hex_encode(h1) != hex_encode(other_port), "port matters, case " + String(ci))
-    print("  test_addr_hash_reads_ip_and_port_only: PASS")
+def _sealed_addr(lib: SharedLibrary, mut scratch: RetryTokenScratch, sa: List[Byte]) raises -> List[Byte]:
+    """The 18-byte address field a token minted for `sa` (empty DCID) carries in its plaintext."""
+    var token = _token(lib, scratch, List[Byte](), sa, UInt64(1000))
+    assert_equal_int(_reason(lib, scratch, token, sa, UInt64(1000)), RETRY_REJECT_OK, "opens for its own peer")
+    var out = List[Byte](capacity=18)
+    for i in range(18):
+        out.append(scratch.pt[1 + i])
+    return out^
 
 
-def test_addr_hash_known_answers() raises:
-    """SHA-256 over the IP bytes then the big-endian port, pinned against Python hashlib.
+def test_token_seals_normalised_address(lib: SharedLibrary) raises:
+    """The plaintext carries the IP as 16 bytes (IPv4 in its IPv4-mapped form) then the big-endian port.
 
-    `hashlib.sha256(bytes.fromhex("c00002011151"))` for 192.0.2.1:4433 and
-    `hashlib.sha256(bytes.fromhex("20010db8" + "00" * 11 + "01" + "01bb"))`
-    for [2001:db8::1]:443. A hash that drops the IP, the port, or reorders
-    them fails here.
+    A layout that drops the IP, the port, or keeps flowinfo or scope_id
+    fails here. Both families seal the same 18 bytes, so a token's length
+    never reveals whether the client used IPv4 or IPv6.
     """
+    var scratch = RetryTokenScratch()
     assert_equal_str(
-        hex_encode(_hash_of(sockaddr_in(192, 0, 2, 1, 4433))),
-        "e6c2232729386da9b7411139b141f86a1f58af17e17e687c8ad91de026a0b4c4",
+        hex_encode(_sealed_addr(lib, scratch, sockaddr_in(192, 0, 2, 1, 4433))),
+        "00000000000000000000ffffc00002011151",
         "192.0.2.1:4433",
     )
     var v6 = List[Byte](length=16, fill=Byte(0))
@@ -424,32 +404,51 @@ def test_addr_hash_known_answers() raises:
     v6[3] = 0xB8
     v6[15] = 0x01
     assert_equal_str(
-        hex_encode(_hash_of(sockaddr_in6(v6, 443, UInt32(7), UInt32(3)))),
-        "fa0056dad39241a132c61ea1a950b317466216ed2f7cf3fbe53e7f54526bb358",
+        hex_encode(_sealed_addr(lib, scratch, sockaddr_in6(v6, 443, UInt32(7), UInt32(3)))),
+        "20010db800000000000000000000000101bb",
         "[2001:db8::1]:443",
     )
-    print("  test_addr_hash_known_answers: PASS")
+    var dcid = hex_decode("0102030405060708")
+    var t4 = _token(lib, scratch, dcid, sockaddr_in(192, 0, 2, 1, 4433), UInt64(1000))
+    var t6 = _token(lib, scratch, dcid, sockaddr_in6(v6, 443, 0, 0), UInt64(1000))
+    assert_equal_int(len(t4), len(t6), "token length is independent of the address family")
+    print("  test_token_seals_normalised_address: PASS")
 
 
-def test_addr_hash_ip_matters() raises:
-    """Same port, one differing IP bit (IPv4 and IPv6): different hash (500 cases)."""
-    var rng = Rng(0x1BAD)
-    for ci in range(500):
+def test_token_binds_ip_and_port_only(lib: SharedLibrary) raises:
+    """IPv4-mapped equals native IPv4, flowinfo and scope_id are ignored; another port or one flipped IP bit is an address reject."""
+    var scratch = RetryTokenScratch()
+    var rng = Rng(0xADD7)
+    var dcid = hex_decode("0102030405060708")
+    for ci in range(prop_iters(100)):
         var port = rng.below(65536)
         var ip = rng.bytes(4)
+        var native = sockaddr_in(ip[0], ip[1], ip[2], ip[3], port)
+        var t4 = _token(lib, scratch, dcid, native, UInt64(1000))
+        var as_mapped = sockaddr_in6(
+            mapped_v6(ip[0], ip[1], ip[2], ip[3]), port, UInt32(rng.below(1 << 20)), UInt32(rng.below(16))
+        )
+        assert_equal_int(_reason(lib, scratch, t4, as_mapped, UInt64(1000)), RETRY_REJECT_OK, "mapped == native, case " + String(ci))
+        var other_port = sockaddr_in(ip[0], ip[1], ip[2], ip[3], (port + 1) % 65536)
+        assert_equal_int(_reason(lib, scratch, t4, other_port, UInt64(1000)), RETRY_REJECT_ADDRESS, "IPv4 port matters, case " + String(ci))
         var ip2 = ip.copy()
         ip2[rng.below(4)] ^= UInt8(1 << rng.below(8))
-        var h4a = _hash_of(sockaddr_in(ip[0], ip[1], ip[2], ip[3], port))
-        var h4b = _hash_of(sockaddr_in(ip2[0], ip2[1], ip2[2], ip2[3], port))
-        assert_true(hex_encode(h4a) != hex_encode(h4b), "IPv4 IP matters, case " + String(ci))
+        var other_ip = sockaddr_in(ip2[0], ip2[1], ip2[2], ip2[3], port)
+        assert_equal_int(_reason(lib, scratch, t4, other_ip, UInt64(1000)), RETRY_REJECT_ADDRESS, "IPv4 IP matters, case " + String(ci))
+
         var v6 = rng.bytes(16)
-        v6[0] = v6[0] | 0x20
+        v6[0] = v6[0] | 0x20  # never IPv4-mapped
+        var t6 = _token(lib, scratch, dcid, sockaddr_in6(v6, port, UInt32(rng.below(1 << 20)), UInt32(rng.below(16))), UInt64(1000))
+        var same = sockaddr_in6(v6, port, UInt32(rng.below(1 << 20)), UInt32(rng.below(16)))
+        assert_equal_int(_reason(lib, scratch, t6, same, UInt64(1000)), RETRY_REJECT_OK, "flowinfo/scope ignored, case " + String(ci))
+        var v6_port = sockaddr_in6(v6, (port + 1) % 65536, 0, 0)
+        assert_equal_int(_reason(lib, scratch, t6, v6_port, UInt64(1000)), RETRY_REJECT_ADDRESS, "IPv6 port matters, case " + String(ci))
         var v6b = v6.copy()
-        v6b[1 + rng.below(15)] ^= UInt8(1 << rng.below(8))  # byte 0 keeps 0x20: never IPv4-mapped
-        var h6a = _hash_of(sockaddr_in6(v6, port, 0, 0))
-        var h6b = _hash_of(sockaddr_in6(v6b, port, 0, 0))
-        assert_true(hex_encode(h6a) != hex_encode(h6b), "IPv6 IP matters, case " + String(ci))
-    print("  test_addr_hash_ip_matters: PASS")
+        v6b[1 + rng.below(15)] ^= UInt8(1 << rng.below(8))
+        assert_equal_int(
+            _reason(lib, scratch, t6, sockaddr_in6(v6b, port, 0, 0), UInt64(1000)), RETRY_REJECT_ADDRESS, "IPv6 IP matters, case " + String(ci)
+        )
+    print("  test_token_binds_ip_and_port_only: PASS")
 
 
 # === Test 5: Integrity tag known vector (RFC 9001 A.4) ===
@@ -564,9 +563,8 @@ def main() raises:
     test_classify_min_length_boundary(shared)
     test_classify_changed_secret_is_none(shared)
     test_reject_reasons_are_codes(shared)
-    test_addr_hash_reads_ip_and_port_only()
-    test_addr_hash_known_answers()
-    test_addr_hash_ip_matters()
+    test_token_seals_normalised_address(shared)
+    test_token_binds_ip_and_port_only(shared)
     test_integrity_tag_known_vector(shared)
     test_integrity_tag_deterministic(shared)
 

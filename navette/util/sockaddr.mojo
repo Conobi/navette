@@ -1,8 +1,8 @@
 """Locate the peer IP inside a raw Linux `sockaddr_in` / `sockaddr_in6` blob.
 
-The one parser behind every place that keys or hashes a peer by address
-(source keys, Retry token address binding), so they agree on which bytes
-identify a peer. Pure byte inspection: no syscalls, no allocation.
+Decides which bytes identify a peer (Retry tokens bind to them), so a
+dual-stack socket's two views of one IPv4 peer agree. Pure byte
+inspection: no syscalls, no allocation.
 """
 
 from std.collections import Span
