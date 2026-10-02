@@ -1687,6 +1687,8 @@ struct QuicConnection(Movable):
         budget and charges it there, so a driver must send to exactly this
         address.
         """
+        if not self.path.has_pending():
+            return PathKey(copy=self.path.peer_addr)
         return self.path.send_dest()
 
     def can_send_to(self, target: PathKey, n_bytes: Int) -> Bool:
@@ -2896,9 +2898,12 @@ struct QuicConnection(Movable):
         # An address under validation gets 3x what it sent (RFC 9000
         # Section 8.1): size the datagram to fit rather than build one the
         # driver's gate would drop.
-        var path_allowance = self.path.send_allowance()
-        if path_allowance < budget:
-            budget = path_allowance
+        # With no validation in flight the destination is `peer_addr`,
+        # whose allowance is unbounded: skip the lookup.
+        if self.path.has_pending():
+            var path_allowance = self.path.send_allowance()
+            if path_allowance < budget:
+                budget = path_allowance
         var server_initial_deferred = self.is_server and budget < MAX_DATAGRAM_SIZE
         var ade = self.local_params.ack_delay_exponent
         var plans = List[PacketPlan]()
@@ -2949,7 +2954,8 @@ struct QuicConnection(Movable):
         for i in range(len(result)):
             var dg = List[Byte]()
             swap(dg, result[i])
-            self.path.record_dest_send(len(dg))
+            if self.path.has_pending():
+                self.path.record_dest_send(len(dg))
             out.append(dg^)
         comptime if PROFILE_ACCEPT:
             if self.prof.ptr is not None:
@@ -3703,8 +3709,11 @@ struct QuicConnection(Movable):
             return
 
         # Abandon path validations older than 3 PTOs (RFC 9000 Section
-        # 8.2.4); the sender then falls back to `peer_addr`.
-        self.path.validator.gc_expired(now, self._path_validation_pto())
+        # 8.2.4); the sender then falls back to `peer_addr`. `settle_dest`
+        # stays unconditional: a PATH_RESPONSE can empty the pending list
+        # while `dest` still names the previous address.
+        if self.path.has_pending():
+            self.path.validator.gc_expired(now, self._path_validation_pto())
         self.path.settle_dest()
 
         # Delayed-ACK deadlines: the ACK goes out in this same send() since

@@ -431,6 +431,11 @@ struct PathState(Movable):
             out.append(Frame.path_response(self.pending_responses.pop(0)))
         return out^
 
+    @always_inline
+    def has_pending(self) -> Bool:
+        """True while any path validation is in flight; when False, every send goes to `peer_addr` with no budget to size or charge."""
+        return len(self.validator.pending) > 0
+
     def send_dest(self) -> PathKey:
         """The address the next datagram goes to: `dest` while usable, else `peer_addr` (RFC 9000 Section 9.3.2)."""
         if self.is_usable(self.dest):
