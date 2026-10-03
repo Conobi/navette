@@ -109,10 +109,15 @@ def overload_line(server: H3UdpServer[StaticHandler], now_us: UInt64) -> String:
     var g = server.governor.stats.copy()
     var p = server.protection_stats()
     var d = g.decision
+    var wmin, wmax = UInt64.MAX, UInt64(0)  # stream re-grant windows (per-connection credit) across live connections
+    for i in range(len(server.conn_slots)):
+        var w = server.conn_slots[i].h3[].h3()._quic.stream_map.regrant_window
+        wmin, wmax = min(wmin, w), max(wmax, w)
     return String(
         '{"t_us":', now_us, ',"intervals":', g.intervals, ',"mode":', g.state.mode._v,
         ',"queue_delay_us":', g.queue_delay_us, ',"kernel_wait_us":', g.kernel_wait_us,
         ',"budget":', d.budget, ',"share":', d.share, ',"shed_above":', d.shed_above, ',"refuse_new":', "true" if d.refuse_new else "false",
+        ',"window_min":', wmin, ',"window_max":', wmax,
         ',"cuts":', g.state.cuts, ',"grows":', g.state.grows, ',"releases":', g.state.releases,
         ',"refused_503":', g.refused_streams_503, ',"slow_handler_warnings":', g.slow_handler_warnings,
         ',"dropped_overload":', p.dropped_overload, ',"refused_closes":', p.refused_closes, "}",
