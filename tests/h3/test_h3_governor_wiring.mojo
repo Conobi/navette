@@ -187,6 +187,12 @@ def test_refuse_new_drops_new_initials() raises:
     for _ in range(3):
         _ = h.pump(c)
     assert_true(c.recv_total > before, "the existing client is still served")
+    h.advance(20 * _T)  # a whole interval without a close: the refusal is stale
+    var late = h.new_socket()
+    h.send_raw(late, raw_initial(List[Byte](length=8, fill=0x6B), 1200))
+    _ = h.step(20)
+    h.flush()
+    assert_true(h.srv[].protection_stats().dropped_overload == 1, "a stale refusal drops nothing")
     _close_with_wait(h, 0)
     var fresh = h.new_client()
     assert_true(h.handshake(fresh) and _streams(fresh) == 100, "after release a new client gets full credit")

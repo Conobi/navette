@@ -1684,7 +1684,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         try:
             verdict = self._guard.value().admit_initial(
                 pkt, name, now,
-                self._unvalidated, len(self.conn_slots), cap, len(self._egress_backlog), refuse_new=self.governor.decision.refuse_new,
+                self._unvalidated, len(self.conn_slots), cap, len(self._egress_backlog), refuse_new=self.governor.decision.refuse_new and not self.governor.close_due(now),
             )
         except:
             return -1
