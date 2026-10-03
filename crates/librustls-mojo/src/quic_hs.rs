@@ -1160,6 +1160,8 @@ pub extern "C" fn rlsm_quic_conn_is_early_data_accepted(conn_handle: i32) -> i32
 
 /// Decline 0-RTT on a server connection that has not finished its handshake: required before it advertises
 /// transport limits lower than a resuming client may remember (RFC 9000 Section 7.4.1).
+/// Call it before the connection is fed any CRYPTO data: rustls accepts or declines 0-RTT while processing the
+/// ClientHello, so a later call cannot undo an acceptance.
 /// 0 = declined; -1 = invalid handle, client connection, or handshake already complete.
 #[no_mangle]
 pub extern "C" fn rlsm_quic_server_conn_reject_early_data(conn_handle: i32) -> i32 {

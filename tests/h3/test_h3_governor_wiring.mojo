@@ -1,5 +1,5 @@
 """`H3UdpServer` wiring of the overload controls: the egress hold and its rotation, the governor's interval close, the
-rung-4 drop of new Initials. Loopback harness, pinned clock, no sleeps.
+silent drop of new Initials. Loopback harness, pinned clock, no sleeps.
 """
 
 from std.collections import Span
@@ -59,13 +59,13 @@ def _params() -> TransportParams:
     return p^
 
 
-def _send_get(mut client: HarnessClient) raises -> UInt64:
+def _send_get(mut client: HarnessClient, fin: Bool = True) raises -> UInt64:
     var sid = client.h3.open_bidi_stream()
     var fields: List[QpackHeaderField] = [
         QpackHeaderField(":method", "GET"), QpackHeaderField(":path", "/"),
         QpackHeaderField(":scheme", "https"), QpackHeaderField(":authority", "localhost"),
     ]
-    client.h3.send_headers(sid, fields, True)
+    client.h3.send_headers(sid, fields, fin)
     return sid
 
 
@@ -199,6 +199,22 @@ def test_refuse_new_drops_new_initials() raises:
     assert_true(h.srv[].protection_stats().refused_closes == 0, "never CONNECTION_REFUSED")
 
 
+def test_freed_connection_reaches_the_tally() raises:
+    """A connection freed mid-interval hands its completions to the next close, and its open streams are not work."""
+    var h = _governed()
+    var c = h.new_client()
+    assert_true(h.handshake(c), "handshake")
+    for _ in range(3):
+        _ = _send_get(c)
+    for _ in range(10):
+        _ = h.pump(c, advance_us=30_000)
+    _ = _send_get(c, fin=False)  # the request never ends: an open stream when the connection dies
+    _ = h.pump(c)
+    h.srv[]._free_slot(0)
+    ref acc = h.srv[]._gov_acc
+    assert_true(acc.done == 3 and acc.work == 0 and acc.active == 0, "done=" + String(acc.done) + " work=" + String(acc.work))
+
+
 def main() raises:
     var failed = 0
     try:
@@ -215,6 +231,11 @@ def main() raises:
         test_refuse_new_drops_new_initials()
     except e:
         print("FAIL test_refuse_new_drops_new_initials:", e)
+        failed += 1
+    try:
+        test_freed_connection_reaches_the_tally()
+    except e:
+        print("FAIL test_freed_connection_reaches_the_tally:", e)
         failed += 1
     if failed:
         raise Error(String(failed) + " failed")

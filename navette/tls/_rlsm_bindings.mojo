@@ -1400,7 +1400,7 @@ def call_rlsm_quic_server_conn_reject_early_data(
     ref lib: OwnedDLHandle,
     conn_handle: Int32,
 ) raises -> Int32:
-    """Decline 0-RTT on a server connection still handshaking (needed before advertising limits below a resuming client's remembered ones, RFC 9000 Section 7.4.1). 0=declined, -1=invalid handle, client connection or handshake complete.
+    """Decline 0-RTT on a server connection still handshaking (needed before advertising limits below a resuming client's remembered ones, RFC 9000 Section 7.4.1); call it before any CRYPTO data is fed, since rustls decides on 0-RTT at the ClientHello. 0=declined, -1=invalid handle, client connection or handshake complete.
 
     Args:
         lib: An open handle to librustls_mojo.so.

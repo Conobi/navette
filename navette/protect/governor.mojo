@@ -240,7 +240,8 @@ struct OverloadStats(Copyable, Movable):
 
 
 struct Governor(Movable):
-    """Per-server sensor state around `step`, driven by the shell's clock; only built for a non-zero dial.
+    """Per-server sensor state around `step`, driven by the shell's clock; always built, inert at a 0 dial (the shell
+    then skips every hook and `close_due` is always true, so a stale decision never applies).
 
     Per pass: `want_rmem`, `on_ingest`, `on_pass`; when `close_due`, `close`, whose `decision` the enforcing
     layers read. The shell adds to `requests` and `refused_503`."""
@@ -290,6 +291,7 @@ struct Governor(Movable):
         self.last_pass_us = now_us
 
     def close_due(self, now_us: UInt64) -> Bool:
+        """An interval has passed since the last close: the current `decision` is stale until `close` runs."""
         return now_us - min(now_us, self.last_close_us) >= interval_us(self.t)
 
     def close(mut self, now_us: UInt64, done: UInt64, rtt_sum_us: UInt64, work: UInt64, active: UInt64, cap: UInt64):

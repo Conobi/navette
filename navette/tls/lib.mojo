@@ -771,7 +771,9 @@ struct RustlsLibrary(Movable):
         )
 
     def quic_server_conn_reject_early_data(self, conn_handle: Int32) raises -> Int32:
-        """Decline 0-RTT before the handshake completes. Returns 0, or -1 (bad handle, client, handshake done)."""
+        """Decline 0-RTT; call before the connection is fed any CRYPTO data (rustls decides at the ClientHello).
+
+        Returns 0, or -1 (bad handle, client, handshake done)."""
         return call_rlsm_quic_server_conn_reject_early_data(self._handle, conn_handle)
 
     @always_inline

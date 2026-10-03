@@ -1197,9 +1197,9 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         recomputed; the loop is an O(N) compare that resumes where the
         egress hold stopped the last one, so held slots are served in turn.
         """
-        var n, start = len(self.conn_slots), self._timer_rotation
+        var n, start = len(self.conn_slots), self._timer_rotation % max(len(self.conn_slots), 1)
         for k in range(n):
-            var i = (start + k) % n
+            var i = start + k if start + k < n else start + k - n
             if self.conn_slots[i].next_deadline_us > now:
                 continue
             if len(self._egress_backlog) < EGRESS_HOLD_AT:
@@ -1243,9 +1243,9 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                     pass
 
     def _free_slot(mut self, i: Int) raises:
-        """Destroy slot `i`'s connection (its last counts go to the governor's tally), drop its DCIDs and swap-and-pop."""
+        """Destroy slot `i`'s connection (its completions and 503s go to the governor's tally), drop its DCIDs and swap-and-pop."""
         var slot_h3 = self.conn_slots[i].h3
-        slot_h3[].h3().gov_tally(self._gov_acc)
+        slot_h3[].h3().gov_tally(self._gov_acc, live=False)
         slot_h3.unsafe_deinit_pointee()
         slot_h3.unsafe_free()
         # Null out the field immediately so any later read on

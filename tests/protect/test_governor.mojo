@@ -297,8 +297,8 @@ def test_fluid_recovery_model() raises:
     """Capacity mu, load 0.5 mu, then 2 mu for 20 intervals, then 0.5 mu: the governor settles and releases.
 
     Each interval is 20 ticks of `t`. Outstanding work (queued and in
-    service) is capped by the budget (rung 2, the excess waits at the
-    client), and while under pressure the excess is refused (rung 3). A
+    service) is capped by the budget (stream credit, the excess waits at
+    the client), and while under pressure the excess is refused (503). A
     tick's wait is the work ahead over the per-tick capacity.
     """
     var t = UInt64(5_000)

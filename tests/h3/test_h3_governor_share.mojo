@@ -62,6 +62,11 @@ def test_tally() raises:
     assert_true(t.done == 0 and t.work == 2, "completions are counted once")
     p.srv.long_lived = 1
     assert_true(_tally(p).work == 1, "long-lived streams are not work")
+    var dying = ConnTally(work=0, active=0, done=0, rtt_us=0, refused_503=0, cap=0)
+    _respond(p, sids[3])
+    p.pump(10)
+    p.srv.gov_tally(dying, live=False)
+    assert_true(dying.done == 1 and dying.work == 0 and dying.active == 0, "a dying connection adds completions, not work")
 
 
 def test_window_narrowed_then_released() raises:
