@@ -3,7 +3,7 @@
 from std.bit import bit_width
 from navette.protect.governor import DelayHist, interval_us, retry_after_s, kwait_us, ewma8, MIN_SAMPLES
 from navette.protect.governor import GovState, Mode, Sample, Decision, step, UNLIMITED, RELEASE, PENDING_MAX
-from navette.protect.governor import conn_limit, Governor
+from navette.protect.governor import conn_limit, Governor, FEW_ACTIVE, WARN_EVERY
 from tests._test_util import assert_true
 from tests.protect._prop import Rng, prop_iters
 
@@ -332,10 +332,35 @@ def test_facade_interval_close() raises:
     g.on_pass(now, now - 100)
     g.close(now, 5, 0, 1, 10, 100)
     assert_true(g.stats.queue_delay_us == 0 and g.state.mode == Mode.RECOVERING and g.decision.share == UNLIMITED, "an idle gap drops the stale samples")
-    g.handler_ewma_us = ewma8(g.handler_ewma_us, 800)
     g.refused_503 += 3
     g.close(now + 100_000, 0, 0, 0, 0, 100)
-    assert_true(g.stats.handler_us_ewma == 800 and g.stats.refused_streams_503 == 3, "handler counters reach the stats at close")
+    assert_true(g.stats.refused_streams_503 == 3, "503 count reaches the stats at close")
+    assert_true(g.stats.slow_handler_warnings == 0, "a cut over 10 active connections is real overload")
+
+
+def _overloaded_close(mut g: Governor, mut now: UInt64, active: UInt64):
+    """One interval of 25 passes, 10 requests each spread over 20 ms of pass, closed with little open work."""
+    for _ in range(25):
+        g.requests += 10
+        now += 3_000
+        g.on_pass(now, now - 20_000)
+    g.close(now, 50, 0, 1, active, 100)
+
+
+def test_slow_handler_warning() raises:
+    """Cutting with few active connections points at handlers slower than the dial: warned once per WARN_EVERY closes."""
+    var now = UInt64(1_000_000)
+    var g = Governor(5_000, now)
+    _overloaded_close(g, now, FEW_ACTIVE)
+    assert_true(g.state.mode == Mode.CUTTING and g.stats.slow_handler_warnings == 1, "warned on the first cut")
+    _overloaded_close(g, now, FEW_ACTIVE)
+    assert_true(g.state.cuts == 2 and g.stats.slow_handler_warnings == 1, "not again within WARN_EVERY closes")
+    for _ in range(WARN_EVERY):
+        _overloaded_close(g, now, FEW_ACTIVE)
+    assert_true(g.stats.slow_handler_warnings == 2, "again after WARN_EVERY closes")
+    var h = Governor(5_000, now)
+    _overloaded_close(h, now, FEW_ACTIVE + 1)
+    assert_true(h.state.cuts == 1 and h.stats.slow_handler_warnings == 0, "not with more active connections")
 
 
 def main() raises:
@@ -352,4 +377,5 @@ def main() raises:
     test_fluid_recovery_model()
     test_want_rmem()
     test_facade_interval_close()
+    test_slow_handler_warning()
     print("PASS: test_governor")

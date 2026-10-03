@@ -1,6 +1,7 @@
 """Overload governor core: queue-wait sensor arithmetic, the server-wide stream budget, per-connection windows.
 
-Pure (`std` only, no clock reads, no allocation, no floats, no wrap): the server shell passes time and counters in.
+Pure (`std` only, no clock reads, no allocation, no floats, no wrap; one rate-limited warning print): the server shell
+passes time and counters in.
 Every time constant derives from the one dial `t = max_queue_delay_us`.
 """
 
@@ -207,11 +208,16 @@ def conn_limit(l: UInt64, open_c: UInt64, budget: UInt64, work: UInt64, n: UInt6
 
 comptime MEMINFO_EVERY = 16
 """Passes between forced `SO_MEMINFO` reads when ingest keeps draining the socket, to keep truesize calibrated."""
+comptime FEW_ACTIVE: UInt64 = 4
+"""A cut over at most this many active connections reads as handlers slower than the dial, not overload."""
+comptime WARN_EVERY: UInt64 = 100
+"""Interval closes between two slow-handler warnings (10 s at the default dial)."""
 
 
 @fieldwise_init
 struct OverloadStats(Copyable, Movable):
-    """The overload governor as of its last interval close: p90 and kernel wait (µs), controller state and decision."""
+    """The overload governor as of its last interval close: p90 and kernel wait (µs), controller state and decision;
+    `slow_handler_warnings` counts the reported cuts over at most `FEW_ACTIVE` connections (one per `WARN_EVERY` closes)."""
 
     var queue_delay_us: UInt64
     var kernel_wait_us: UInt64
@@ -219,14 +225,14 @@ struct OverloadStats(Copyable, Movable):
     var state: GovState
     var decision: Decision
     var refused_streams_503: UInt64
-    var handler_us_ewma: UInt64
+    var slow_handler_warnings: UInt64
 
 
 struct Governor(Movable):
     """Per-server sensor state around `step`, driven by the shell's clock; only built for a non-zero dial.
 
     Per pass: `want_rmem`, `on_ingest`, `on_pass`; when `close_due`, `close`, whose `decision` the enforcing
-    layers read. Handlers add to `requests`, `refused_503` and `handler_ewma_us`."""
+    layers read. The shell adds to `requests` and `refused_503`."""
 
     var t: UInt64
     var state: GovState
@@ -243,7 +249,7 @@ struct Governor(Movable):
     var stats: OverloadStats
     var requests: UInt64
     var refused_503: UInt64
-    var handler_ewma_us: UInt64
+    var warned_at: UInt64
 
     def __init__(out self, t: UInt64, now_us: UInt64):
         self.t, self.state = t, GovState()
@@ -252,7 +258,7 @@ struct Governor(Movable):
         self.truesize, self.kwait, self.drained, self.passes = 0, 0, True, 0
         self.last_pass_us, self.last_close_us, self.deliveries, self.deliveries_prev = now_us, now_us, 0, 0
         self.stats = OverloadStats(0, 0, 0, GovState(), self.decision, 0, 0)
-        self.requests, self.refused_503, self.handler_ewma_us = 0, 0, 0
+        self.requests, self.refused_503, self.warned_at = 0, 0, 0
 
     def want_rmem(self) -> Bool:
         """Read `SO_MEMINFO` this pass: after an ingest that left datagrams queued, and every `MEMINFO_EVERY`-th pass."""
@@ -280,11 +286,15 @@ struct Governor(Movable):
         return now_us - min(now_us, self.last_close_us) >= interval_us(self.t)
 
     def close(mut self, now_us: UInt64, done: UInt64, rtt_sum_us: UInt64, work: UInt64, active: UInt64, cap: UInt64):
-        """Close the interval: step the controller on its p90 wait and the shell's counts (as in `Sample`), refresh `stats`."""
+        """Close the interval: step the controller on its p90 wait and the shell's counts (as in `Sample`), refresh `stats`; warn (print) on a slow-handler cut."""
         var delay = self.hist.close_delay()
         self.decision = step(self.state, Sample(delay_us=delay, done=done, rtt_sum_us=rtt_sum_us, work=work, active=active), self.t, cap)
         self.deliveries_prev, self.deliveries, self.last_close_us = self.deliveries, 0, now_us
+        var n, warnings = self.stats.intervals + 1, self.stats.slow_handler_warnings
+        if self.state.mode == Mode.CUTTING and active <= FEW_ACTIVE and (warnings == 0 or n - self.warned_at >= WARN_EVERY):
+            self.warned_at, warnings = n, warnings + 1
+            print("navette: overload cut with", active, "active connections: handlers may be slower than max_queue_delay_us")
         self.stats = OverloadStats(
-            queue_delay_us=delay, kernel_wait_us=self.kwait, intervals=self.stats.intervals + 1, state=self.state,
-            decision=self.decision, refused_streams_503=self.refused_503, handler_us_ewma=self.handler_ewma_us,
+            queue_delay_us=delay, kernel_wait_us=self.kwait, intervals=n, state=self.state,
+            decision=self.decision, refused_streams_503=self.refused_503, slow_handler_warnings=warnings,
         )
