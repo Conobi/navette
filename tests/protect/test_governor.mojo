@@ -2,7 +2,7 @@
 
 from std.bit import bit_width
 from navette.protect.governor import DelayHist, interval_us, retry_after_s, kwait_us, ewma8, MIN_SAMPLES
-from navette.protect.governor import GovState, Mode, Sample, Decision, step, UNLIMITED, RELEASE, PENDING_MAX
+from navette.protect.governor import GovState, Mode, Sample, Decision, step, UNLIMITED, RELEASE, PENDING_MAX, REFUSE_AFTER
 from navette.protect.governor import conn_limit, Governor, FEW_ACTIVE, WARN_EVERY
 from tests._test_util import assert_true
 from tests.protect._prop import Rng, prop_iters
@@ -130,6 +130,7 @@ def _rand_state(mut rng: Rng, cap: UInt64) -> GovState:
         s.mode = Mode(UInt8(1 + rng.below(3)))
     s.since_cut = UInt64(rng.below(PENDING_MAX + 1))
     s.clear_streak = UInt64(rng.below(RELEASE + 1))
+    s.hot_streak = UInt64(rng.below(Int(REFUSE_AFTER) + 1))
     s.refuse_new = _pressure(s) and rng.chance(30)
     return s^
 
@@ -143,7 +144,7 @@ def _rand_sample(mut rng: Rng, t: UInt64, over: Int) -> Sample:
 
 
 def test_step_properties() raises:
-    """inert-below-target, one-decrease, decrease-bounded, floor, rung-4 threshold, saturation."""
+    """inert-below-target, one-decrease, decrease-bounded, floor, refuse-new threshold, saturation."""
     var rng = Rng(0x57E9)
     for c in range(prop_iters(300)):
         var t = UInt64(1_000 + rng.below(10_000_000))
@@ -155,7 +156,7 @@ def test_step_properties() raises:
         var d = step(s, x, t, cap)
         var tag = "case " + String(c) + ": "
         assert_true(s.budget >= floor, tag + "floor")
-        assert_true(not s.refuse_new or x.delay_us > 4 * t or s0.refuse_new, tag + "rung 4 only above 4 t")
+        assert_true(not s.refuse_new or s0.refuse_new or (x.delay_us > 4 * t and s.hot_streak == REFUSE_AFTER), tag + "refuse-new only after a streak above 4 t")
         if x.delay_us <= t:
             assert_true(s.cuts == s0.cuts and s.budget >= s0.budget, tag + "below target never cuts")
             assert_true(s.mode == (Mode.NORMAL if s0.mode == Mode.NORMAL or s.budget == UNLIMITED else Mode.RECOVERING), tag + "clear")
@@ -169,6 +170,35 @@ def test_step_properties() raises:
         if s.cuts != s0.cuts:
             var base = min(s0.budget, x.work)
             assert_true(s.budget >= max(floor, base // 2) and s.budget <= max(floor, base), tag + "cut bounded")
+
+
+def _hot(mut s: GovState, t: UInt64, delay: UInt64, work: UInt64, done: UInt64) -> Bool:
+    """One close with p90 `delay`; returns refuse_new."""
+    return step(s, Sample(delay_us=delay, done=done, rtt_sum_us=0, work=work, active=10), t, 100).refuse_new
+
+
+def test_refuse_new_needs_a_streak_at_the_floor() raises:
+    """Refusing new connections takes REFUSE_AFTER consecutive closes above 4 t with nothing left to cut."""
+    var t = UInt64(5_000)
+    var s = GovState()
+    assert_true(not _hot(s, t, 5 * t, 1_000, 0), "one close above 4 t is not enough")
+    assert_true(not _hot(s, t, 5 * t, 1_000, 0) and not _hot(s, t, 5 * t, 1_000, 0), "nor three while cuts remain")
+    s = GovState()
+    s.mode, s.budget = Mode.HOLDING, 32
+    assert_true(not _hot(s, t, 5 * t, 1_000, 0) and not _hot(s, t, 5 * t, 1_000, 0), "at the floor: not after two")
+    assert_true(_hot(s, t, 5 * t, 1_000, 0), "the third consecutive one refuses")
+    assert_true(_hot(s, t, 2 * t, 1_000, 0), "an over close below 4 t keeps it")
+    assert_true(not _hot(s, t, t, 1_000, 0), "a clear close clears it")
+    s.mode, s.budget = Mode.HOLDING, 32
+    _ = _hot(s, t, 5 * t, 1_000, 0)
+    _ = _hot(s, t, 5 * t, 1_000, 0)
+    _ = _hot(s, t, 2 * t, 1_000, 0)
+    assert_true(not _hot(s, t, 5 * t, 1_000, 0), "the streak is consecutive")
+    s = GovState()
+    s.mode, s.budget = Mode.HOLDING, 147
+    _ = _hot(s, t, 5 * t, 100, 3_000)
+    _ = _hot(s, t, 5 * t, 100, 3_000)
+    assert_true(_hot(s, t, 5 * t, 100, 3_000), "a budget at Little's operating point has nothing left to cut")
 
 
 def test_recovery_and_liveness() raises:
@@ -371,6 +401,7 @@ def main() raises:
     test_truesize_calibration()
     test_close_delay()
     test_step_properties()
+    test_refuse_new_needs_a_streak_at_the_floor()
     test_recovery_and_liveness()
     test_conn_limit_properties()
     test_refuse_only_culprits()

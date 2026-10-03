@@ -84,6 +84,9 @@ comptime RELEASE = 10
 """Consecutive clear closes (`200 t`) before the budget returns to unlimited: the metastability guard."""
 comptime PENDING_MAX = 10
 """Closes after which a cut counts as taken effect even if open work is still above the budget."""
+comptime REFUSE_AFTER: UInt64 = 3
+"""Consecutive closes above `4 t`, with nothing left to cut, before new connections are refused: one slow pass of
+handshakes must not refuse (dropped clients retransmit together and would re-trigger it)."""
 
 
 @fieldwise_init
@@ -102,19 +105,20 @@ struct Mode(Equatable, ImplicitlyCopyable, Writable):
 
 
 struct GovState(ImplicitlyCopyable, Movable):
-    """`mode` plus what its transitions read; `since_cut` and `clear_streak` saturate at `PENDING_MAX` and `RELEASE`."""
+    """`mode` plus what its transitions read; `since_cut`, `clear_streak`, `hot_streak` saturate at `PENDING_MAX`, `RELEASE`, `REFUSE_AFTER`."""
 
     var mode: Mode
     var budget: UInt64
     var refuse_new: Bool
     var since_cut: UInt64
     var clear_streak: UInt64
+    var hot_streak: UInt64
     var cuts: UInt64
     var grows: UInt64
     var releases: UInt64
 
     def __init__(out self):
-        self.mode, self.budget, self.refuse_new, self.since_cut, self.clear_streak = Mode.NORMAL, UNLIMITED, False, PENDING_MAX, 0
+        self.mode, self.budget, self.refuse_new, self.since_cut, self.clear_streak, self.hot_streak = Mode.NORMAL, UNLIMITED, False, PENDING_MAX, 0, 0
         self.cuts, self.grows, self.releases = 0, 0, 0
 
 
@@ -155,21 +159,23 @@ def step(mut s: GovState, x: Sample, t: UInt64, cap: UInt64) -> Decision:
       half used; -> NORMAL (unlimited) instead on the `RELEASE`-th clear close in a row or once the
       budget covers every active connection's full credit.
     - NORMAL, clear -> NORMAL.
-    `refuse_new` is set by an over close above `4 t`, cleared by a clear one. Under pressure
+    `refuse_new` is set by the `REFUSE_AFTER`-th consecutive close above `4 t` once the budget is already at
+    `max(floor, Little's point)` (no cut left to make), cleared by a clear close. Under pressure
     (CUTTING, HOLDING) the share is `max(floor, budget / active)`."""
     var floor = min(FLOOR, cap)
     s.since_cut = min(s.since_cut + 1, PENDING_MAX)
     if x.delay_us > t:
+        var target = (UInt128(x.done) * UInt128(t) + UInt128(x.rtt_sum_us)) // UInt128(interval_us(t))
         s.clear_streak = 0
-        s.refuse_new = s.refuse_new or x.delay_us > 4 * t
+        s.hot_streak = min(s.hot_streak + 1, REFUSE_AFTER) if x.delay_us > 4 * t else 0
+        s.refuse_new = s.refuse_new or (s.hot_streak >= REFUSE_AFTER and UInt128(s.budget) <= max(UInt128(floor), target))
         s.mode = Mode.HOLDING
         if x.work <= s.budget or s.since_cut >= PENDING_MAX:
             var base = UInt128(min(s.budget, x.work))
-            var target = (UInt128(x.done) * UInt128(t) + UInt128(x.rtt_sum_us)) // UInt128(interval_us(t))
             s.budget = max(floor, UInt64(min(max(target, base // 2), base)))
             s.mode, s.since_cut, s.cuts = Mode.CUTTING, 0, s.cuts + 1
     else:
-        s.refuse_new = False
+        s.refuse_new, s.hot_streak = False, 0
         s.clear_streak = min(s.clear_streak + 1, RELEASE)
         if s.mode != Mode.NORMAL:
             s.mode = Mode.RECOVERING

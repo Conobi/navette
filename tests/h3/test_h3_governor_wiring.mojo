@@ -168,11 +168,12 @@ def test_interval_close_applies_share_and_drains_raises() raises:
 
 
 def test_refuse_new_drops_new_initials() raises:
-    """Above 4 t new Initials are dropped unanswered and counted; existing clients are served; release reopens."""
+    """After a streak above 4 t new Initials are dropped unanswered and counted; existing clients are served; release reopens."""
     var h = _governed()
     var c = h.new_client()
     assert_true(h.handshake(c), "handshake")
-    _close_with_wait(h, 10 * _T)
+    for _ in range(3):  # REFUSE_AFTER closes above 4 t, the budget at its floor after the first
+        _close_with_wait(h, 10 * _T)
     assert_true(h.srv[].governor.decision.refuse_new, "refusing new connections")
     var sock = h.new_socket()
     h.send_raw(sock, raw_initial(List[Byte](length=8, fill=0x5A), 1200))
