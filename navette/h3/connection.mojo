@@ -598,8 +598,10 @@ struct H3Connection(Movable):
         return self._quic.stream_map.apply_budget(budget, work, n)
 
     def shed_if_over_share(mut self, stream_id: UInt64) raises -> Bool:
-        """At `shed_above` open streams before this one: 503 + `retry-after`, FIN, STOP_SENDING(H3_NO_ERROR); True = don't serve."""
-        if stream_id // 4 - min(stream_id // 4, self._quic.stream_map.peer_completed_bidi) < self.shed_above:  # ordinal - D
+        """At `shed_above` open streams before this one and beyond the stream window (credit granted before the window came
+        down): 503 + `retry-after`, FIN, STOP_SENDING(H3_NO_ERROR); True = don't serve. Within current credit: never."""
+        ref sm = self._quic.stream_map
+        if stream_id // 4 - min(stream_id // 4, sm.peer_completed_bidi) < max(self.shed_above, sm.regrant_window):  # ordinal - D
             return False
         var fields: List[QpackHeaderField] = [QpackHeaderField(":status", "503"), QpackHeaderField("retry-after", String(self.retry_after_s))]
         self.send_headers(stream_id, fields, True)

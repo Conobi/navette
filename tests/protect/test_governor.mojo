@@ -3,7 +3,7 @@
 from std.bit import bit_width
 from navette.protect.governor import DelayHist, interval_us, retry_after_s, kwait_us, MIN_SAMPLES, DATAGRAM_TRUESIZE
 from navette.protect.governor import GovState, Mode, Sample, Decision, step, UNLIMITED, RELEASE, PENDING_MAX, REFUSE_AFTER
-from navette.protect.governor import conn_limit, Governor, FEW_ACTIVE, WARN_EVERY
+from navette.protect.governor import conn_limit, Governor, FEW_ACTIVE, WARN_EVERY, MIN_CREDIT
 from tests._test_util import assert_true
 from tests.protect._prop import Rng, prop_iters
 
@@ -151,7 +151,7 @@ def test_step_properties() raises:
             assert_true(s.mode == (Mode.NORMAL if s0.mode == Mode.NORMAL or s.budget == UNLIMITED else Mode.RECOVERING), tag + "clear")
             assert_true(not s.refuse_new and d.share == UNLIMITED, tag + "below target refuses nothing")
         else:
-            assert_true(_pressure(s) and d.share >= floor, tag + "over target: CUTTING or HOLDING, share above the floor")
+            assert_true(_pressure(s) and d.share == max(min(MIN_CREDIT, cap), d.shed_above), tag + "over target: CUTTING or HOLDING, credit share = the even split")
         if x.work > s0.budget and s0.since_cut + 1 < PENDING_MAX:
             assert_true(s.cuts == s0.cuts and s.budget >= s0.budget, tag + "one decrease in flight")
             assert_true(x.delay_us <= t or s.mode == Mode.HOLDING, tag + "over with a cut in flight holds")
@@ -238,8 +238,8 @@ def test_conn_limit_properties() raises:
     var rng = Rng(0xFA12)
     for c in range(prop_iters(300)):
         var cap = _rand_cap(rng)
-        var floor = min(UInt64(32), cap)
-        var budget = floor + (UInt64(rng.below(20_000)) if rng.chance(80) else _edge(rng) >> 1)
+        var floor = min(MIN_CREDIT, cap)
+        var budget = min(UInt64(32), cap) + (UInt64(rng.below(20_000)) if rng.chance(80) else _edge(rng) >> 1)
         var work = UInt64(rng.below(2 * Int(min(budget, 1 << 40)) + 1)) if rng.chance(80) else _edge(rng)
         var n = UInt64(rng.below(1_000)) if rng.chance(90) else _edge(rng)
         var mean = max(UInt64(1), budget // max(UInt64(1), n))
@@ -261,10 +261,13 @@ def test_conn_limit_properties() raises:
             if open_c > l:
                 assert_true(w == min(max(l, floor), cap), tag + "no second cut before the first took effect")
     assert_true(conn_limit(40, 500, UNLIMITED, 10_000, 3, 100) == 100, "unlimited gives CAP")
+    assert_true(conn_limit(32, 10, 853, 2_000, 200, 100) == 16, "credit halves below 32 under pressure")
+    assert_true(conn_limit(6, 6, 853, 2_000, 200, 100) == 4, "down to the even split")
+    assert_true(conn_limit(4, 4, 147, 2_000, 200, 100) == MIN_CREDIT, "never below MIN_CREDIT")
 
 
 def test_refuse_only_culprits() raises:
-    """503 only under pressure and only above `max(1, budget / active)`, with no 32 floor: it binds however many connections share the budget."""
+    """503 only under pressure and only above `max(1, budget / active)`, with no 32 floor; the credit share is the same split, at least MIN_CREDIT."""
     var rng = Rng(0xC011)
     for c in range(prop_iters(300)):
         var cap = _rand_cap(rng)
@@ -279,18 +282,21 @@ def test_refuse_only_culprits() raises:
             assert_true(_pressure(s) and open_c > max(UInt64(1), s.budget // max(UInt64(1), active)), tag + "sheds only above the share under pressure")
         if _pressure(s):
             assert_true(d.shed_above >= 1 and d.shed_above <= max(UInt64(1), s.budget // max(UInt64(1), active)), tag + "no floor on the 503 threshold")
-        assert_true(d.share >= min(UInt64(32), cap), tag + "the credit share keeps its floor")
+        assert_true(d.share == (max(min(MIN_CREDIT, cap), d.shed_above) if _pressure(s) else UNLIMITED), tag + "credit share = the 503 split, floored at MIN_CREDIT")
 
 
 def test_shed_threshold_binds_with_many_connections() raises:
-    """200 connections x 10 in flight, budget 147: credit stays at its floor 32 but each connection keeps 1 stream."""
+    """200 connections x 10 in flight: the credit share comes down to the 503 split, never below MIN_CREDIT."""
     var s = GovState()
     s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
     var d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=200), 5_000, 100)
-    assert_true(d.share == 32 and d.shed_above == 1, "share " + String(d.share) + ", shed above " + String(d.shed_above))
+    assert_true(d.share == MIN_CREDIT and d.shed_above == 1, "share " + String(d.share) + ", shed above " + String(d.shed_above))
     s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
     d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=10), 5_000, 100)
-    assert_true(d.shed_above == 14, "budget / active: " + String(d.shed_above))
+    assert_true(d.shed_above == 14 and d.share == 14, "budget / active: " + String(d.shed_above))
+    s.mode, s.budget, s.since_cut = Mode.HOLDING, 853, 0
+    d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=200), 5_000, 100)
+    assert_true(d.share == 4 and d.shed_above == 4, "the local overload smoke's split: " + String(d.share))
 
 
 def test_fluid_recovery_model() raises:

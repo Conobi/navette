@@ -5,7 +5,7 @@ frames the server emits.
 """
 
 from std.collections import Span
-from navette.h3.connection import ConnTally
+from navette.h3.connection import ConnTally, H3Connection
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.http.handler import Capabilities, RecvBody, ResponseWriter, StreamError, StreamHandler
 from navette.http.request import Request
@@ -37,6 +37,12 @@ def _respond(mut p: RawPair, sid: UInt64) raises:
     var fields = List[QpackHeaderField]()
     fields.append(QpackHeaderField(String(":status"), String("200")))
     p.srv.send_headers(sid, fields, True)
+
+
+def _shed_at(mut h3: H3Connection, k: UInt64):
+    """Pressure with a stream window of `k`, the even split, already reached."""
+    _ = h3.apply_governor(UNLIMITED, 0, 1, k, 1)
+    h3._quic.stream_map.regrant_window = k
 
 
 def _tally(mut p: RawPair) -> ConnTally:
@@ -78,12 +84,12 @@ def test_window_narrowed_then_released() raises:
     _ = p.srv.apply_governor(1, 1000, 1, UNLIMITED, 1)
     _ = p.srv.apply_governor(1, 1000, 1, UNLIMITED, 1)
     ref sm = p.srv._quic.stream_map
-    assert_true(sm.regrant_window == 32, "two over-budget closes narrow to the floor: " + String(sm.regrant_window))
+    assert_true(sm.regrant_window == 25, "two over-budget closes halve the window twice: " + String(sm.regrant_window))
     var limit = p.cli.stream_map.peer_max_streams_bidi
     for i in range(3, 5):
         _respond(p, sids[i])
     p.pump(10)
-    assert_true(p.cli.stream_map.peer_max_streams_bidi == limit, "no MAX_STREAMS while D + 32 is under the limit")
+    assert_true(p.cli.stream_map.peer_max_streams_bidi == limit, "no MAX_STREAMS while D + 25 is under the limit")
     assert_true(p.srv.apply_governor(UNLIMITED, 0, 1, UNLIMITED, 1), "release grants")
     var dgs = p.srv.drain_datagrams(p.now)
     assert_true(len(dgs) > 0, "the grant leaves without a client datagram")
@@ -95,7 +101,7 @@ def test_window_narrowed_then_released() raises:
 def test_shed_above_share_and_hold() raises:
     var p = RawPair()
     var sids = _requests(p, 40, False)
-    _ = p.srv.apply_governor(UNLIMITED, 0, 1, 32, 1)
+    _shed_at(p.srv, 32)
     for i in range(40):
         var shed = p.srv.shed_if_over_share(sids[i])
         assert_true(shed == (i >= 32), "request " + String(i + 1) + " shed=" + String(shed))
@@ -135,10 +141,11 @@ def test_crossing_fin_while_shedding() raises:
     """The client's FIN crosses our STOP_SENDING: the shed streams still complete and return their credit."""
     var p = RawPair()
     var sids = _requests(p, 40, False)
-    _ = p.srv.apply_governor(UNLIMITED, 0, 1, 32, 1)
+    _shed_at(p.srv, 32)
     for i in range(32, 40):
         assert_true(p.srv.shed_if_over_share(sids[i]), "shed")
         p.cli.send_stream_data(sids[i], Span(List[Byte]()), True)
+    p.srv._quic.stream_map.regrant_window = 100  # released: completions re-grant D + 100
     p.pump(60)
     for i in range(32, 40):
         assert_true(Int(sids[i]) not in p.srv._quic.stream_map.streams, "shed stream reaped: " + String(sids[i]))
@@ -147,24 +154,29 @@ def test_crossing_fin_while_shedding() raises:
     assert_true(p.cli.stream_map.peer_max_streams_bidi == 108, "credit returned: " + String(p.cli.stream_map.peer_max_streams_bidi))
 
 
-def test_global_shed_with_many_connections() raises:
-    """With 200 connections the governor's 503 threshold (no floor) binds where the 32-stream credit floor cannot."""
+def test_credit_first_then_503() raises:
+    """200 connections, budget 147: no 503 within granted credit; once the window has come down below the open
+    streams, only the streams opened on the older credit get 503."""
     var p = RawPair()
     var sids = _requests(p, 10, False)
     var s = GovState()
     s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
     var d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=200), 5_000, 100)
     _ = p.srv.apply_governor(d.budget, 2_000, 200, d.shed_above, d.retry_after_s)
+    assert_true(p.srv._quic.stream_map.regrant_window == 50 and not p.srv.shed_if_over_share(sids[9]), "credit 50: no 503")
+    for _ in range(4):
+        _ = p.srv.apply_governor(d.budget, 2_000, 200, d.shed_above, d.retry_after_s)
+    assert_true(p.srv._quic.stream_map.regrant_window == 6, "one halving per close while open <= window: " + String(p.srv._quic.stream_map.regrant_window))
     for i in range(10):
-        assert_true(p.srv.shed_if_over_share(sids[i]) == (i >= 1), "request " + String(i + 1))
-    assert_true(p.srv.refused_503 == 9, "nine 503s")
+        assert_true(p.srv.shed_if_over_share(sids[i]) == (i >= 6), "request " + String(i + 1))
+    assert_true(p.srv.refused_503 == 4, "four 503s: " + String(p.srv.refused_503))
 
 
 def test_threshold_moves_with_completions() raises:
     """The 503 threshold counts open streams (ordinal minus completed), not stream ordinals."""
     var p = RawPair()
     var first = _requests(p, 2, True)
-    _ = p.srv.apply_governor(UNLIMITED, 0, 1, 2, 1)
+    _shed_at(p.srv, 2)
     for i in range(2):
         assert_true(not p.srv.shed_if_over_share(first[i]), "under the threshold")
         _respond(p, first[i])
@@ -257,7 +269,7 @@ struct _HPair(Movable):
 
 def test_handler_sheds_above_share() raises:
     var p = _HPair()
-    _ = p.srv.h3().apply_governor(UNLIMITED, 0, 1, 32, 1)
+    _shed_at(p.srv.h3(), 32)
     for _ in range(40):
         _ = p.request()
     p.pump(5)
@@ -310,9 +322,9 @@ def main() raises:
         print("FAIL test_crossing_fin_while_shedding:", e)
         failed += 1
     try:
-        test_global_shed_with_many_connections()
+        test_credit_first_then_503()
     except e:
-        print("FAIL test_global_shed_with_many_connections:", e)
+        print("FAIL test_credit_first_then_503:", e)
         failed += 1
     try:
         test_threshold_moves_with_completions()

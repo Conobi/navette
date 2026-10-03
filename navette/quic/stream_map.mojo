@@ -477,7 +477,7 @@ struct StreamMap(Movable):
     def apply_budget(mut self, budget: UInt64, work: UInt64, n: UInt64) -> Bool:
         """Re-derive the bidi window from the governor's server-wide `budget` (`n` connections, `work` open streams).
 
-        `conn_limit` keeps it in `[min(32, initial), initial]` and cuts it at most once until the last cut has taken
+        `conn_limit` keeps it in `[min(MIN_CREDIT, initial), initial]` and cuts it at most once until the last cut has taken
         effect; credit already granted is never taken back. True when the limit grew: a MAX_STREAMS must be sent now,
         since a client blocked on stream credit sends nothing that would trigger one.
         """

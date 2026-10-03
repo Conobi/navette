@@ -5,7 +5,7 @@ directly and call the re-grant methods, so MAX_STREAMS = M = `local_max_streams_
 """
 
 from navette.quic.stream_map import StreamMap
-from navette.protect.governor import UNLIMITED
+from navette.protect.governor import UNLIMITED, MIN_CREDIT
 from tests._test_util import assert_true
 from tests.protect._prop import Rng, prop_iters
 
@@ -89,10 +89,10 @@ def test_floor_and_one_step() raises:
     var sm = _map(100)
     for _ in range(10):
         _ = sm.apply_budget(1, 100_000, 1000)
-    assert_true(sm.regrant_window == 32, "tiny budget stops at the floor: " + String(sm.regrant_window))
-    var small = _map(10)
+    assert_true(sm.regrant_window == MIN_CREDIT, "tiny budget stops at MIN_CREDIT: " + String(sm.regrant_window))
+    var small = _map(1)
     _ = small.apply_budget(1, 100_000, 1000)
-    assert_true(small.regrant_window == 10, "floor is min(32, initial)")
+    assert_true(small.regrant_window == 1, "floor is min(MIN_CREDIT, initial)")
     var one = _map(100)
     one.peer_opened_bidi = 80
     _ = one.apply_budget(64, 1000, 1)

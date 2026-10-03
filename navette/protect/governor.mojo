@@ -79,7 +79,11 @@ struct DelayHist(Copyable, Movable):
 comptime UNLIMITED = UInt64.MAX
 """Budget value meaning released: no window below the configured stream credit, no refusals."""
 comptime FLOOR: UInt64 = 32
-"""Per-connection and budget floor (a fixed limit of 16 cost ~30 % rps; 32 was neutral); `cap` when lower."""
+"""Budget floor, server-wide; `cap` when lower."""
+comptime MIN_CREDIT: UInt64 = 2
+"""Least stream credit a connection keeps under pressure; `cap` when lower. Credit returns only once the client
+acknowledges a response (completions count fully closed streams), so with 1 each request would also wait out the
+client's ACK delay; 2 overlaps the next request with it."""
 comptime RELEASE = 10
 """Consecutive clear closes (`200 t`) before the budget returns to unlimited: the metastability guard."""
 comptime PENDING_MAX = 10
@@ -136,10 +140,11 @@ struct Sample(ImplicitlyCopyable, Movable):
 @fieldwise_init
 struct Decision(ImplicitlyCopyable, Movable):
     """What the enforcing layers apply until the next close: `budget` bounds open streams server-wide; `conn_limit`
-    turns it into stream-credit windows and `share` is a new connection's credit, both at least the 32 floor. A new
-    request on a connection already holding `shed_above` open streams gets 503 with `retry_after_s`: this threshold
-    has no floor (at least 1), so it binds however many connections share the budget. `refuse_new` refuses new
-    connections. `UNLIMITED` enforces nothing."""
+    turns it into stream-credit windows and `share` is a new connection's credit, both down to the even split
+    `shed_above` but at least `MIN_CREDIT` (below RFC 9114's recommended 100, only under overload). Credit binds
+    first; a new request on a connection already holding as many open streams as the larger of its window and
+    `shed_above` (opened on credit granted before the window came down) gets 503 with `retry_after_s`.
+    `refuse_new` refuses new connections. `UNLIMITED` enforces nothing."""
 
     var budget: UInt64
     var share: UInt64
@@ -163,9 +168,8 @@ def step(mut s: GovState, x: Sample, t: UInt64, cap: UInt64) -> Decision:
     - NORMAL, clear -> NORMAL.
     `refuse_new` is set by the `REFUSE_AFTER`-th consecutive close above `4 t` once the budget is already at
     `max(floor, Little's point)` (no cut left to make), cleared by a clear close. Under pressure
-    (CUTTING, HOLDING) the share is `max(floor, budget / active)` and `shed_above` is `max(1, budget / active)`:
-    connections above the even split are shed first, and when all sit at it each keeps one stream (overshoot at
-    most `active` streams; refusing new connections covers the rest)."""
+    (CUTTING, HOLDING) `shed_above` is the even split `max(1, budget / active)` and the share is the same, at least
+    `MIN_CREDIT` (overshoot at most `MIN_CREDIT x active` streams; refusing new connections covers the rest)."""
     var floor = min(FLOOR, cap)
     s.since_cut = min(s.since_cut + 1, PENDING_MAX)
     if x.delay_us > t:
@@ -189,7 +193,7 @@ def step(mut s: GovState, x: Sample, t: UInt64, cap: UInt64) -> Decision:
                 s.mode, s.budget, s.releases = Mode.NORMAL, UNLIMITED, s.releases + 1
     var pressure = s.mode == Mode.CUTTING or s.mode == Mode.HOLDING
     var even = s.budget // max(UInt64(1), x.active)
-    var share, shed_above = (max(floor, even), max(UInt64(1), even)) if pressure else (UNLIMITED, UNLIMITED)
+    var share, shed_above = (max(min(MIN_CREDIT, cap), even), max(UInt64(1), even)) if pressure else (UNLIMITED, UNLIMITED)
     return Decision(budget=s.budget, share=share, shed_above=shed_above, refuse_new=s.refuse_new, retry_after_s=retry_after_s(t))
 
 
@@ -198,7 +202,7 @@ def conn_limit(l: UInt64, open_c: UInt64, budget: UInt64, work: UInt64, n: UInt6
 
     With spare budget, windows below the mean share grow towards it and the rest may borrow up to twice it. Without,
     a window halves towards the share, once: not again while `open_c > l` (the last cut has not taken effect, credit
-    being irrevocable). Clamped to `[min(FLOOR, cap), cap]`.
+    being irrevocable). Clamped to `[min(MIN_CREDIT, cap), cap]`.
     """
     if budget == UNLIMITED:
         return cap
@@ -214,7 +218,7 @@ def conn_limit(l: UInt64, open_c: UInt64, budget: UInt64, work: UInt64, n: UInt6
             w = max(2 * mean, l // 2)
     elif open_c <= l:
         w = max(mean, l // 2)
-    return min(max(w, min(FLOOR, cap)), cap)
+    return min(max(w, min(MIN_CREDIT, cap)), cap)
 
 
 comptime MEMINFO_EVERY = 16
