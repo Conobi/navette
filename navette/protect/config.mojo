@@ -8,20 +8,31 @@ comptime DEFAULT_CONN_CAP: Int = 4096
 comptime MIN_CONN_CAP: Int = 64
 comptime MAX_CONN_CAP: Int = 1 << 24
 """16.7 M connections: far above any descriptor limit, low enough that sizing tables from it cannot wrap."""
+comptime DEFAULT_MAX_QUEUE_DELAY_US: UInt64 = 5_000
 
 
 struct ProtectionConfig(Copyable, Movable):
     """The protection limits a server takes as one defaulted keyword argument; `validate` rejects values that disable a protection."""
 
     var conn_cap: Int
+    var max_queue_delay_us: UInt64
+    """Under overload, how long a request may wait in line before the server starts refusing (503 with Retry-After).
 
-    def __init__(out self, *, conn_cap: Int = DEFAULT_CONN_CAP):
+    Lower means faster answers under load and more refusals; `0` turns the
+    overload governor off. Keep handler run time about 10x below it.
+    """
+
+    def __init__(out self, *, conn_cap: Int = DEFAULT_CONN_CAP, max_queue_delay_us: UInt64 = DEFAULT_MAX_QUEUE_DELAY_US):
         self.conn_cap = conn_cap
+        self.max_queue_delay_us = max_queue_delay_us
 
     def validate(self) raises:
-        """Reject a `conn_cap` outside `[MIN_CONN_CAP, MAX_CONN_CAP]`."""
+        """Reject a `conn_cap` outside `[MIN_CONN_CAP, MAX_CONN_CAP]` and a non-zero `max_queue_delay_us` outside 1 ms .. 10 s."""
         if self.conn_cap < MIN_CONN_CAP or self.conn_cap > MAX_CONN_CAP:
             raise "ProtectionConfig: conn_cap must be in " + String(MIN_CONN_CAP) + ".." + String(MAX_CONN_CAP)
+        var t = self.max_queue_delay_us
+        if t != 0 and (t < 1_000 or t > 10_000_000):
+            raise "ProtectionConfig: max_queue_delay_us must be 0 or in 1000..10000000"
 
 
 struct ProtectionStats(Copyable, Movable):
