@@ -291,8 +291,8 @@ struct H3Connection(Movable):
     # Reusable scratch buffer for frame encoding in send_headers / send_goaway /
     # _bootstrap_local_streams — avoids a fresh allocation per call.
     var _wire_scratch:               List[Byte]
-    # Governor: last handed share / retry-after, streams excluded from work, interval marks, 503s since the tally.
-    var share:                       UInt64
+    # Governor: last handed 503 threshold / retry-after, streams excluded from work, interval marks, 503s since the tally.
+    var shed_above:                  UInt64
     var retry_after_s:               UInt64
     var long_lived:                  UInt64
     var _gov_opened:                 UInt64
@@ -334,7 +334,7 @@ struct H3Connection(Movable):
         self.profile_ptr = None
         self._send_scratch = List[List[Byte]](capacity=1)
         self._wire_scratch = List[Byte](capacity=256)
-        self.share, self.retry_after_s, self.long_lived, self._gov_opened, self._gov_done, self.refused_503 = UInt64.MAX, 1, 0, 0, 0, 0
+        self.shed_above, self.retry_after_s, self.long_lived, self._gov_opened, self._gov_done, self.refused_503 = UInt64.MAX, 1, 0, 0, 0, 0
 
     @staticmethod
     def server(
@@ -591,14 +591,14 @@ struct H3Connection(Movable):
         acc.refused_503, acc.cap = acc.refused_503 + self.refused_503, max(acc.cap, sm.initial_max_streams_bidi)
         self._gov_done, self.refused_503 = sm.peer_completed_bidi, 0
 
-    def apply_governor(mut self, budget: UInt64, work: UInt64, n: UInt64, share: UInt64, retry_after_s: UInt64) -> Bool:
+    def apply_governor(mut self, budget: UInt64, work: UInt64, n: UInt64, shed_above: UInt64, retry_after_s: UInt64) -> Bool:
         """Hand this connection the governor's decision; True when its stream window grew and it must be drained now."""
-        self.share, self.retry_after_s = share, retry_after_s
+        self.shed_above, self.retry_after_s = shed_above, retry_after_s
         return self._quic.stream_map.apply_budget(budget, work, n)
 
     def shed_if_over_share(mut self, stream_id: UInt64) raises -> Bool:
-        """Over `share` open streams up to this one: 503 + `retry-after`, FIN, STOP_SENDING(H3_NO_ERROR); True = don't serve."""
-        if stream_id // 4 - min(stream_id // 4, self._quic.stream_map.peer_completed_bidi) < self.share:  # ordinal - D
+        """At `shed_above` open streams before this one: 503 + `retry-after`, FIN, STOP_SENDING(H3_NO_ERROR); True = don't serve."""
+        if stream_id // 4 - min(stream_id // 4, self._quic.stream_map.peer_completed_bidi) < self.shed_above:  # ordinal - D
             return False
         var fields: List[QpackHeaderField] = [QpackHeaderField(":status", "503"), QpackHeaderField("retry-after", String(self.retry_after_s))]
         self.send_headers(stream_id, fields, True)

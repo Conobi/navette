@@ -135,13 +135,15 @@ struct Sample(ImplicitlyCopyable, Movable):
 
 @fieldwise_init
 struct Decision(ImplicitlyCopyable, Movable):
-    """What the enforcing layers apply until the next close: `budget` bounds open streams server-wide (`conn_limit`
-    turns it into windows of at least `floor`); a connection holding more than `share` open streams gets 503 with
-    `retry_after_s`; `refuse_new` refuses new connections. `UNLIMITED` budget and share enforce nothing."""
+    """What the enforcing layers apply until the next close: `budget` bounds open streams server-wide; `conn_limit`
+    turns it into stream-credit windows and `share` is a new connection's credit, both at least the 32 floor. A new
+    request on a connection already holding `shed_above` open streams gets 503 with `retry_after_s`: this threshold
+    has no floor (at least 1), so it binds however many connections share the budget. `refuse_new` refuses new
+    connections. `UNLIMITED` enforces nothing."""
 
     var budget: UInt64
     var share: UInt64
-    var floor: UInt64
+    var shed_above: UInt64
     var refuse_new: Bool
     var retry_after_s: UInt64
 
@@ -161,7 +163,9 @@ def step(mut s: GovState, x: Sample, t: UInt64, cap: UInt64) -> Decision:
     - NORMAL, clear -> NORMAL.
     `refuse_new` is set by the `REFUSE_AFTER`-th consecutive close above `4 t` once the budget is already at
     `max(floor, Little's point)` (no cut left to make), cleared by a clear close. Under pressure
-    (CUTTING, HOLDING) the share is `max(floor, budget / active)`."""
+    (CUTTING, HOLDING) the share is `max(floor, budget / active)` and `shed_above` is `max(1, budget / active)`:
+    connections above the even split are shed first, and when all sit at it each keeps one stream (overshoot at
+    most `active` streams; refusing new connections covers the rest)."""
     var floor = min(FLOOR, cap)
     s.since_cut = min(s.since_cut + 1, PENDING_MAX)
     if x.delay_us > t:
@@ -184,8 +188,9 @@ def step(mut s: GovState, x: Sample, t: UInt64, cap: UInt64) -> Decision:
             if s.clear_streak >= RELEASE or UInt128(s.budget) >= min(UInt128(x.active) * UInt128(cap), UInt128(UNLIMITED)):
                 s.mode, s.budget, s.releases = Mode.NORMAL, UNLIMITED, s.releases + 1
     var pressure = s.mode == Mode.CUTTING or s.mode == Mode.HOLDING
-    var share = max(floor, s.budget // max(UInt64(1), x.active)) if pressure else UNLIMITED
-    return Decision(budget=s.budget, share=share, floor=floor, refuse_new=s.refuse_new, retry_after_s=retry_after_s(t))
+    var even = s.budget // max(UInt64(1), x.active)
+    var share, shed_above = (max(floor, even), max(UInt64(1), even)) if pressure else (UNLIMITED, UNLIMITED)
+    return Decision(budget=s.budget, share=share, shed_above=shed_above, refuse_new=s.refuse_new, retry_after_s=retry_after_s(t))
 
 
 def conn_limit(l: UInt64, open_c: UInt64, budget: UInt64, work: UInt64, n: UInt64, cap: UInt64) -> UInt64:
@@ -260,7 +265,7 @@ struct Governor(Movable):
     def __init__(out self, t: UInt64, now_us: UInt64):
         self.t, self.state = t, GovState()
         self.hist = DelayHist()
-        self.decision = Decision(budget=UNLIMITED, share=UNLIMITED, floor=FLOOR, refuse_new=False, retry_after_s=retry_after_s(t))
+        self.decision = Decision(budget=UNLIMITED, share=UNLIMITED, shed_above=UNLIMITED, refuse_new=False, retry_after_s=retry_after_s(t))
         self.truesize, self.kwait, self.drained, self.passes = 0, 0, True, 0
         self.last_pass_us, self.last_close_us, self.deliveries, self.deliveries_prev = now_us, now_us, 0, 0
         self.stats = OverloadStats(0, 0, 0, GovState(), self.decision, 0, 0)

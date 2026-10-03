@@ -1236,7 +1236,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self.governor.close(now, acc.done, acc.rtt_us, acc.work, acc.active, acc.cap)
         var d = self.governor.decision
         for i in range(len(self.conn_slots)):
-            if self.conn_slots[i].h3[].h3().apply_governor(d.budget, acc.work, acc.active, d.share, d.retry_after_s):
+            if self.conn_slots[i].h3[].h3().apply_governor(d.budget, acc.work, acc.active, d.shed_above, d.retry_after_s):
                 try:
                     self._drain_and_send(i, now)
                 except:

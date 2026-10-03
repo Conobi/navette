@@ -166,7 +166,7 @@ def test_step_properties() raises:
         if x.work > s0.budget and s0.since_cut + 1 < PENDING_MAX:
             assert_true(s.cuts == s0.cuts and s.budget >= s0.budget, tag + "one decrease in flight")
             assert_true(x.delay_us <= t or s.mode == Mode.HOLDING, tag + "over with a cut in flight holds")
-        assert_true(d.budget == s.budget and d.refuse_new == s.refuse_new and d.floor == floor, tag + "decision mirrors state")
+        assert_true(d.budget == s.budget and d.refuse_new == s.refuse_new, tag + "decision mirrors state")
         if s.cuts != s0.cuts:
             var base = min(s0.budget, x.work)
             assert_true(s.budget >= max(floor, base // 2) and s.budget <= max(floor, base), tag + "cut bounded")
@@ -249,6 +249,7 @@ def test_conn_limit_properties() raises:
 
 
 def test_refuse_only_culprits() raises:
+    """503 only under pressure and only above `max(1, budget / active)`, with no 32 floor: it binds however many connections share the budget."""
     var rng = Rng(0xC011)
     for c in range(prop_iters(300)):
         var cap = _rand_cap(rng)
@@ -258,9 +259,23 @@ def test_refuse_only_culprits() raises:
         var x = _rand_sample(rng, UInt64(5_000), -1)
         x.active = active
         var d = step(s, x, 5_000, cap)
-        if open_c > d.share:
-            var share = max(min(UInt64(32), cap), s.budget // max(UInt64(1), active))
-            assert_true(_pressure(s) and open_c > share, "case " + String(c) + ": refuses only above share under pressure")
+        var tag = "case " + String(c) + ": "
+        if open_c > d.shed_above:
+            assert_true(_pressure(s) and open_c > max(UInt64(1), s.budget // max(UInt64(1), active)), tag + "sheds only above the share under pressure")
+        if _pressure(s):
+            assert_true(d.shed_above >= 1 and d.shed_above <= max(UInt64(1), s.budget // max(UInt64(1), active)), tag + "no floor on the 503 threshold")
+        assert_true(d.share >= min(UInt64(32), cap), tag + "the credit share keeps its floor")
+
+
+def test_shed_threshold_binds_with_many_connections() raises:
+    """200 connections x 10 in flight, budget 147: credit stays at its floor 32 but each connection keeps 1 stream."""
+    var s = GovState()
+    s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
+    var d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=200), 5_000, 100)
+    assert_true(d.share == 32 and d.shed_above == 1, "share " + String(d.share) + ", shed above " + String(d.shed_above))
+    s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
+    d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=10), 5_000, 100)
+    assert_true(d.shed_above == 14, "budget / active: " + String(d.shed_above))
 
 
 def test_fluid_recovery_model() raises:
@@ -352,7 +367,7 @@ def test_facade_interval_close() raises:
     var st = g.stats.copy()
     assert_true(st.state.mode == Mode.CUTTING and st.decision.budget != UNLIMITED and st.state.cuts == 1, "over target: one cut")
     assert_true(st.queue_delay_us >= 16_384 and st.kernel_wait_us == 20_000, "p90 wait " + String(st.queue_delay_us))
-    assert_true(st.intervals == 2 and g.decision.share == max(UInt64(32), g.decision.budget // 10), "rung 3 share published")
+    assert_true(st.intervals == 2 and g.decision.shed_above == g.decision.budget // 10, "503 threshold published")
     for _ in range(30):
         g.requests += 10
         now += 1_000
@@ -405,6 +420,7 @@ def main() raises:
     test_recovery_and_liveness()
     test_conn_limit_properties()
     test_refuse_only_culprits()
+    test_shed_threshold_binds_with_many_connections()
     test_fluid_recovery_model()
     test_want_rmem()
     test_facade_interval_close()

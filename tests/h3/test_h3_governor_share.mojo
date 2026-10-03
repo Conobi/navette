@@ -14,7 +14,7 @@ from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.tls.lib import TlsBackend
 from navette.h3.error import H3_NO_ERROR
 from navette.h3.qpack import QpackDecoder, QpackHeaderField
-from navette.protect.governor import UNLIMITED
+from navette.protect.governor import UNLIMITED, GovState, Mode, Sample, step
 from navette.quic.event import QuicEvent, StreamStoppedPayload
 from tests._test_util import assert_true, load_test_cert, load_test_ca
 from tests.h3._h3_raw_pair import RawPair, headers_get, raw_params
@@ -140,6 +140,19 @@ def test_crossing_fin_while_shedding() raises:
     assert_true(p.cli.stream_map.peer_max_streams_bidi == 108, "credit returned: " + String(p.cli.stream_map.peer_max_streams_bidi))
 
 
+def test_global_shed_with_many_connections() raises:
+    """With 200 connections the governor's 503 threshold (no floor) binds where the 32-stream credit floor cannot."""
+    var p = RawPair()
+    var sids = _requests(p, 10, False)
+    var s = GovState()
+    s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
+    var d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=200), 5_000, 100)
+    _ = p.srv.apply_governor(d.budget, 2_000, 200, d.shed_above, d.retry_after_s)
+    for i in range(10):
+        assert_true(p.srv.shed_if_over_share(sids[i]) == (i >= 1), "request " + String(i + 1))
+    assert_true(p.srv.refused_503 == 9, "nine 503s")
+
+
 struct _Counting(StreamHandler):
     """Counts the requests it runs and never answers; detaches the body of the next one when asked."""
 
@@ -262,6 +275,11 @@ def main() raises:
         test_crossing_fin_while_shedding()
     except e:
         print("FAIL test_crossing_fin_while_shedding:", e)
+        failed += 1
+    try:
+        test_global_shed_with_many_connections()
+    except e:
+        print("FAIL test_global_shed_with_many_connections:", e)
         failed += 1
     try:
         test_handler_sheds_above_share()

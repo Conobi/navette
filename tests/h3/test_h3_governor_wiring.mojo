@@ -150,7 +150,7 @@ def test_interval_close_applies_share_and_drains_raises() raises:
     ref d = h.srv[].governor.decision
     assert_true(h.srv[].governor.state.mode == Mode.CUTTING and d.share == 32 and not d.refuse_new, "pressure, share 32")
     ref conn = h.server_conn(0)[].h3()
-    assert_true(conn.share == 32 and conn._quic.stream_map.regrant_window < 100, "the close applied share and window")
+    assert_true(conn.shed_above == d.shed_above and conn._quic.stream_map.regrant_window < 100, "the close applied share and window")
     for _ in range(3):
         _ = _send_get(c)
     for _ in range(10):

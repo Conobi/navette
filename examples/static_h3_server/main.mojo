@@ -112,7 +112,7 @@ def overload_line(server: H3UdpServer[StaticHandler], now_us: UInt64) -> String:
     return String(
         '{"t_us":', now_us, ',"intervals":', g.intervals, ',"mode":', g.state.mode._v,
         ',"queue_delay_us":', g.queue_delay_us, ',"kernel_wait_us":', g.kernel_wait_us,
-        ',"budget":', d.budget, ',"share":', d.share, ',"refuse_new":', "true" if d.refuse_new else "false",
+        ',"budget":', d.budget, ',"share":', d.share, ',"shed_above":', d.shed_above, ',"refuse_new":', "true" if d.refuse_new else "false",
         ',"cuts":', g.state.cuts, ',"grows":', g.state.grows, ',"releases":', g.state.releases,
         ',"refused_503":', g.refused_streams_503, ',"slow_handler_warnings":', g.slow_handler_warnings,
         ',"dropped_overload":', p.dropped_overload, ',"refused_closes":', p.refused_closes, "}",
