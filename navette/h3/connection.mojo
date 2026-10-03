@@ -603,6 +603,7 @@ struct H3Connection(Movable):
         var fields: List[QpackHeaderField] = [QpackHeaderField(":status", "503"), QpackHeaderField("retry-after", String(self.retry_after_s))]
         self.send_headers(stream_id, fields, True)
         self._quic.stop_sending(stream_id, H3_NO_ERROR)
+        self._release_stream(stream_id, 0)  # its later bytes are discarded by QUIC, never read here
         self.refused_503 += 1
         return True
 

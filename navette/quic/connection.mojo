@@ -1960,12 +1960,15 @@ struct QuicConnection(Movable):
             self.close_transport(FINAL_SIZE_ERROR, String(_REASON_FINAL_SIZE), monotonic_us())
             return
         var rs = p[].recv_state.value()
-        if rs != RecvState.RECV and rs != RecvState.SIZE_KNOWN:
+        if rs != RecvState.RECV and rs != RecvState.SIZE_KNOWN and rs != RecvState.STOP_SENDING_SENT:
             return
         if not p[].fc_recv:
             raise "internal: missing fc_recv"
         if stream_offset_exceeds_fc(offset, data_len, p[].fc_recv.value().limit):
             self.close_transport(UInt64(0x03), String(GUARD_TAG_STREAM_LARGE_OFFSET), monotonic_us())
+            return
+        if rs == RecvState.STOP_SENDING_SENT:
+            self._discard_recv(key, end, fin)
             return
         if not p[].recv_buf:
             raise "internal: missing recv_buf"
@@ -4100,9 +4103,37 @@ struct QuicConnection(Movable):
                 or rs == RecvState.RESET_RECVD):
             return
         p[].recv_state = Optional[RecvState](RecvState.STOP_SENDING_SENT)
+        if p[].fin_offset:  # the peer has sent everything: nothing to stop
+            self._discard_recv(key, p[].fin_offset.value(), True)
+            return
         p[].needs_stop_sending = True
         p[].stop_sending_error = error_code
         self.stream_map.mark_stop_sending(key)
+
+    def _discard_recv(mut self, key: Int, end: UInt64, fin: Bool) raises:
+        """Receive side after our STOP_SENDING, which leaves its state machine running (RFC 9000 Section 3.5).
+
+        Payload is dropped but bytes up to `end` count as received and read, so flow control still binds and the
+        credit comes back; the final size (`fin`) completes the stream to Data Read and frees it. Without this a FIN
+        crossing our STOP_SENDING leaves the stream, and its MAX_STREAMS credit, held forever.
+        """
+        var p = self.stream_map.stream_ptr(key)
+        var grow = end - min(end, p[].recv_highest_offset)
+        if not self.stream_map.conn_fc_recv.check_limit(grow):
+            self.close_transport(FLOW_CONTROL_ERROR, String(_REASON_CONN_FLOW), monotonic_us())
+            return
+        ref conn_fc = self.stream_map.conn_fc_recv
+        p[].recv_highest_offset += grow
+        ref fc = p[].fc_recv.value()
+        fc.add_received(grow)
+        conn_fc.add_received(grow)
+        conn_fc.add_consumed(fc.received - fc.consumed)
+        fc.add_consumed(fc.received - fc.consumed)
+        self.stream_map.needs_max_data = self.stream_map.needs_max_data or conn_fc.should_update()
+        if fin:
+            p[].fin_offset = Optional[UInt64](end)
+            p[].recv_state = Optional[RecvState](RecvState.DATA_READ)
+            _ = self.stream_map.maybe_cleanup(key)
 
     # ── Internal helpers ─────────────────────────────────────────────
 

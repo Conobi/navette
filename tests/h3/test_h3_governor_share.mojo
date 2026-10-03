@@ -124,6 +124,22 @@ def test_shed_above_share_and_hold() raises:
         assert_true(not q.srv.shed_if_over_share(many[i]), "UNLIMITED share never sheds")
 
 
+def test_crossing_fin_while_shedding() raises:
+    """The client's FIN crosses our STOP_SENDING: the shed streams still complete and return their credit."""
+    var p = RawPair()
+    var sids = _requests(p, 40, False)
+    _ = p.srv.apply_governor(UNLIMITED, 0, 1, 32, 1)
+    for i in range(32, 40):
+        assert_true(p.srv.shed_if_over_share(sids[i]), "shed")
+        p.cli.send_stream_data(sids[i], Span(List[Byte]()), True)
+    p.pump(60)
+    for i in range(32, 40):
+        assert_true(Int(sids[i]) not in p.srv._quic.stream_map.streams, "shed stream reaped: " + String(sids[i]))
+        assert_true(Int(sids[i]) not in p.srv._stream_bufs, "its H3 buffer released")
+    assert_true(p.srv._quic.stream_map.peer_completed_bidi == 8, "eight completed: " + String(p.srv._quic.stream_map.peer_completed_bidi))
+    assert_true(p.cli.stream_map.peer_max_streams_bidi == 108, "credit returned: " + String(p.cli.stream_map.peer_max_streams_bidi))
+
+
 struct _Counting(StreamHandler):
     """Counts the requests it runs and never answers; detaches the body of the next one when asked."""
 
@@ -241,6 +257,11 @@ def main() raises:
         test_shed_above_share_and_hold()
     except e:
         print("FAIL test_shed_above_share_and_hold:", e)
+        failed += 1
+    try:
+        test_crossing_fin_while_shedding()
+    except e:
+        print("FAIL test_crossing_fin_while_shedding:", e)
         failed += 1
     try:
         test_handler_sheds_above_share()
