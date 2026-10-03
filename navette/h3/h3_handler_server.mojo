@@ -258,6 +258,10 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         """The connection's QUIC layer: the UDP server's demux, path and handshake bookkeeping read it directly."""
         return self._h3._quic
 
+    def h3(ref self) -> ref [self._h3] H3Connection:
+        """The connection's HTTP/3 layer: the UDP server's governor wiring tallies it and hands it its share."""
+        return self._h3
+
     def set_current_recv_addr(mut self, var addr: PathKey):
         """Stamp the per-receive source-addr cursor on the QUIC layer."""
         self._h3.set_current_recv_addr(addr^)
@@ -288,7 +292,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 self._on_stream_reset(ev)
 
     def _on_request(mut self, ev: H3Event, now: UInt64) raises:
-        """Parse pseudo-headers from QPACK fields, build Request, invoke handler."""
+        """Parse pseudo-headers from QPACK fields, build Request, invoke handler (unless the connection sheds it)."""
+        if self._h3.shed_if_over_share(ev.stream_id):
+            return
         var _ct_start = UInt64(0)
         comptime if PROFILE_ACCEPT:
             _ct_start = rdtsc()
@@ -390,6 +396,8 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             pass
 
         var detached = body._state == 3
+        if detached:
+            self._h3.long_lived += 1
 
         var ctx_ptr = _heap_alloc[_H3StreamCtx](1)
         var ctx = _H3StreamCtx()
@@ -443,9 +451,10 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             return
         self._h3.cancel_send_side(ev.stream_id)
         var ctx_ptr = self._streams[sid].ptr()
-        # Taken out of the slot purely so it is destroyed; nothing below
-        # reads it, and nothing it owns is touched before the block ends.
-        _ = ctx_ptr.unsafe_take_pointee()
+        # Taken out of the slot so it is destroyed; only its `detached`
+        # flag is read, and nothing it owns is touched before the block ends.
+        if ctx_ptr.unsafe_take_pointee().detached:
+            self._h3.long_lived -= 1
         var err = StreamError.rst_stream(UInt32(ev.error_code))
         self.handler.on_reset(err)
         _ = self._streams.pop(sid)
@@ -535,6 +544,8 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             return
         var ctx_ptr = self._streams[sid].ptr()
         if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
+            if ctx_ptr[].detached:
+                self._h3.long_lived -= 1
             _ = self._streams.pop(sid)
             ctx_ptr.unsafe_deinit_pointee()
             ctx_ptr.unsafe_free()

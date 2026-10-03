@@ -1,16 +1,23 @@
 """H3Connection's governor hooks: per-connection counts, the narrowed window, shedding above the share, held drains.
 
-In-memory raw QUIC client (`RawPair`): the test sees exactly the bytes and frames the server emits.
+In-memory raw QUIC client (`RawPair`, or `_HPair` for the handler server): the test sees exactly the bytes and
+frames the server emits.
 """
 
 from std.collections import Span
 from navette.h3.connection import ConnTally
+from navette.h3.h3_handler_server import H3HandlerServer
+from navette.http.handler import Capabilities, RecvBody, ResponseWriter, StreamError, StreamHandler
+from navette.http.request import Request
+from navette.quic.connection import QuicConnection
+from navette.tls.config import QuicServerConfig, QuicClientConfig
+from navette.tls.lib import TlsBackend
 from navette.h3.error import H3_NO_ERROR
 from navette.h3.qpack import QpackDecoder, QpackHeaderField
 from navette.protect.governor import UNLIMITED
 from navette.quic.event import QuicEvent, StreamStoppedPayload
-from tests._test_util import assert_true
-from tests.h3._h3_raw_pair import RawPair, headers_get
+from tests._test_util import assert_true, load_test_cert, load_test_ca
+from tests.h3._h3_raw_pair import RawPair, headers_get, raw_params
 
 
 def _requests(mut p: RawPair, n: Int, fin: Bool) raises -> List[UInt64]:
@@ -117,6 +124,107 @@ def test_shed_above_share_and_hold() raises:
         assert_true(not q.srv.shed_if_over_share(many[i]), "UNLIMITED share never sheds")
 
 
+struct _Counting(StreamHandler):
+    """Counts the requests it runs and never answers; detaches the body of the next one when asked."""
+
+    var calls: Int
+    var detach_next: Bool
+
+    def __init__(out self):
+        self.calls, self.detach_next = 0, False
+
+    def on_request(mut self, var req: Request, mut body: RecvBody, mut resp: ResponseWriter, caps: Capabilities) raises:
+        self.calls += 1
+        if self.detach_next:
+            self.detach_next = False
+            _ = body.try_detach()
+
+    def on_body_available(mut self, mut body: RecvBody, mut resp: ResponseWriter) raises:
+        pass
+
+    def on_request_end(mut self, mut body: RecvBody, mut resp: ResponseWriter) raises:
+        pass
+
+    def on_send_drained(mut self, mut resp: ResponseWriter) raises:
+        pass
+
+    def on_reset(mut self, error: StreamError):
+        pass
+
+
+struct _HPair(Movable):
+    """Raw QUIC client against an `H3HandlerServer`, pumped in memory."""
+
+    var srv: H3HandlerServer[_Counting]
+    var cli: QuicConnection
+    var now: UInt64
+
+    def __init__(out self) raises:
+        var tls = TlsBackend("lib/librustls_mojo.so")
+        var ck = load_test_cert()
+        var cert = ck[0].copy()
+        var key = ck[1].copy()
+        var ca = load_test_ca()
+        var srv_cfg = QuicServerConfig(tls.shared(), Span(cert), Span(key))
+        var cli_cfg = QuicClientConfig.with_ca(tls.shared(), Span(ca))
+        self.now = UInt64(1_000_000)
+        var cli = QuicConnection.client(tls.shared(), cli_cfg, "localhost", raw_params(), self.now)
+        var odcid = List[Byte](cli.initial_dcid.as_span())
+        var cdcid = odcid.copy()
+        var sq = QuicConnection.server(tls.shared(), srv_cfg, raw_params(), Span(odcid), Span(cdcid), self.now)
+        self.srv = H3HandlerServer[_Counting](quic=sq^, handler=_Counting())
+        self.cli = cli^
+        _ = tls^
+        self.pump(20)
+        assert_true(self.cli.is_established(), "handshake completes")
+
+    def pump(mut self, rounds: Int) raises:
+        var scratch = List[List[Byte]](capacity=1)
+        for _ in range(rounds):
+            self.now += UInt64(10_000)
+            for _ in range(64):
+                var n = self.cli.send(self.now, scratch)
+                if n == 0:
+                    break
+                for i in range(n):
+                    self.srv.feed_datagram(Span(scratch[i]), self.now)
+            var dgs = self.srv.drain_datagrams(self.now)
+            for i in range(len(dgs)):
+                self.cli.recv(Span(dgs[i]), self.now)
+            while self.cli.poll():
+                pass
+
+    def request(mut self) raises -> UInt64:
+        var sid = self.cli.open_stream(True)
+        self.cli.send_stream_data(sid, Span(headers_get()), False)
+        return sid
+
+
+def test_handler_sheds_above_share() raises:
+    var p = _HPair()
+    _ = p.srv.h3().apply_governor(UNLIMITED, 0, 1, 32, 1)
+    for _ in range(40):
+        _ = p.request()
+    p.pump(5)
+    assert_true(p.srv.handler.calls == 32, "the handler runs 32 times: " + String(p.srv.handler.calls))
+    assert_true(p.srv.h3().refused_503 == 8, "eight 503s")
+
+
+def test_detached_stream_is_long_lived() raises:
+    var p = _HPair()
+    p.srv.handler.detach_next = True
+    var sid = p.request()
+    _ = p.request()
+    p.pump(5)
+    assert_true(p.srv.h3().long_lived == 1, "a detached body is long-lived: " + String(p.srv.h3().long_lived))
+    var acc = ConnTally(work=0, active=0, done=0, rtt_us=0, refused_503=0, cap=0)
+    p.srv.h3().gov_tally(acc)
+    assert_true(acc.work == 1, "work excludes it: " + String(acc.work))
+    p.cli.reset_stream(sid, UInt64(0x10C))
+    p.pump(4)
+    assert_true(p.srv.h3().long_lived == 0, "its reset frees it")
+
+
 def main() raises:
     var failed = 0
     try:
@@ -133,6 +241,16 @@ def main() raises:
         test_shed_above_share_and_hold()
     except e:
         print("FAIL test_shed_above_share_and_hold:", e)
+        failed += 1
+    try:
+        test_handler_sheds_above_share()
+    except e:
+        print("FAIL test_handler_sheds_above_share:", e)
+        failed += 1
+    try:
+        test_detached_stream_is_long_lived()
+    except e:
+        print("FAIL test_detached_stream_is_long_lived:", e)
         failed += 1
     if failed:
         raise Error(String(failed) + " failed")
