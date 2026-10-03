@@ -190,6 +190,32 @@ def test_refuse_new_needs_a_streak_at_the_floor() raises:
     assert_true(_hot(s, t, 5 * t, 100, 3_000), "a budget at Little's operating point has nothing left to cut")
 
 
+def test_cut_grow_release_rules() raises:
+    """Pinned values: the cut lands on Little's operating point `(done t + rtt) / I`, at most halving the used budget;
+    recovery grows by `active` while half used; release on `RELEASE` clear closes or full credit for every connection."""
+    var t = UInt64(5_000)
+    var s = GovState()
+    _ = step(s, Sample(delay_us=2 * t, done=3_000, rtt_sum_us=0, work=1_000, active=10), t, 100)
+    assert_true(s.budget == 500, "at most half of the used budget: " + String(s.budget))
+    s = GovState()
+    _ = step(s, Sample(delay_us=2 * t, done=3_000, rtt_sum_us=0, work=200, active=10), t, 100)
+    assert_true(s.budget == 150, "Little's point done t / I: " + String(s.budget))
+    s = GovState()
+    _ = step(s, Sample(delay_us=2 * t, done=3_000, rtt_sum_us=1_000_000, work=200, active=10), t, 100)
+    assert_true(s.budget == 160, "plus the summed path RTT / I: " + String(s.budget))
+    s.mode, s.budget = Mode.RECOVERING, 100
+    _ = step(s, Sample(delay_us=0, done=0, rtt_sum_us=0, work=50, active=7), t, 100)
+    assert_true(s.budget == 107 and s.mode == Mode.RECOVERING, "grows by active while half used: " + String(s.budget))
+    _ = step(s, Sample(delay_us=0, done=0, rtt_sum_us=0, work=52, active=7), t, 100)
+    assert_true(s.budget == 107, "not below half used")
+    _ = step(s, Sample(delay_us=0, done=0, rtt_sum_us=0, work=0, active=1), t, 100)
+    assert_true(s.budget == UNLIMITED and s.mode == Mode.NORMAL, "released once it covers every connection's credit")
+    s.mode, s.budget, s.clear_streak = Mode.RECOVERING, 100, 0
+    for k in range(RELEASE):
+        _ = step(s, Sample(delay_us=0, done=0, rtt_sum_us=0, work=0, active=1_000), t, 100)
+        assert_true((s.budget == UNLIMITED) == (k == RELEASE - 1), "released on the RELEASE-th clear close")
+
+
 def test_recovery_and_liveness() raises:
     var rng = Rng(0x2EC0)
     for c in range(prop_iters(300)):
@@ -406,6 +432,7 @@ def main() raises:
     test_close_delay()
     test_step_properties()
     test_refuse_new_needs_a_streak_at_the_floor()
+    test_cut_grow_release_rules()
     test_recovery_and_liveness()
     test_conn_limit_properties()
     test_refuse_only_culprits()

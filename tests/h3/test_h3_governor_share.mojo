@@ -9,6 +9,8 @@ from navette.h3.connection import ConnTally
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.http.handler import Capabilities, RecvBody, ResponseWriter, StreamError, StreamHandler
 from navette.http.request import Request
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
 from navette.quic.connection import QuicConnection
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.tls.lib import TlsBackend
@@ -153,20 +155,39 @@ def test_global_shed_with_many_connections() raises:
     assert_true(p.srv.refused_503 == 9, "nine 503s")
 
 
+def test_threshold_moves_with_completions() raises:
+    """The 503 threshold counts open streams (ordinal minus completed), not stream ordinals."""
+    var p = RawPair()
+    var first = _requests(p, 2, True)
+    _ = p.srv.apply_governor(UNLIMITED, 0, 1, 2, 1)
+    for i in range(2):
+        assert_true(not p.srv.shed_if_over_share(first[i]), "under the threshold")
+        _respond(p, first[i])
+    p.pump(10)
+    assert_true(p.srv._quic.stream_map.peer_completed_bidi == 2, "both completed")
+    var later = _requests(p, 2, True)
+    for i in range(2):
+        assert_true(not p.srv.shed_if_over_share(later[i]), "completed streams free their place: " + String(later[i]))
+
+
 struct _Counting(StreamHandler):
-    """Counts the requests it runs and never answers; detaches the body of the next one when asked."""
+    """Counts the requests it runs; detaches the body of the next one when asked; answers only with `answer`."""
 
     var calls: Int
     var detach_next: Bool
+    var answer: Bool
 
     def __init__(out self):
-        self.calls, self.detach_next = 0, False
+        self.calls, self.detach_next, self.answer = 0, False, False
 
     def on_request(mut self, var req: Request, mut body: RecvBody, mut resp: ResponseWriter, caps: Capabilities) raises:
         self.calls += 1
         if self.detach_next:
             self.detach_next = False
             _ = body.try_detach()
+        if self.answer:
+            resp.send_status(StatusCode(200), Headers())
+            resp.end()
 
     def on_body_available(mut self, mut body: RecvBody, mut resp: ResponseWriter) raises:
         pass
@@ -252,6 +273,13 @@ def test_detached_stream_is_long_lived() raises:
     p.cli.reset_stream(sid, UInt64(0x10C))
     p.pump(4)
     assert_true(p.srv.h3().long_lived == 0, "its reset frees it")
+    var q = _HPair()
+    q.srv.handler.detach_next, q.srv.handler.answer = True, True
+    var done = q.cli.open_stream(True)
+    q.cli.send_stream_data(done, Span(headers_get()), True)
+    q.pump(10)
+    assert_true(q.srv.handler.calls == 1 and q.srv._streams.find(Int(done)) is None, "answered and freed")
+    assert_true(q.srv.h3().long_lived == 0, "a detached stream that completes normally is no longer long-lived")
 
 
 def main() raises:
@@ -280,6 +308,11 @@ def main() raises:
         test_global_shed_with_many_connections()
     except e:
         print("FAIL test_global_shed_with_many_connections:", e)
+        failed += 1
+    try:
+        test_threshold_moves_with_completions()
+    except e:
+        print("FAIL test_threshold_moves_with_completions:", e)
         failed += 1
     try:
         test_handler_sheds_above_share()
