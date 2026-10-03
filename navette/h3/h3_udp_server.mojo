@@ -1197,9 +1197,9 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         recomputed; the loop is an O(N) compare that resumes where the
         egress hold stopped the last one, so held slots are served in turn.
         """
-        var n = len(self.conn_slots)
+        var n, start = len(self.conn_slots), self._timer_rotation
         for k in range(n):
-            var i = (self._timer_rotation + k) % n
+            var i = (start + k) % n
             if self.conn_slots[i].next_deadline_us > now:
                 continue
             if len(self._egress_backlog) < EGRESS_HOLD_AT:
