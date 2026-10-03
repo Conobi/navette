@@ -1,7 +1,7 @@
 """Overload governor core: histogram, sensor arithmetic, controller, per-connection limits, facade (pure, fake clock)."""
 
 from std.bit import bit_width
-from navette.protect.governor import DelayHist, interval_us, retry_after_s, kwait_us, ewma8, MIN_SAMPLES
+from navette.protect.governor import DelayHist, interval_us, retry_after_s, kwait_us, MIN_SAMPLES, DATAGRAM_TRUESIZE
 from navette.protect.governor import GovState, Mode, Sample, Decision, step, UNLIMITED, RELEASE, PENDING_MAX, REFUSE_AFTER
 from navette.protect.governor import conn_limit, Governor, FEW_ACTIVE, WARN_EVERY
 from tests._test_util import assert_true
@@ -66,40 +66,29 @@ def test_kwait_bounds_property() raises:
     for c in range(prop_iters(300)):
         var i_us = interval_us(UInt64(1_000 + rng.below(10_000_000)))
         var rmem = _edge(rng)
-        var ts = _edge(rng)
         var d = _edge(rng)
-        var w = kwait_us(rmem, ts, d, i_us)
+        var w = kwait_us(rmem, d, i_us)
         var tag = "case " + String(c) + ": "
         assert_true(w <= i_us, tag + "capped at I")
-        if rmem == 0 or ts == 0:
-            assert_true(w == 0, tag + "empty socket or uncalibrated truesize reads 0")
-        elif d == 0:
-            assert_true(w == i_us, tag + "no reads last interval reads I")
+        if rmem == 0 or d < MIN_SAMPLES:
+            assert_true(w == 0, tag + "empty socket or unknown read rate reads 0")
         var more = rmem + UInt64(rng.below(1 << 20))
         if more >= rmem:
-            assert_true(kwait_us(more, ts, d, i_us) >= w, tag + "monotone in rmem")
+            assert_true(kwait_us(more, d, i_us) >= w, tag + "monotone in rmem")
+    assert_true(kwait_us(100 * DATAGRAM_TRUESIZE, 500, 100_000) == 20_000, "100 datagrams ahead at 500 per interval")
 
 
-def test_truesize_calibration() raises:
-    """Only an ingest that drained the socket, with bytes queued and datagrams read, moves the truesize average."""
-    var g = Governor(5_000, 0)
-    g.on_ingest(UInt64(23_040), 10, False)
-    assert_true(g.truesize == 0, "not drained: uncalibrated")
-    g.on_ingest(UInt64(23_040), 10, True)
-    assert_true(g.truesize == 2_304, "first sample seeds")
-    g.on_ingest(UInt64(99_999), 0, True)
-    g.on_ingest(UInt64(0), 10, True)
-    g.on_ingest(None, 10, True)
-    assert_true(g.truesize == 2_304, "no deliveries, empty socket or no read leave it")
-    var rng = Rng(0x7E5)
-    for c in range(prop_iters(300)):
-        var target = UInt64(64 + rng.below(1 << 20))
-        var v = ewma8(0, UInt64(1 + rng.below(4 * Int(target))))
-        for _ in range(40):
-            v = ewma8(v, target)
-        var err = v - target if v > target else target - v
-        assert_true(err <= target // 32 + 8, "case " + String(c) + ": converges within 40 steps")
-    assert_true(ewma8(UInt64.MAX, UInt64.MAX) >= UInt64.MAX - 8, "no wrap")
+def test_kwait_under_sustained_overload() raises:
+    """No ingest ever drains the socket: the wait is still read (it used to wait for a draining pass to calibrate)."""
+    var now = UInt64(1_000_000)
+    var g = Governor(5_000, now)
+    for _ in range(50):
+        g.on_ingest(UInt64(100) * DATAGRAM_TRUESIZE, 10, False)
+        now += 2_000
+        g.on_pass(now, now - 100)
+    g.close(now, 500, 0, 50, 10, 100)
+    g.on_ingest(UInt64(100) * DATAGRAM_TRUESIZE, 10, False)
+    assert_true(g.kwait == 20_000, "100 datagrams ahead, 500 read last interval: " + String(g.kwait))
 
 
 def test_close_delay() raises:
@@ -343,20 +332,20 @@ def test_want_rmem() raises:
 
 
 def test_facade_interval_close() raises:
-    """Calibrate truesize, then 25 passes of 10 requests behind 20 ms of socket queue; then an idle gap."""
+    """An idle interval of reads, then 25 passes of 10 requests behind 20 ms of socket queue; then an idle gap."""
     var now = UInt64(1_000_000)
     var g = Governor(5_000, now)
     assert_true(g.decision.share == UNLIMITED and g.decision.budget == UNLIMITED and g.decision.retry_after_s == 1, "starts open")
     for _ in range(50):
-        g.on_ingest(UInt64(23_040), 10, True)
+        g.on_ingest(UInt64(10) * DATAGRAM_TRUESIZE, 10, True)
         now += 1_000
         g.on_pass(now, now - 100)
     now = 1_100_000
     assert_true(g.close_due(now), "close due after one interval")
     g.close(now, 500, 0, 50, 10, 100)
-    assert_true(g.truesize == 2_304 and g.stats.state.mode == Mode.NORMAL and g.stats.queue_delay_us == 0, "calibrated, idle")
+    assert_true(g.stats.state.mode == Mode.NORMAL and g.stats.queue_delay_us == 0, "idle")
     for _ in range(25):
-        g.on_ingest(UInt64(230_400), 10, False)
+        g.on_ingest(UInt64(100) * DATAGRAM_TRUESIZE, 10, False)
         g.requests += 10
         now += 3_000
         g.on_pass(now, now - 1_000)
@@ -413,7 +402,7 @@ def main() raises:
     test_insert_pass_and_reset()
     test_derived_constants()
     test_kwait_bounds_property()
-    test_truesize_calibration()
+    test_kwait_under_sustained_overload()
     test_close_delay()
     test_step_properties()
     test_refuse_new_needs_a_streak_at_the_floor()

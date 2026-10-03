@@ -22,20 +22,20 @@ def retry_after_s(t: UInt64) -> UInt64:
     return max(UInt64(1), (200 * t + 999_999) // 1_000_000)
 
 
-def kwait_us(rmem: UInt64, truesize: UInt64, deliveries_prev: UInt64, interval: UInt64) -> UInt64:
-    """Kernel socket-queue wait: `rmem` bytes ahead drain at the last interval's read rate, capped at `interval`.
+comptime DATAGRAM_TRUESIZE: UInt64 = 2_304
+"""Receive-queue bytes per queued QUIC datagram: `SO_MEMINFO` counts skb truesize, measured at 2,304 B for 1,200 to
+1,472 B UDP payloads on Linux (a 2 KiB data slab plus the sk_buff); NIC page-fragment buffers land in the same range."""
 
-    `rmem` counts skb truesize, hence the per-datagram `truesize`; 0 while uncalibrated or empty, `interval` if nothing was read.
+
+def kwait_us(rmem: UInt64, deliveries_prev: UInt64, interval: UInt64) -> UInt64:
+    """Kernel socket-queue wait: the datagrams in `rmem` bytes drain at the last interval's read rate, capped at `interval`.
+
+    0 when the queue is empty or the rate is unknown (fewer than `MIN_SAMPLES` reads last interval).
     """
-    if rmem == 0 or truesize == 0:
+    if rmem == 0 or deliveries_prev < MIN_SAMPLES:
         return 0
-    var w = UInt128(rmem) * UInt128(interval) // max(UInt128(truesize) * UInt128(deliveries_prev), 1)
+    var w = UInt128(rmem) * UInt128(interval) // (UInt128(DATAGRAM_TRUESIZE) * UInt128(deliveries_prev))
     return UInt64(min(w, UInt128(interval)))
-
-
-def ewma8(prev: UInt64, x: UInt64) -> UInt64:
-    """Weight-1/8 moving average (msquic's); a zero `prev` means no history and seeds with `x`."""
-    return x if prev == 0 else prev - (prev >> 3) + (x >> 3)
 
 
 struct DelayHist(Copyable, Movable):
@@ -218,7 +218,7 @@ def conn_limit(l: UInt64, open_c: UInt64, budget: UInt64, work: UInt64, n: UInt6
 
 
 comptime MEMINFO_EVERY = 16
-"""Passes between forced `SO_MEMINFO` reads when ingest keeps draining the socket, to keep truesize calibrated."""
+"""Passes between forced `SO_MEMINFO` reads while ingest keeps draining the socket."""
 comptime FEW_ACTIVE: UInt64 = 4
 """A cut over at most this many active connections reads as handlers slower than the dial, not overload."""
 comptime WARN_EVERY: UInt64 = 100
@@ -249,7 +249,6 @@ struct Governor(Movable):
     var state: GovState
     var decision: Decision
     var hist: DelayHist
-    var truesize: UInt64
     var kwait: UInt64
     var drained: Bool
     var passes: UInt64
@@ -266,7 +265,7 @@ struct Governor(Movable):
         self.t, self.state = t, GovState()
         self.hist = DelayHist()
         self.decision = Decision(budget=UNLIMITED, share=UNLIMITED, shed_above=UNLIMITED, refuse_new=False, retry_after_s=retry_after_s(t))
-        self.truesize, self.kwait, self.drained, self.passes = 0, 0, True, 0
+        self.kwait, self.drained, self.passes = 0, True, 0
         self.last_pass_us, self.last_close_us, self.deliveries, self.deliveries_prev = now_us, now_us, 0, 0
         self.stats = OverloadStats(0, 0, 0, GovState(), self.decision, 0, 0)
         self.requests, self.refused_503, self.warned_at = 0, 0, 0
@@ -276,11 +275,8 @@ struct Governor(Movable):
         return not self.drained or self.passes % MEMINFO_EVERY == 0
 
     def on_ingest(mut self, rmem: Optional[UInt64], deliveries: UInt64, drained: Bool):
-        """`rmem`: queued bytes before ingest (None: not read or failed, no kernel wait); a draining pass calibrates truesize."""
-        var r = rmem.or_else(0)
-        self.kwait = kwait_us(r, self.truesize, self.deliveries_prev, interval_us(self.t))
-        if drained and r != 0 and deliveries != 0:
-            self.truesize = ewma8(self.truesize, r // deliveries)
+        """`rmem`: queued bytes before ingest (None: not read or failed, no kernel wait)."""
+        self.kwait = kwait_us(rmem.or_else(0), self.deliveries_prev, interval_us(self.t))
         self.deliveries += deliveries
         self.drained = drained
 
