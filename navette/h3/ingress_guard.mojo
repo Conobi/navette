@@ -41,6 +41,8 @@ comptime UNVALIDATED_RETRY_THRESHOLD: Int = 256
 # admission, so these bounds are all the pacing they need.
 comptime STATELESS_PER_PASS: Int = 256
 comptime EGRESS_DROP_AT: Int = 1280
+# At this backlog connection drains are held (4 sink fills), so it stays under EGRESS_DROP_AT + one drain.
+comptime EGRESS_HOLD_AT: Int = 1024
 # A Retry or a close is under 200 bytes.
 comptime STATELESS_OUT_CAP: Int = 256
 

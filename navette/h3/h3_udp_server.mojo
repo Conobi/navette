@@ -116,7 +116,7 @@ from navette.http.handler import StreamHandler
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.h3.h3_handler_server import H3HandlerServer
-from navette.h3.ingress_guard import IngressGuard, ADMIT_CREATE, ADMIT_REPLY
+from navette.h3.ingress_guard import IngressGuard, ADMIT_CREATE, ADMIT_REPLY, EGRESS_HOLD_AT
 from navette.protect.config import ProtectionConfig, ProtectionStats
 from navette.h3.qpack import QpackCodecTables
 from navette.quic.cid import demux_key
@@ -702,6 +702,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     var _ingress_pass: UInt64
     # Rotates the first connection `_drain_dirty` serves.
     var _drain_rotation: Int
+    # First slot `_timer_pass` serves: the one after the last drained below `EGRESS_HOLD_AT`.
+    var _timer_rotation: Int
 
     # ── Construction ─────────────────────────────────────────────
 
@@ -780,6 +782,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self._dirty_conns = List[Int]()
         self._ingress_pass = UInt64(0)
         self._drain_rotation = 0
+        self._timer_rotation = 0
 
     def __deinit__(deinit self):
         """Free heap allocations owned by the server.
@@ -1179,11 +1182,16 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         pass. Each drained slot either advances its deadline, becomes CLOSED,
         or is still capped (progress by construction), so no slot is drained
         on consecutive passes without progress. Only the drained slots are
-        recomputed; the loop itself is an O(N) integer compare.
+        recomputed; the loop is an O(N) compare that resumes where the
+        egress hold stopped the last one, so held slots are served in turn.
         """
-        for i in range(len(self.conn_slots)):
+        var n = len(self.conn_slots)
+        for k in range(n):
+            var i = (self._timer_rotation + k) % n
             if self.conn_slots[i].next_deadline_us > now:
                 continue
+            if len(self._egress_backlog) < EGRESS_HOLD_AT:
+                self._timer_rotation = i + 1
             try:
                 self._drain_and_send(i, now)
             # Silent on purpose: a slot whose send() raises persistently stays due on
@@ -1857,11 +1865,12 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         go to the QUIC layer's `send_destination()`: `send()` sized each to
         that address's anti-amplification budget (RFC 9000 Section 8.1)
         and charged it there, falling back to the validated address once
-        another stops being usable (Section 9.3.2).
+        another stops being usable (Section 9.3.2). From `EGRESS_HOLD_AT`
+        queued datagrams on, the drain is held (the slot stays capped, so due).
         """
         try:
             ref quic = self.conn_slots[conn_idx].h3[].quic()
-            var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(now)
+            var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(now, hold=len(self._egress_backlog) >= EGRESS_HOLD_AT)
             # An empty drain (a timer pass with nothing due) needs no sockaddr.
             if len(datagrams) > 0:
                 var dest = _path_key_to_sockaddr(quic.send_destination())
