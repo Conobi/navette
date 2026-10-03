@@ -95,3 +95,88 @@ struct DelayHist(Copyable, Movable):
         for b in range(_BUCKETS):
             self.buckets[b] = 0
         self.total = 0
+
+
+comptime UNLIMITED = UInt64.MAX
+"""Budget value meaning released: no window below the configured stream credit, no refusals."""
+comptime FLOOR: UInt64 = 32
+"""Per-connection and budget floor (a fixed limit of 16 cost ~30 % rps; 32 was neutral); `CAP` when `CAP` is lower."""
+comptime RELEASE = 10
+"""Consecutive clear intervals (`200 t`) before the budget returns to unlimited: the metastability guard."""
+comptime PENDING_MAX = 10
+"""Intervals after which an unfinished cut stops blocking the next one."""
+
+
+struct GovState(Copyable, Movable):
+    """Controller state between interval closes; `cuts`, `grows` and `releases` only count, for stats."""
+
+    var budget: UInt64
+    var cut_pending: Bool
+    var pending_age: UInt64
+    var pressure: Bool
+    var refuse_new: Bool
+    var clear_streak: UInt64
+    var cuts: UInt64
+    var grows: UInt64
+    var releases: UInt64
+
+    def __init__(out self):
+        self.budget = UNLIMITED
+        self.cut_pending = False
+        self.pending_age = 0
+        self.pressure = False
+        self.refuse_new = False
+        self.clear_streak = 0
+        self.cuts = 0
+        self.grows = 0
+        self.releases = 0
+
+
+@fieldwise_init
+struct Sample(Copyable, Movable):
+    """One closed interval: p90 wait (µs), completions and their summed path RTT (µs), outstanding work, connections with work."""
+
+    var delay_us: UInt64
+    var done: UInt64
+    var rtt_sum_us: UInt64
+    var work: UInt64
+    var active: UInt64
+
+
+def step(mut s: GovState, t: UInt64, x: Sample, cap: UInt64):
+    """Advance the server-wide stream budget by one interval close; `t > 0`, `cap` is the per-connection stream credit.
+
+    Over target: at most one cut in flight, from measured usage towards
+    Little's operating point `done (t + rtt) / I`, never below half nor
+    below the floor. Clear: grow by `active` while at least half used;
+    release after `RELEASE` clear intervals or once the budget covers
+    every active connection's full credit.
+    """
+    if s.pending_age < PENDING_MAX:
+        s.pending_age += 1
+    if s.cut_pending and (x.work <= s.budget or s.pending_age >= PENDING_MAX):
+        s.cut_pending = False
+    if x.delay_us > t:
+        s.clear_streak = 0
+        s.pressure = True
+        s.refuse_new = s.refuse_new or x.delay_us > 4 * t
+        if not s.cut_pending:
+            var base = UInt128(min(s.budget, x.work))
+            var target = (UInt128(x.done) * UInt128(t) + UInt128(x.rtt_sum_us)) // UInt128(interval_us(t))
+            s.budget = max(min(FLOOR, cap), UInt64(min(max(target, base // 2), base)))
+            s.cut_pending = True
+            s.pending_age = 0
+            s.cuts += 1
+        return
+    s.pressure = False
+    s.refuse_new = False
+    if s.clear_streak < RELEASE:
+        s.clear_streak += 1
+    if s.budget == UNLIMITED:
+        return
+    if s.clear_streak < RELEASE and x.work >= s.budget // 2:
+        s.budget = UInt64(min(UInt128(s.budget) + UInt128(max(UInt64(1), x.active)), UInt128(UNLIMITED)))
+        s.grows += 1
+    if s.clear_streak >= RELEASE or UInt128(s.budget) >= UInt128(x.active) * UInt128(cap):
+        s.budget = UNLIMITED
+        s.releases += 1

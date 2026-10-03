@@ -2,6 +2,7 @@
 
 from std.bit import bit_width
 from navette.protect.governor import DelayHist, interval_us, retry_after_s, kwait_us, ewma8, truesize_ewma, MIN_SAMPLES
+from navette.protect.governor import GovState, Sample, step, UNLIMITED, RELEASE, PENDING_MAX
 from tests._test_util import assert_true
 from tests.protect._prop import Rng, prop_iters
 
@@ -108,6 +109,72 @@ def test_close_delay() raises:
     assert_true(d >= 32_768 and d < 65_536 and h.total == 0, "otherwise the p90, then reset")
 
 
+def _rand_cap(mut rng: Rng) -> UInt64:
+    return UInt64(1 + rng.below(200)) if rng.chance(30) else 100
+
+
+def _rand_state(mut rng: Rng, cap: UInt64) -> GovState:
+    """Any reachable state: budget at or above the floor (or unlimited), ages within their clamps."""
+    var s = GovState()
+    if rng.chance(70):
+        s.budget = min(UInt64(32), cap) + (_edge(rng) >> 1)
+    s.cut_pending = rng.chance(50) and s.budget != UNLIMITED
+    s.pending_age = UInt64(rng.below(PENDING_MAX + 1))
+    s.clear_streak = UInt64(rng.below(RELEASE + 1))
+    s.pressure = rng.chance(50)
+    s.refuse_new = s.pressure and rng.chance(30)
+    return s^
+
+
+def _rand_sample(mut rng: Rng, t: UInt64, over: Int) -> Sample:
+    """`over`: 1 above target, 0 at or below it, -1 either."""
+    var d = UInt64(rng.below(Int(t) + 1))
+    if over == 1 or (over == -1 and rng.chance(50)):
+        d = t + 1 + (UInt64(rng.below(Int(8 * t))) if rng.chance(90) else _edge(rng) >> 1)
+    return Sample(delay_us=d, done=_edge(rng), rtt_sum_us=_edge(rng), work=_edge(rng), active=_edge(rng))
+
+
+def test_step_properties() raises:
+    """inert-below-target, one-decrease, decrease-bounded, floor, rung-4 threshold, saturation."""
+    var rng = Rng(0x57E9)
+    for c in range(prop_iters(300)):
+        var t = UInt64(1_000 + rng.below(10_000_000))
+        var cap = _rand_cap(rng)
+        var floor = min(UInt64(32), cap)
+        var s0 = _rand_state(rng, cap)
+        var x = _rand_sample(rng, t, -1)
+        var s = s0.copy()
+        step(s, t, x, cap)
+        var tag = "case " + String(c) + ": "
+        assert_true(s.budget >= floor, tag + "floor")
+        assert_true(not s.refuse_new or x.delay_us > 4 * t or s0.refuse_new, tag + "rung 4 only above 4 t")
+        if x.delay_us <= t:
+            assert_true(s.cuts == s0.cuts and s.budget >= s0.budget, tag + "below target never cuts")
+            assert_true(not s.pressure and not s.refuse_new, tag + "below target clears the flags")
+        if s0.cut_pending and x.work > s0.budget and s0.pending_age + 1 < PENDING_MAX:
+            assert_true(s.cuts == s0.cuts and s.budget >= s0.budget, tag + "one decrease in flight")
+        if s.cuts != s0.cuts:
+            var base = min(s0.budget, x.work)
+            assert_true(s.budget >= max(floor, base // 2) and s.budget <= max(floor, base), tag + "cut bounded")
+
+
+def test_recovery_and_liveness() raises:
+    var rng = Rng(0x2EC0)
+    for c in range(prop_iters(300)):
+        var t = UInt64(1_000 + rng.below(10_000_000))
+        var cap = _rand_cap(rng)
+        var s = _rand_state(rng, cap)
+        var tag = "case " + String(c) + ": "
+        var live = s.copy()
+        var cuts0 = live.cuts
+        for _ in range(PENDING_MAX):
+            step(live, t, _rand_sample(rng, t, -1), cap)
+        assert_true(not live.cut_pending or live.cuts > cuts0, tag + "a pending cut ends within PENDING_MAX closes")
+        for _ in range(RELEASE):
+            step(s, t, _rand_sample(rng, t, 0), cap)
+        assert_true(s.budget == UNLIMITED and not s.pressure and not s.refuse_new, tag + "RELEASE clear closes release")
+
+
 def main() raises:
     test_p90_exact_property()
     test_insert_pass_and_reset()
@@ -115,4 +182,6 @@ def main() raises:
     test_kwait_bounds_property()
     test_truesize_ewma()
     test_close_delay()
+    test_step_properties()
+    test_recovery_and_liveness()
     print("PASS: test_governor")
