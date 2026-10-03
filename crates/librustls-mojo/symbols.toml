@@ -522,6 +522,15 @@ mojo_args = ["Int32"]
 mojo_ret  = "Int32"
 
 [[symbol]]
+name = "rlsm_quic_server_conn_reject_early_data"
+description = "Decline 0-RTT on a server connection still handshaking (needed before advertising limits below a resuming client's remembered ones, RFC 9000 Section 7.4.1). 0=declined, -1=invalid handle, client connection or handshake complete."
+rust_args = ["i32"]
+rust_args_names = ["conn_handle"]
+rust_ret  = "i32"
+mojo_args = ["Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
 name = "rlsm_quic_server_conn_replay_authenticator"
 description = "Return the 32-byte ClientHello.random captured for this server connection (used as the 0-RTT anti-replay store's dedup key). 0=success, 1=no ClientHello prefix captured yet, -1=invalid handle or client-side connection."
 rust_args = ["i32", "*mut u8", "*mut usize"]

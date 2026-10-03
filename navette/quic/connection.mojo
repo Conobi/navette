@@ -719,8 +719,13 @@ struct QuicConnection(Movable):
         now: UInt64,
         profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
         retry_scid: List[Byte] = List[Byte](),
+        stream_window: UInt64 = UInt64.MAX,
     ) raises -> QuicConnection:
         """Create a QUIC server connection.
+
+        A `stream_window` below `initial_max_streams_bidi` (CAP) is advertised instead (at least 1) and the
+        connection declines 0-RTT, as RFC 9000 Section 7.4.1 requires when lowering remembered limits; CAP stays
+        the re-grant ceiling, so the window can be raised back later.
 
         After a Retry, `orig_dcid` is the DCID of the client's first
         Initial (recovered from the token), `client_dcid` the DCID of the
@@ -747,6 +752,9 @@ struct QuicConnection(Movable):
         var params_copy = TransportParams(copy=local_params)
         params_copy.initial_scid = List[Byte](copy=local_cid)
         _apply_m3c_defaults(params_copy)
+        var cap = params_copy.initial_max_streams_bidi
+        var narrow = stream_window < cap
+        params_copy.initial_max_streams_bidi = max(UInt64(1), min(cap, stream_window))
         var orig_dcid_list = List[Byte](capacity=len(orig_dcid))
         for ref byte in orig_dcid:
             orig_dcid_list.append(byte)
@@ -767,7 +775,10 @@ struct QuicConnection(Movable):
         conn.prof.ptr = profile_ptr
         conn.prof.first_initial_us = profile_arrival_us
         conn.prof.accept_us = profile_arrival_us
-        conn.zrtt.enabled = (config.max_early_data() != UInt32(0))
+        conn.stream_map.initial_max_streams_bidi = cap
+        if narrow and lib.inner_ptr()[].quic_server_conn_reject_early_data(conn.conn_handle) != 0:
+            raise "QuicConnection.server: could not decline 0-RTT"
+        conn.zrtt.enabled = (config.max_early_data() != UInt32(0)) and not narrow
         var store_opt = config.early_data_store()
         if store_opt is not None:
             var store_ptr = store_opt.value().unsafe_origin_cast[MutUntrackedOrigin]()

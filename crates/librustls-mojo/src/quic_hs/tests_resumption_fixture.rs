@@ -310,3 +310,62 @@ pub(super) fn drive_full_handshake_with_resumption() -> (i32, i32) {
 
     (server_h, client_h)
 }
+
+fn entry(conn: QuicConn) -> QuicConnEntry {
+    QuicConnEntry {
+        conn,
+        pending: None,
+        next_secrets: None,
+        alert_cache: None,
+        first_ch_prefix: [0u8; 38],
+        first_ch_prefix_len: 0,
+        client_random_captured: false,
+        client_random: [0u8; 32],
+    }
+}
+
+/// A resuming 0-RTT client against a server connection declined through the FFI still resumes, but its early
+/// data is rejected; the undeclined control accepts it. The call refuses client and finished connections.
+#[test]
+fn reject_early_data_declines_resumed_0rtt() {
+    use super::rlsm_quic_server_conn_reject_early_data as reject_early_data;
+    for reject in [false, true] {
+        let (cert_pem, key_pem, cert_der) = build_certs();
+        let server_config = build_server_config(&cert_pem, &key_pem);
+        let store: Arc<dyn ClientSessionStore> = Arc::new(rustls::client::ClientSessionMemoryCache::new(32));
+        let client_config = build_client_config(&cert_der, store);
+        let name = ServerName::try_from("localhost".to_owned()).unwrap();
+        let new_pair = || {
+            let c = ClientConnection::new(client_config.clone(), QuicVersion::V1, name.clone(), TP_BYTES.to_vec());
+            let s = ServerConnection::new(server_config.clone(), QuicVersion::V1, TP_BYTES.to_vec());
+            (c.unwrap(), s.unwrap())
+        };
+        let (mut c1, mut s1) = new_pair();
+        drive_first_handshake(&mut c1, &mut s1);
+        let finished = quic_conn_table().insert(entry(QuicConn::Server(s1))).unwrap();
+        assert_eq!(reject_early_data(finished), -1, "finished server connection");
+        let client_h = quic_conn_table().insert(entry(QuicConn::Client(c1))).unwrap();
+        assert_eq!(reject_early_data(client_h), -1, "client connection");
+
+        let (mut client, server) = new_pair();
+        let h = quic_conn_table().insert(entry(QuicConn::Server(server))).unwrap();
+        if reject {
+            assert_eq!(reject_early_data(h), 0);
+        }
+        let Some(QuicConnEntry { conn: QuicConn::Server(mut server), .. }) = quic_conn_table().remove(h) else {
+            panic!("server entry")
+        };
+        for _ in 0..32 {
+            let _ = pump_once(&mut client, &mut server);
+            if !client.is_handshaking() && !server.is_handshaking() {
+                break;
+            }
+        }
+        assert!(!client.is_handshaking() && !server.is_handshaking(), "resumed handshake did not converge");
+        assert_eq!(server.handshake_kind(), Some(rustls::HandshakeKind::Resumed));
+        assert_eq!(client.is_early_data_accepted(), !reject, "reject={reject}");
+        let _ = quic_conn_table().remove(finished);
+        let _ = quic_conn_table().remove(client_h);
+    }
+    assert_eq!(reject_early_data(-99), -1, "invalid handle");
+}

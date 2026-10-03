@@ -1158,6 +1158,23 @@ pub extern "C" fn rlsm_quic_conn_is_early_data_accepted(conn_handle: i32) -> i32
         })
 }
 
+/// Decline 0-RTT on a server connection that has not finished its handshake: required before it advertises
+/// transport limits lower than a resuming client may remember (RFC 9000 Section 7.4.1).
+/// 0 = declined; -1 = invalid handle, client connection, or handshake already complete.
+#[no_mangle]
+pub extern "C" fn rlsm_quic_server_conn_reject_early_data(conn_handle: i32) -> i32 {
+    clear_last_error();
+    quic_conn_table()
+        .with_mut(conn_handle, |entry| match &mut entry.conn {
+            // rustls asserts `is_handshaking()`; with panic=abort a late call would kill the process.
+            QuicConn::Server(s) if s.is_handshaking() => { s.reject_early_data(); 0 }
+            _ => { set_last_error("rlsm_quic_server_conn_reject_early_data: not a handshaking server conn"); -1 }
+        })
+        .unwrap_or_else(|| {
+            rlsm_err!("rlsm_quic_server_conn_reject_early_data: invalid conn handle"; return -1)
+        })
+}
+
 /// Returns the 32-byte ClientHello.random captured for this server
 /// connection. The decrypt-path integration uses these 32 bytes
 /// directly as the dedup authenticator for the anti-replay store.

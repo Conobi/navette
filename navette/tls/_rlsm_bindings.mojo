@@ -78,6 +78,7 @@ comptime rlsm_quic_conn_alpn_fn = def(Int32, Pointer[UInt8, MutUntrackedOrigin],
 comptime rlsm_quic_conn_zero_rtt_keys_fn = def(Int32, Pointer[Int32, MutUntrackedOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_server_conn_zero_rtt_keys_fn = def(Int32, Pointer[Int32, MutUntrackedOrigin]) abi("C") thin -> Int32
 comptime rlsm_quic_conn_is_early_data_accepted_fn = def(Int32) abi("C") thin -> Int32
+comptime rlsm_quic_server_conn_reject_early_data_fn = def(Int32) abi("C") thin -> Int32
 comptime rlsm_quic_server_conn_replay_authenticator_fn = def(Int32, Pointer[UInt8, MutUntrackedOrigin], Pointer[UInt, MutUntrackedOrigin]) abi("C") thin -> Int32
 
 # -- Typed call wrappers ---------------------------------------------------
@@ -1395,6 +1396,26 @@ def call_rlsm_quic_conn_is_early_data_accepted(
 
 
 @always_inline
+def call_rlsm_quic_server_conn_reject_early_data(
+    ref lib: OwnedDLHandle,
+    conn_handle: Int32,
+) raises -> Int32:
+    """Decline 0-RTT on a server connection still handshaking (needed before advertising limits below a resuming client's remembered ones, RFC 9000 Section 7.4.1). 0=declined, -1=invalid handle, client connection or handshake complete.
+
+    Args:
+        lib: An open handle to librustls_mojo.so.
+        conn_handle: C `i32`.
+
+    Returns:
+        C `i32`.
+
+    Raises:
+        If `rlsm_quic_server_conn_reject_early_data` is not exported by the loaded library.
+    """
+    return lib.get_function[Int32]("rlsm_quic_server_conn_reject_early_data")(conn_handle)
+
+
+@always_inline
 def call_rlsm_quic_server_conn_replay_authenticator(
     ref lib: OwnedDLHandle,
     conn_handle: Int32,
@@ -2412,6 +2433,25 @@ def load_rlsm_quic_conn_is_early_data_accepted(ref lib: OwnedDLHandle) raises ->
     if not sym:
         raise Error("symbol not found: rlsm_quic_conn_is_early_data_accepted")
     return Pointer(to=sym.unsafe_value()).unsafe_bitcast[rlsm_quic_conn_is_early_data_accepted_fn]()[]
+
+
+@always_inline
+def load_rlsm_quic_server_conn_reject_early_data(ref lib: OwnedDLHandle) raises -> rlsm_quic_server_conn_reject_early_data_fn:
+    """Resolve `rlsm_quic_server_conn_reject_early_data` to a raw C ABI function pointer.
+
+    Args:
+        lib: An open handle to librustls_mojo.so.
+
+    Returns:
+        The `rlsm_quic_server_conn_reject_early_data` entry point, valid while `lib` stays open.
+
+    Raises:
+        If `rlsm_quic_server_conn_reject_early_data` is not exported by the loaded library.
+    """
+    var sym = lib.get_symbol[NoneType]("rlsm_quic_server_conn_reject_early_data")
+    if not sym:
+        raise Error("symbol not found: rlsm_quic_server_conn_reject_early_data")
+    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[rlsm_quic_server_conn_reject_early_data_fn]()[]
 
 
 @always_inline

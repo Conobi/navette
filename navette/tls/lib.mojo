@@ -46,6 +46,7 @@ from navette.tls._rlsm_bindings import (
     call_rlsm_quic_server_conn_new,
     call_rlsm_quic_server_conn_zero_rtt_keys,
     call_rlsm_quic_server_conn_replay_authenticator,
+    call_rlsm_quic_server_conn_reject_early_data,
     call_rlsm_server_config_new,
     call_rlsm_tls_client_new,
     call_rlsm_tls_conn_alpn,
@@ -768,6 +769,10 @@ struct RustlsLibrary(Movable):
             self._handle,
             config_handle, version, tp, tp_len, out_handle,
         )
+
+    def quic_server_conn_reject_early_data(self, conn_handle: Int32) raises -> Int32:
+        """Decline 0-RTT before the handshake completes. Returns 0, or -1 (bad handle, client, handshake done)."""
+        return call_rlsm_quic_server_conn_reject_early_data(self._handle, conn_handle)
 
     @always_inline
     def quic_conn_free(self, conn_handle: Int32) raises -> Int32:
