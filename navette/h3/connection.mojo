@@ -47,6 +47,7 @@ from navette.h3.error import (
     H3_ID_ERROR,
     H3_INTERNAL_ERROR,
     H3_REQUEST_CANCELLED,
+    H3_NO_ERROR,
     QPACK_DECOMPRESSION_FAILED,
 )
 from navette.h3.qpack import (
@@ -228,6 +229,17 @@ struct _H3StreamBuf(Copyable, Movable):
         self.discard = False
 
 
+@fieldwise_init
+struct ConnTally(Copyable, Movable):
+    """One governor interval summed over connections (`H3Connection.gov_tally`); `cap` is the largest stream ceiling."""
+    var work: UInt64
+    var active: UInt64
+    var done: UInt64
+    var rtt_us: UInt64
+    var refused_503: UInt64
+    var cap: UInt64
+
+
 # ---------------------------------------------------------------------------
 # H3Connection — state machine
 # ---------------------------------------------------------------------------
@@ -279,6 +291,13 @@ struct H3Connection(Movable):
     # Reusable scratch buffer for frame encoding in send_headers / send_goaway /
     # _bootstrap_local_streams — avoids a fresh allocation per call.
     var _wire_scratch:               List[Byte]
+    # Governor: last handed share / retry-after, streams excluded from work, interval marks, 503s since the tally.
+    var share:                       UInt64
+    var retry_after_s:               UInt64
+    var long_lived:                  UInt64
+    var _gov_opened:                 UInt64
+    var _gov_done:                   UInt64
+    var refused_503:                 UInt64
 
     def __init__(
         out self,
@@ -315,6 +334,7 @@ struct H3Connection(Movable):
         self.profile_ptr = None
         self._send_scratch = List[List[Byte]](capacity=1)
         self._wire_scratch = List[Byte](capacity=256)
+        self.share, self.retry_after_s, self.long_lived, self._gov_opened, self._gov_done, self.refused_503 = UInt64.MAX, 1, 0, 0, 0, 0
 
     @staticmethod
     def server(
@@ -520,7 +540,7 @@ struct H3Connection(Movable):
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].call_tracker.record(CallId.POLL_QUIC_EVENTS, rdtsc() - _ct_start)
 
-    def drain_datagrams(mut self, now: UInt64) raises -> List[List[Byte]]:
+    def drain_datagrams(mut self, now: UInt64, hold: Bool = False) raises -> List[List[Byte]]:
         """Collect UDP payloads until `send()` runs dry or the drain cap hits.
 
         `QuicConnection.send` emits at most one datagram per call; this
@@ -533,7 +553,11 @@ struct H3Connection(Movable):
         If `send()` raises mid-loop the datagrams already collected are
         dropped: their packets are recorded in the PN spaces and loss
         detection retransmits them, exactly as a single dropped datagram.
+        `hold` (egress backlog full) drains nothing but marks the connection capped, so it stays due.
         """
+        if hold:
+            self.egress_capped = True
+            return List[List[Byte]]()
         var out = List[List[Byte]](capacity=MAX_DATAGRAMS_PER_DRAIN)
         while len(out) < MAX_DATAGRAMS_PER_DRAIN:
             var n = self._quic.send(now, self._send_scratch)
@@ -550,6 +574,37 @@ struct H3Connection(Movable):
                 return out^
         self.egress_capped = True
         return out^
+
+    def take_opened(mut self) -> UInt64:
+        """Peer request streams opened since the last call: the requests that arrived this pass."""
+        var n = self._quic.stream_map.peer_opened_bidi - self._gov_opened  # both only grow
+        self._gov_opened += n
+        return n
+
+    def gov_tally(mut self, mut acc: ConnTally):
+        """Add to `acc`: open streams minus `long_lived` as work; completions (`done x min_rtt`) and 503s since the last tally."""
+        ref sm = self._quic.stream_map
+        var open_c = sm.peer_opened_bidi - min(sm.peer_opened_bidi, sm.peer_completed_bidi)
+        var done = sm.peer_completed_bidi - self._gov_done
+        acc.work, acc.active = acc.work + open_c - min(open_c, self.long_lived), acc.active + UInt64(Int(open_c > 0))
+        acc.done, acc.rtt_us = acc.done + done, acc.rtt_us + done * self._quic.recovery.min_rtt
+        acc.refused_503, acc.cap = acc.refused_503 + self.refused_503, max(acc.cap, sm.initial_max_streams_bidi)
+        self._gov_done, self.refused_503 = sm.peer_completed_bidi, 0
+
+    def apply_governor(mut self, budget: UInt64, work: UInt64, n: UInt64, share: UInt64, retry_after_s: UInt64) -> Bool:
+        """Hand this connection the governor's decision; True when its stream window grew and it must be drained now."""
+        self.share, self.retry_after_s = share, retry_after_s
+        return self._quic.stream_map.apply_budget(budget, work, n)
+
+    def shed_if_over_share(mut self, stream_id: UInt64) raises -> Bool:
+        """Over `share` open streams up to this one: 503 + `retry-after`, FIN, STOP_SENDING(H3_NO_ERROR); True = don't serve."""
+        if stream_id // 4 - min(stream_id // 4, self._quic.stream_map.peer_completed_bidi) < self.share:  # ordinal - D
+            return False
+        var fields: List[QpackHeaderField] = [QpackHeaderField(":status", "503"), QpackHeaderField("retry-after", String(self.retry_after_s))]
+        self.send_headers(stream_id, fields, True)
+        self._quic.stop_sending(stream_id, H3_NO_ERROR)
+        self.refused_503 += 1
+        return True
 
     # --- Send API ------------------------------------------------------------
 
