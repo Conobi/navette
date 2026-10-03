@@ -10,6 +10,7 @@ from std.collections.deque import Deque
 from std.memory import Pointer, UnsafePointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.quic.flow_control import FlowControl, CONN_FC_MAX_WINDOW
+from navette.protect.governor import conn_limit
 from navette.quic.stream import (
     Stream,
     SendState,
@@ -53,6 +54,7 @@ struct StreamMap(Movable):
     # ── Initial concurrency targets (for MAX_STREAMS formula) ─────────────────
     var initial_max_streams_bidi: UInt64
     var initial_max_streams_uni: UInt64
+    var regrant_window: UInt64           # bidi re-grant M = D + window; in [1, initial]; narrowed by `apply_budget`
 
     # ── Stream creation defaults (from local transport params) ────────────────
     var local_stream_fc_window_bidi_local: UInt64
@@ -116,6 +118,7 @@ struct StreamMap(Movable):
 
         self.initial_max_streams_bidi = local_max_streams_bidi
         self.initial_max_streams_uni = local_max_streams_uni
+        self.regrant_window = local_max_streams_bidi
 
         self.local_stream_fc_window_bidi_local = local_window_bidi_local
         self.local_stream_fc_window_bidi_remote = local_window_bidi_remote
@@ -460,8 +463,8 @@ struct StreamMap(Movable):
     # ── MAX_STREAMS update (§4.4) ────────────────────────────────────────────
 
     def check_max_streams_update(mut self):
-        """Linear-growth MAX_STREAMS: raise limit by completed count."""
-        var new_bidi_limit = self.peer_completed_bidi + self.initial_max_streams_bidi
+        """Linear-growth MAX_STREAMS: raise limit by completed count; bidi credit tops up to `regrant_window`."""
+        var new_bidi_limit = self.peer_completed_bidi + self.regrant_window
         if new_bidi_limit > self.local_max_streams_bidi:
             self.needs_max_streams_bidi = True
             self.local_max_streams_bidi = new_bidi_limit
@@ -470,6 +473,20 @@ struct StreamMap(Movable):
         if new_uni_limit > self.local_max_streams_uni:
             self.needs_max_streams_uni = True
             self.local_max_streams_uni = new_uni_limit
+
+    def apply_budget(mut self, budget: UInt64, work: UInt64, n: UInt64) -> Bool:
+        """Re-derive the bidi window from the governor's server-wide `budget` (`n` connections, `work` open streams).
+
+        `conn_limit` keeps it in `[min(32, initial), initial]` and cuts it at most once until the last cut has taken
+        effect; credit already granted is never taken back. True when the limit grew: a MAX_STREAMS must be sent now,
+        since a client blocked on stream credit sends nothing that would trigger one.
+        """
+        var before = self.local_max_streams_bidi
+        var open_c = self.peer_opened_bidi - min(self.peer_opened_bidi, self.peer_completed_bidi)
+        var cap = self.initial_max_streams_bidi
+        self.regrant_window = max(UInt64(1), conn_limit(self.regrant_window, open_c, budget, work, n, cap))
+        self.check_max_streams_update()
+        return self.local_max_streams_bidi > before
 
     # ── Send scheduling ──────────────────────────────────────────────────────
 
