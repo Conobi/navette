@@ -3,6 +3,7 @@
 from std.bit import bit_width
 from navette.protect.governor import DelayHist, interval_us, retry_after_s, kwait_us, ewma8, truesize_ewma, MIN_SAMPLES
 from navette.protect.governor import GovState, Sample, step, UNLIMITED, RELEASE, PENDING_MAX
+from navette.protect.governor import conn_limit, refuse_above
 from tests._test_util import assert_true
 from tests.protect._prop import Rng, prop_iters
 
@@ -175,6 +176,100 @@ def test_recovery_and_liveness() raises:
         assert_true(s.budget == UNLIMITED and not s.pressure and not s.refuse_new, tag + "RELEASE clear closes release")
 
 
+def test_conn_limit_properties() raises:
+    """fair-share, lend at most 2x, one halving step, no second cut before the first took effect, floor, unlimited gives CAP."""
+    var rng = Rng(0xFA12)
+    for c in range(prop_iters(300)):
+        var cap = _rand_cap(rng)
+        var floor = min(UInt64(32), cap)
+        var budget = floor + (UInt64(rng.below(20_000)) if rng.chance(80) else _edge(rng) >> 1)
+        var work = UInt64(rng.below(2 * Int(min(budget, 1 << 40)) + 1)) if rng.chance(80) else _edge(rng)
+        var n = UInt64(rng.below(1_000)) if rng.chance(90) else _edge(rng)
+        var mean = max(UInt64(1), budget // max(UInt64(1), n))
+        var l = floor + UInt64(rng.below(300))
+        if rng.chance(40):
+            l = UInt64(rng.below(3 * Int(min(mean, 1 << 40)) + 1))
+        elif rng.chance(10):
+            l = _edge(rng)
+        var open_c = UInt64(rng.below(400)) if rng.chance(90) else _edge(rng)
+        var w = conn_limit(l, open_c, budget, work, n, cap)
+        var tag = "case " + String(c) + ": "
+        var share = min(cap, max(floor, mean))
+        assert_true(w >= floor and w <= cap, tag + "within [floor, CAP]")
+        assert_true(w >= min(l, cap) // 2, tag + "at most one halving per interval")
+        if w > l:
+            assert_true(w <= max(floor, 2 * mean) or 2 * mean < mean, tag + "lends at most 2x the mean")
+        if work >= budget:
+            assert_true(w >= min(l, share), tag + "no spare: never cut below the share")
+            if open_c > l:
+                assert_true(w == min(max(l, floor), cap), tag + "no second cut before the first took effect")
+    assert_true(conn_limit(40, 500, UNLIMITED, 10_000, 3, 100) == 100, "unlimited gives CAP")
+
+
+def test_refuse_only_culprits() raises:
+    var rng = Rng(0xC011)
+    for c in range(prop_iters(300)):
+        var cap = _rand_cap(rng)
+        var s = _rand_state(rng, cap)
+        var active = UInt64(rng.below(500)) if rng.chance(90) else _edge(rng)
+        var open_c = UInt64(rng.below(2_000)) if rng.chance(90) else _edge(rng)
+        if open_c > refuse_above(s, active, cap):
+            var share = max(min(UInt64(32), cap), s.budget // max(UInt64(1), active))
+            assert_true(s.pressure and open_c > share, "case " + String(c) + ": refuses only above share under pressure")
+
+
+def test_fluid_recovery_model() raises:
+    """Capacity mu, load 0.5 mu, then 2 mu for 20 intervals, then 0.5 mu: the governor settles and releases.
+
+    Each interval is 20 ticks of `t`. Outstanding work (queued and in
+    service) is capped by the budget (rung 2, the excess waits at the
+    client), and while under pressure the excess is refused (rung 3). A
+    tick's wait is the work ahead over the per-tick capacity.
+    """
+    var t = UInt64(5_000)
+    var mu_tick = UInt64(100)
+    var s = GovState()
+    var h = DelayHist()
+    var queue = UInt64(0)
+    var client_q = UInt64(0)
+    var surge_end = 30
+    var delay_ok_at = -1
+    var released_at = -1
+    for i in range(200):
+        var load = 4 * mu_tick // 2 if i >= 10 and i < surge_end else mu_tick // 2
+        var done = UInt64(0)
+        var refused = UInt64(0)
+        var work = UInt64(0)
+        for _ in range(20):
+            var demand = load + client_q
+            var admit = min(demand, s.budget - min(s.budget, queue))
+            if s.pressure:
+                refused += demand - admit
+                client_q = 0
+            else:
+                client_q = demand - admit
+            queue += admit
+            work = queue
+            h.insert(queue * t // mu_tick)
+            var served = min(queue, mu_tick)
+            queue -= served
+            done += served
+        var delay = h.close_delay(0, interval_us(t))
+        step(s, t, Sample(delay_us=delay, done=done, rtt_sum_us=0, work=work, active=10), 100)
+        if i >= surge_end:
+            if delay_ok_at < 0 and delay <= t:
+                delay_ok_at = i
+            if released_at < 0 and s.budget == UNLIMITED:
+                released_at = i
+            if released_at >= 0:
+                assert_true(refused == 0, "interval " + String(i) + ": no refusals after release")
+        elif i >= 12:
+            assert_true(s.budget != UNLIMITED, "interval " + String(i) + ": surge is governed")
+    assert_true(s.cuts > 0, "the surge cut the budget")
+    assert_true(delay_ok_at >= 0 and delay_ok_at - surge_end < 10, "wait back under target within 10 intervals: " + String(delay_ok_at))
+    assert_true(released_at >= 0 and released_at - surge_end <= RELEASE + 2, "released within RELEASE + 2: " + String(released_at))
+
+
 def main() raises:
     test_p90_exact_property()
     test_insert_pass_and_reset()
@@ -184,4 +279,7 @@ def main() raises:
     test_close_delay()
     test_step_properties()
     test_recovery_and_liveness()
+    test_conn_limit_properties()
+    test_refuse_only_culprits()
+    test_fluid_recovery_model()
     print("PASS: test_governor")

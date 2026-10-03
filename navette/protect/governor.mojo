@@ -122,14 +122,9 @@ struct GovState(Copyable, Movable):
 
     def __init__(out self):
         self.budget = UNLIMITED
-        self.cut_pending = False
-        self.pending_age = 0
-        self.pressure = False
-        self.refuse_new = False
-        self.clear_streak = 0
-        self.cuts = 0
-        self.grows = 0
-        self.releases = 0
+        self.cut_pending, self.pressure, self.refuse_new = False, False, False
+        self.pending_age, self.clear_streak = 0, 0
+        self.cuts, self.grows, self.releases = 0, 0, 0
 
 
 @fieldwise_init
@@ -180,3 +175,35 @@ def step(mut s: GovState, t: UInt64, x: Sample, cap: UInt64):
     if s.clear_streak >= RELEASE or UInt128(s.budget) >= UInt128(x.active) * UInt128(cap):
         s.budget = UNLIMITED
         s.releases += 1
+
+
+def conn_limit(l: UInt64, open_c: UInt64, budget: UInt64, work: UInt64, n: UInt64, cap: UInt64) -> UInt64:
+    """A connection's next re-grant window from its current one `l` (gRPC C-core's per-connection limits); `n` connections share `budget`.
+
+    With spare budget, windows below the mean share grow towards it and
+    the rest may borrow up to twice it. Without, a window halves towards
+    the share, once: not again while `open_c > l` (the last cut has not
+    taken effect, credit being irrevocable). Clamped to `[min(FLOOR, cap), cap]`.
+    """
+    if budget == UNLIMITED:
+        return cap
+    var mean = max(UInt64(1), budget // max(UInt64(1), n))
+    var spare = budget - min(budget, work)
+    var w = l
+    if spare > 0:
+        if l < mean:
+            w = l + min(max(UInt64(1), spare // max(UInt64(1), n)), mean - l)
+        elif l - mean < mean:
+            w = l + 1
+        else:
+            w = max(2 * mean, l // 2)
+    elif open_c <= l:
+        w = max(mean, l // 2)
+    return min(max(w, min(FLOOR, cap)), cap)
+
+
+def refuse_above(s: GovState, active: UInt64, cap: UInt64) -> UInt64:
+    """Rung 3: refuse (503) a new stream on a connection already holding more open streams than this; unlimited unless under pressure."""
+    if not s.pressure:
+        return UNLIMITED
+    return max(min(FLOOR, cap), s.budget // max(UInt64(1), active))
