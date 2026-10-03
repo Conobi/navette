@@ -197,6 +197,26 @@ def test_tokens_valid_admits(lib: SharedLibrary) raises:
     print("  test_tokens_valid_admits: PASS")
 
 
+def test_refuse_new_drops_silently(lib: SharedLibrary) raises:
+    """While the governor refuses new connections every new Initial is dropped unanswered, token or not."""
+    var g = IngressGuard(lib)
+    var now = UInt64(3_000_000)
+    var a = Span(_addr_a())
+    var tokenless = initial_n(8, 1200)
+    var tokened = initial(1200, filled(0xD6, 8), _mint(g, filled(0xD1, 10), _addr_a(), now))
+    assert_equal_int(g.admit_initial(Span(tokenless), a, now, 0, 0, 64, backlog=0, refuse_new=True), ADMIT_DROP, "tokenless dropped")
+    assert_equal_int(g.admit_initial(Span(tokened), a, now, 0, 64, 64, backlog=0, refuse_new=True), ADMIT_DROP, "token dropped")
+    assert_equal_int(len(g.out), 0, "nothing written")
+    assert_equal_int(Int(g.stats.dropped_overload), 2, "both counted")
+    assert_equal_int(Int(g.stats.retry_sent + g.stats.refused_closes + g.stats.cap_rejections), 0, "no Retry, no CONNECTION_REFUSED")
+    assert_equal_int(g.admit_initial(Span(initial_n(7, 1200)), a, now, 0, 0, 64, backlog=0, refuse_new=True), ADMIT_DROP, "malformed")
+    assert_equal_int(Int(g.stats.dropped_initial_dcid_len), 1, "malformed keeps its own counter")
+    g.unvalidated_retry_threshold = 0
+    assert_equal_int(g.admit_initial(Span(tokenless), a, now, 0, 0, 64, backlog=0), ADMIT_REPLY, "Retry unchanged without it")
+    assert_equal_int(Int(g.stats.dropped_overload), 2, "not counted then")
+    print("  test_refuse_new_drops_silently: PASS")
+
+
 def main() raises:
     var tls = TlsBackend("lib/librustls_mojo.so")
     var lib = tls.shared()
@@ -210,5 +230,6 @@ def main() raises:
     test_response_cap_per_pass(lib)
     test_malformed_sockaddr_drops(lib)
     test_tokens_valid_admits(lib)
+    test_refuse_new_drops_silently(lib)
     print("PASS: test_ingress_guard_admission")
     _ = tls^

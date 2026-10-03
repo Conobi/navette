@@ -55,6 +55,7 @@ struct ProtectionStats(Copyable, Movable):
     # Admission.
     var unvalidated_handshaking_peak: UInt64
     var cap_rejections: UInt64
+    var dropped_overload: UInt64
 
     def __init__(out self):
         self.dropped_initial_size = 0
@@ -70,3 +71,4 @@ struct ProtectionStats(Copyable, Movable):
         self.tokens_invalid = 0
         self.unvalidated_handshaking_peak = 0
         self.cap_rejections = 0
+        self.dropped_overload = 0

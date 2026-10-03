@@ -105,6 +105,7 @@ struct IngressGuard(Movable):
         admitted: Int,
         conn_cap: Int,
         backlog: Int,
+        refuse_new: Bool = False,
     ) raises -> Int:
         """Admission verdict (ADMIT_*) for a datagram whose DCID matched no connection.
 
@@ -119,7 +120,8 @@ struct IngressGuard(Movable):
         reached the threshold or the server is at `conn_cap`, else an
         unvalidated connection; a valid token gets a validated
         connection, or CONNECTION_REFUSED at the cap. Raises only on an
-        FFI failure.
+        FFI failure. `refuse_new` (overload) drops every well-formed Initial
+        unanswered, token or not: no refusal for a client to remember.
         """
         # Long header, fixed bit, type Initial; then version 1.
         if len(pkt) < 6 or (pkt[0] & 0xF0) != 0xC0 or (pkt[1] | pkt[2] | pkt[3]) != 0 or pkt[4] != 1:
@@ -130,6 +132,9 @@ struct IngressGuard(Movable):
             return ADMIT_DROP
         if Int(pkt[5]) < _MIN_NEW_DCID_LEN or Int(pkt[5]) > _MAX_V1_CID_LEN:
             self.stats.dropped_initial_dcid_len += 1
+            return ADMIT_DROP
+        if refuse_new:
+            self.stats.dropped_overload += 1
             return ADMIT_DROP
         var parsed: Tuple[PacketHeader, Int]
         try:
