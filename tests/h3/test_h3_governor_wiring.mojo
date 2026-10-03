@@ -11,10 +11,12 @@ from navette.http.body import BodyFrame
 from navette.http.handler import StreamHandler, Request, RecvBody, ResponseWriter, Capabilities, StreamError
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
+from navette.protect.config import ProtectionConfig
+from navette.protect.governor import Mode, UNLIMITED
 from navette.quic.trans_param import TransportParams, default_transport_params
 
 from tests._test_util import assert_true
-from tests.h3._udp_server_harness import UdpServerHarness, HarnessClient
+from tests.h3._udp_server_harness import UdpServerHarness, HarnessClient, raw_initial
 
 
 struct OkHandler(StreamHandler):
@@ -116,12 +118,96 @@ def test_egress_hold_and_rotation() raises:
     _ = junk^
 
 
+def _close_with_wait(mut h: UdpServerHarness[OkHandler], wait_us: UInt64) raises:
+    """Run one flush that closes a governor interval whose requests all waited `wait_us` (0: a clear interval)."""
+    for _ in range(25 if wait_us else 0):
+        h.srv[].governor.hist.insert(wait_us)
+    h.srv[].governor.last_close_us = 0
+    h.flush()
+
+
+comptime _T: UInt64 = 1_000_000
+"""Dial of the governor tests: a 20 s interval, so only `_close_with_wait` closes one while the clients pump."""
+
+
+def _governed() raises -> UdpServerHarness[OkHandler]:
+    """A harness whose clock is past one interval, so a zero `last_close_us` makes a close due."""
+    var h = UdpServerHarness[OkHandler](make_ok_handler, _params(), _params(), protection=ProtectionConfig(max_queue_delay_us=_T))
+    h.advance(20 * _T)
+    return h^
+
+
+def _streams(c: HarnessClient) -> UInt64:
+    return c.h3._quic.stream_map.peer_max_streams_bidi
+
+
+def test_interval_close_applies_share_and_drains_raises() raises:
+    """An over-target close narrows each connection's window and share, and new ones' credit; the release grants at once."""
+    var h = _governed()
+    var c = h.new_client()
+    assert_true(h.handshake(c), "handshake")
+    _close_with_wait(h, 2 * _T)  # over t, under 4 t: pressure without refusing connections
+    ref d = h.srv[].governor.decision
+    assert_true(h.srv[].governor.state.mode == Mode.CUTTING and d.share == 32 and not d.refuse_new, "pressure, share 32")
+    ref conn = h.server_conn(0)[].h3()
+    assert_true(conn.share == 32 and conn._quic.stream_map.regrant_window < 100, "the close applied share and window")
+    for _ in range(3):
+        _ = _send_get(c)
+    for _ in range(10):
+        _ = h.pump(c, advance_us=30_000)  # past the client's delayed ACK, so the streams complete
+    assert_true(conn._quic.stream_map.peer_completed_bidi == 3 and _streams(c) == 100, "3 done, no grant under the window: D=" + String(conn._quic.stream_map.peer_completed_bidi) + " limit=" + String(_streams(c)) + " w=" + String(conn._quic.stream_map.regrant_window))
+    var fresh = h.new_client()
+    assert_true(h.handshake(fresh), "a new connection is admitted under pressure")
+    assert_true(_streams(fresh) == 32, "and starts at the share: " + String(_streams(fresh)))
+    _close_with_wait(h, 0)
+    assert_true(h.srv[].governor.decision.budget == UNLIMITED, "released")
+    _ = h.step(5)
+    _ = h.client_recv(c)
+    _ = h.client_recv(fresh)
+    assert_true(_streams(c) == 103 and _streams(fresh) == 100, "MAX_STREAMS without a client datagram")
+
+
+def test_refuse_new_drops_new_initials() raises:
+    """Above 4 t new Initials are dropped unanswered and counted; existing clients are served; release reopens."""
+    var h = _governed()
+    var c = h.new_client()
+    assert_true(h.handshake(c), "handshake")
+    _close_with_wait(h, 10 * _T)
+    assert_true(h.srv[].governor.decision.refuse_new, "refusing new connections")
+    var sock = h.new_socket()
+    h.send_raw(sock, raw_initial(List[Byte](length=8, fill=0x5A), 1200))
+    _ = h.step(20)
+    h.flush()
+    assert_true(h.slot_count() == 1 and h.srv[].protection_stats().dropped_overload == 1, "dropped and counted")
+    _ = h.step(5)
+    assert_true(len(h.recv_raw(sock, 50)) == 0, "no reply")
+    var before = c.recv_total
+    _ = _send_get(c)
+    for _ in range(3):
+        _ = h.pump(c)
+    assert_true(c.recv_total > before, "the existing client is still served")
+    _close_with_wait(h, 0)
+    var fresh = h.new_client()
+    assert_true(h.handshake(fresh) and _streams(fresh) == 100, "after release a new client gets full credit")
+    assert_true(h.srv[].protection_stats().refused_closes == 0, "never CONNECTION_REFUSED")
+
+
 def main() raises:
     var failed = 0
     try:
         test_egress_hold_and_rotation()
     except e:
         print("FAIL test_egress_hold_and_rotation:", e)
+        failed += 1
+    try:
+        test_interval_close_applies_share_and_drains_raises()
+    except e:
+        print("FAIL test_interval_close_applies_share_and_drains_raises:", e)
+        failed += 1
+    try:
+        test_refuse_new_drops_new_initials()
+    except e:
+        print("FAIL test_refuse_new_drops_new_initials:", e)
         failed += 1
     if failed:
         raise Error(String(failed) + " failed")

@@ -118,6 +118,8 @@ from navette.http.status import StatusCode
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.h3.ingress_guard import IngressGuard, ADMIT_CREATE, ADMIT_REPLY, EGRESS_HOLD_AT
 from navette.protect.config import ProtectionConfig, ProtectionStats
+from navette.protect.governor import Governor
+from navette.h3.connection import ConnTally
 from navette.h3.qpack import QpackCodecTables
 from navette.quic.cid import demux_key
 from navette.quic.cid_buf import CidBuf
@@ -583,6 +585,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     # TLS library and the CSPRNG).
     var protection: ProtectionConfig
     var _guard: Optional[IngressGuard]
+    var governor: Governor  # Overload governor (public for its stats); inert at a 0 dial.
+    var _gov_acc: ConnTally  # This interval's tally of the connections freed in it.
     # Slots whose `unvalidated` flag is set.
     var _unvalidated: Int
 
@@ -742,6 +746,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self.next_generation = UInt64(0)
         self.protection = protection.copy()
         self._guard = Optional[IngressGuard](None)
+        self.governor = Governor(protection.max_queue_delay_us, 0)
+        self._gov_acc = ConnTally(work=0, active=0, done=0, rtt_us=0, refused_503=0, cap=0)
         self._unvalidated = 0
 
         self._tls = tls^
@@ -1000,6 +1006,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         # `flush()` empties the stream, so everything queued now came from
         # the step that opened this pass.
         var queued = self._recv_stream.value().pending()
+        var rmem = UdpSocketState.rx_queued_bytes(self.udp_socket) if self.governor.t != 0 and self.governor.want_rmem() else None
         var last = queued
         var resteps = 0
         while (
@@ -1013,6 +1020,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             var now_queued = self._recv_stream.value().pending()
             last = now_queued - queued
             queued = now_queued
+        self.governor.on_ingest(rmem, UInt64(queued), last < _RESTEP_MIN_BATCH)
         return resteps
 
     def flush(mut self) raises:
@@ -1045,11 +1053,15 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
         # 2. Process buffered ingress (DCID routing, QUIC feed, egress
         #    drain) and reap connections that closed while doing so.
-        self._flush_ingress()
+        var ingress_us = self._flush_ingress()
 
         # 3. Timer pass — by clock, not by kernel completion: run when no
         #    timer is live or the earliest deadline has passed.
         var now = self._now()
+        if self.governor.t != 0:
+            self.governor.on_pass(now, ingress_us)
+            if self.governor.close_due(now):
+                self._gov_close(now)
         if self._timer_pass_due(now):
             try:
                 self._timer_pass(now)
@@ -1214,9 +1226,26 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 self._free_slot(i)
             i -= 1
 
+    def _gov_close(mut self, now: UInt64):
+        """Close the governor interval over every connection's tally; hand each the decision, draining those it grants."""
+        var acc = self._gov_acc.copy()
+        self._gov_acc = ConnTally(work=0, active=0, done=0, rtt_us=0, refused_503=0, cap=0)
+        for i in range(len(self.conn_slots)):
+            self.conn_slots[i].h3[].h3().gov_tally(acc)
+        self.governor.refused_503 += acc.refused_503
+        self.governor.close(now, acc.done, acc.rtt_us, acc.work, acc.active, acc.cap)
+        var d = self.governor.decision
+        for i in range(len(self.conn_slots)):
+            if self.conn_slots[i].h3[].h3().apply_governor(d.budget, acc.work, acc.active, d.share, d.retry_after_s):
+                try:
+                    self._drain_and_send(i, now)
+                except:
+                    pass
+
     def _free_slot(mut self, i: Int) raises:
-        """Destroy slot `i`'s connection, drop its DCIDs and swap-and-pop."""
+        """Destroy slot `i`'s connection (its last counts go to the governor's tally), drop its DCIDs and swap-and-pop."""
         var slot_h3 = self.conn_slots[i].h3
+        slot_h3[].h3().gov_tally(self._gov_acc)
         slot_h3.unsafe_deinit_pointee()
         slot_h3.unsafe_free()
         # Null out the field immediately so any later read on
@@ -1602,7 +1631,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             # outlives what the checker can see of `self.profile`; the field is
             # untracked, so the hand-off is explicit rather than implied.
             Pointer(to=self.profile).unsafe_origin_cast[MutUntrackedOrigin](),
-            retry_scid=retry_scid.copy(),
+            retry_scid=retry_scid.copy(), stream_window=self.governor.decision.share,
         )
 
         # Per-conn StreamHandler — produced by the user-supplied factory.
@@ -1655,7 +1684,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         try:
             verdict = self._guard.value().admit_initial(
                 pkt, name, now,
-                self._unvalidated, len(self.conn_slots), cap, len(self._egress_backlog),
+                self._unvalidated, len(self.conn_slots), cap, len(self._egress_backlog), refuse_new=self.governor.decision.refuse_new,
             )
         except:
             return -1
@@ -1724,8 +1753,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
     # ── Ingress flush ───────────────────────────────────────────
 
-    def _flush_ingress(mut self) raises:
-        """Process all buffered datagrams through QUIC/H3.
+    def _flush_ingress(mut self) raises -> UInt64:
+        """Process all buffered datagrams through QUIC/H3; returns the pass's clock reading.
 
         Drains `pending_rx`, routes each packet by DCID, creates new
         connections for Initial packets and feeds datagrams into the QUIC
@@ -1826,6 +1855,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         # Reap connections the ingress drove to CLOSED, now that no
         # `pending_rx` entry can resolve to a moved slot.
         self._reap_closed()
+        return now
 
     def _drain_dirty(mut self, now: UInt64):
         """Drain and send each connection this ingress pass fed, once, rotating the first one served.
@@ -1849,6 +1879,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 var idx = start + k
                 if idx >= n:
                     idx -= n
+                self.governor.requests += self.conn_slots[self._dirty_conns[idx]].h3[].h3().take_opened()
                 try:
                     self._drain_and_send(self._dirty_conns[idx], now)
                 except e:
