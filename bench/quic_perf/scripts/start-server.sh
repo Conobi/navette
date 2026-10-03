@@ -65,6 +65,8 @@ case "$SERVER" in
             -e "STATIC_KEY=/certs/server.key" \
             -e "STATIC_BODY_SIZE=${STATIC_BODY_SIZE:-1024}" \
             -e "STATIC_MAX_STREAMS=${STATIC_MAX_STREAMS:-}" \
+            -e "STATIC_MAX_QUEUE_DELAY_US=${STATIC_MAX_QUEUE_DELAY_US:-}" \
+            -e "STATIC_OVERLOAD_STATS=${STATIC_OVERLOAD_STATS:-}" \
             -v "$BENCH_BIN:/usr/local/bin/h3_server:ro" \
             -v "$REPO_ROOT/lib/librustls_mojo.so:/usr/local/lib/librustls_mojo.so:ro" \
             -v "$REPO_ROOT/lib/librustls_mojo.so:/app/lib/librustls_mojo.so:ro" \
