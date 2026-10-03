@@ -11,6 +11,7 @@ disabled rather than raising.
 
 from bouclette.net.message import DELIVERY_HEADER_LEN
 from bouclette.net.socket import Socket
+from bouclette.socle.platform import _getsockopt_int
 
 
 # Linux UDP_MAX_SEGMENTS (include/uapi/linux/udp.h).
@@ -109,6 +110,14 @@ struct UdpSocketState(Movable):
                 socket.set_recv_buffer_size(_COALESCED_RECV_BUF)
             except:
                 pass
+
+    @staticmethod
+    def rx_queued_bytes(ref socket: Socket) -> Optional[UInt64]:
+        """Receive-queue size in skb truesize bytes (`SO_MEMINFO` rmem_alloc; 4 bytes = first slot); None on error."""
+        try:
+            return UInt64(UInt32(_getsockopt_int(socket._handle._raw, Int32(1), Int32(55))))  # SOL_SOCKET, SO_MEMINFO
+        except:
+            return None
 
     def max_send_segments(self) -> Int:
         """Maximum datagrams the kernel can segment from a single send.
