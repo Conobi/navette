@@ -17,10 +17,14 @@ struct ProtectionConfig(Copyable, Movable):
 
     var conn_cap: Int
     var max_queue_delay_us: UInt64
-    """Under overload, how long a request may wait in line before the server starts refusing (503 with Retry-After).
+    """Under overload, how long a request may wait in line before the server starts slowing clients down.
 
-    Lower means faster answers under load and more refusals; `0` turns the
-    overload governor off. Keep handler run time about 10x below it.
+    It first gives busy connections fewer concurrent requests, then answers
+    the excess with 503 + Retry-After, and refuses new connections only near
+    collapse (4x the target). With many connections it is a soft target: each
+    keeps a few requests in flight, so the wait can settle somewhat above it
+    rather than turning visitors away. Lower means faster answers under load;
+    `0` turns the overload governor off. Keep handler run time about 10x below it.
     """
 
     def __init__(out self, *, conn_cap: Int = DEFAULT_CONN_CAP, max_queue_delay_us: UInt64 = DEFAULT_MAX_QUEUE_DELAY_US):
