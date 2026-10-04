@@ -88,6 +88,9 @@ comptime RELEASE = 10
 """Consecutive clear closes (`200 t`) before the budget returns to unlimited: the metastability guard."""
 comptime PENDING_MAX = 10
 """Closes after which a cut counts as taken effect even if open work is still above the budget."""
+comptime MEASURED: UInt64 = 2
+"""Closes after a cut before another: the interval in which a cut lands ran partly under the old budget, so a cut is
+judged only on the next one, measured whole under it (CoDel waits an interval after acting)."""
 comptime REFUSE_AFTER: UInt64 = 3
 """Consecutive closes above `4 t`, with nothing left to cut, before new connections are refused: one slow pass of
 handshakes must not refuse (dropped clients retransmit together and would re-trigger it)."""
@@ -103,7 +106,7 @@ struct Mode(Equatable, ImplicitlyCopyable, Writable):
     comptime CUTTING = Mode(1)
     """Over target; this close cut the budget."""
     comptime HOLDING = Mode(2)
-    """Over target, but the last cut has not taken effect, so no second cut."""
+    """Over target, but the last cut has not taken effect or been measured for a whole interval, so no second cut."""
     comptime RECOVERING = Mode(3)
     """Clear after a cut: the budget grows while used, then is released."""
 
@@ -155,14 +158,14 @@ struct Decision(ImplicitlyCopyable, Movable):
 def step(mut s: GovState, x: Sample, t: UInt64, cap: UInt64) -> Decision:
     """Advance the controller by one interval close; `t > 0`, `cap` = the per-connection stream credit.
 
-    `over` is `x.delay_us > t`; the last cut has taken effect once `x.work <= budget` (always in
-    NORMAL) or `PENDING_MAX` closes passed.
+    `over` is `x.delay_us > t`; the last cut has taken effect once `MEASURED` closes passed and either
+    `x.work <= budget` (always in NORMAL) or `PENDING_MAX` closes passed.
     - any, over, cut taken effect -> CUTTING: budget cut from usage `min(budget, work)` towards
       `work - done (delay - t) / I`, by at most half, never below the floor. Only the excess server queue is
       cut: `work` spans whole stream lifetimes, including the RTT, ACK delay and client turnaround that hold credit
       outside the server, so Little's `done t / I` would cut that credit too and starve throughput.
-    - any, over, cut not taken effect -> HOLDING: budget kept (MAX_STREAMS credit is irrevocable,
-      so stacked cuts undershoot).
+    - any, over, cut not taken effect -> HOLDING: budget kept (MAX_STREAMS credit is irrevocable and the
+      sensor lags an interval, so stacked cuts undershoot).
     - CUTTING, HOLDING or RECOVERING, clear -> RECOVERING: budget grows by `active` while at least
       half used; -> NORMAL (unlimited) instead on the `RELEASE`-th clear close in a row or once the
       budget covers every active connection's full credit.
@@ -180,7 +183,7 @@ def step(mut s: GovState, x: Sample, t: UInt64, cap: UInt64) -> Decision:
         s.hot_streak = min(s.hot_streak + 1, REFUSE_AFTER) if x.delay_us > 4 * t else 0
         s.refuse_new = s.refuse_new or (s.hot_streak >= REFUSE_AFTER and UInt128(s.budget) <= max(UInt128(floor), target))
         s.mode = Mode.HOLDING
-        if x.work <= s.budget or s.since_cut >= PENDING_MAX:
+        if s.since_cut >= MEASURED and (x.work <= s.budget or s.since_cut >= PENDING_MAX):
             var base = UInt128(min(s.budget, x.work))
             s.budget = max(floor, UInt64(min(max(target, base // 2), base)))
             s.mode, s.since_cut, s.cuts = Mode.CUTTING, 0, s.cuts + 1

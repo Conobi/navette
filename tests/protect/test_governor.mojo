@@ -2,7 +2,7 @@
 
 from std.bit import bit_width
 from navette.protect.governor import DelayHist, interval_us, retry_after_s, kwait_us, MIN_SAMPLES, DATAGRAM_TRUESIZE
-from navette.protect.governor import GovState, Mode, Sample, Decision, step, UNLIMITED, RELEASE, PENDING_MAX, REFUSE_AFTER
+from navette.protect.governor import GovState, Mode, Sample, Decision, step, UNLIMITED, RELEASE, PENDING_MAX, REFUSE_AFTER, MEASURED
 from navette.protect.governor import conn_limit, Governor, FEW_ACTIVE, WARN_EVERY, MIN_CREDIT
 from tests._test_util import assert_true
 from tests.protect._prop import Rng, prop_iters
@@ -152,7 +152,7 @@ def test_step_properties() raises:
             assert_true(not s.refuse_new and d.share == UNLIMITED, tag + "below target refuses nothing")
         else:
             assert_true(_pressure(s) and d.share == max(min(MIN_CREDIT, cap), d.shed_above), tag + "over target: CUTTING or HOLDING, credit share = the even split")
-        if x.work > s0.budget and s0.since_cut + 1 < PENDING_MAX:
+        if s0.since_cut + 1 < MEASURED or (x.work > s0.budget and s0.since_cut + 1 < PENDING_MAX):
             assert_true(s.cuts == s0.cuts and s.budget >= s0.budget, tag + "one decrease in flight")
             assert_true(x.delay_us <= t or s.mode == Mode.HOLDING, tag + "over with a cut in flight holds")
         assert_true(d.budget == s.budget and d.refuse_new == s.refuse_new, tag + "decision mirrors state")
@@ -211,6 +211,20 @@ def test_cut_grow_release_rules() raises:
     for k in range(RELEASE):
         _ = step(s, Sample(delay_us=0, done=0, work=0, active=1_000), t, 100)
         assert_true((s.budget == UNLIMITED) == (k == RELEASE - 1), "released on the RELEASE-th clear close")
+
+
+def test_wait_one_measured_interval_after_a_cut() raises:
+    """A cut is judged on a full interval measured under it: the close right after a cut holds even if work is already
+    under the new budget (that interval ran partly under the old one); the next may cut again."""
+    var t = UInt64(5_000)
+    var s = GovState()
+    var over = Sample(delay_us=3 * t, done=3_000, work=1_000, active=10)
+    _ = step(s, over, t, 100)
+    assert_true(s.mode == Mode.CUTTING and s.cuts == 1 and s.budget == 700, "first over close cuts: " + String(s.budget))
+    _ = step(s, Sample(delay_us=3 * t, done=3_000, work=600, active=10), t, 100)
+    assert_true(s.mode == Mode.HOLDING and s.cuts == 1 and s.budget == 700, "the next over close holds")
+    _ = step(s, Sample(delay_us=3 * t, done=3_000, work=600, active=10), t, 100)
+    assert_true(s.mode == Mode.CUTTING and s.cuts == 2, "one measured interval later it cuts again")
 
 
 def test_credit_held_outside_the_server_is_kept() raises:
@@ -426,6 +440,7 @@ def test_slow_handler_warning() raises:
     _overloaded_close(g, now, FEW_ACTIVE)
     assert_true(g.state.mode == Mode.CUTTING and g.stats.slow_handler_warnings == 1, "warned on the first cut")
     _overloaded_close(g, now, FEW_ACTIVE)
+    _overloaded_close(g, now, FEW_ACTIVE)
     assert_true(g.state.cuts == 2 and g.stats.slow_handler_warnings == 1, "not again within WARN_EVERY closes")
     for _ in range(WARN_EVERY):
         _overloaded_close(g, now, FEW_ACTIVE)
@@ -445,6 +460,7 @@ def main() raises:
     test_step_properties()
     test_refuse_new_needs_a_streak_at_the_floor()
     test_cut_grow_release_rules()
+    test_wait_one_measured_interval_after_a_cut()
     test_credit_held_outside_the_server_is_kept()
     test_recovery_and_liveness()
     test_conn_limit_properties()
