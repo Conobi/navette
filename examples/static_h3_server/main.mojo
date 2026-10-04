@@ -16,7 +16,7 @@ Binds `[::]:8443` by default.  Override with env vars:
   STATIC_MAX_STREAMS — initial_max_streams_bidi transport parameter
                        (default: library default)
   STATIC_MAX_QUEUE_DELAY_US — overload governor dial in µs; 0 turns it
-                       off (default: library default, 5000)
+                       off (default: library default, 100000)
   STATIC_OVERLOAD_STATS — `1` prints the governor's stats as one JSON
                        line per second on stdout
 """

@@ -8,7 +8,8 @@ comptime DEFAULT_CONN_CAP: Int = 4096
 comptime MIN_CONN_CAP: Int = 64
 comptime MAX_CONN_CAP: Int = 1 << 24
 """16.7 M connections: far above any descriptor limit, low enough that sizing tables from it cannot wrap."""
-comptime DEFAULT_MAX_QUEUE_DELAY_US: UInt64 = 5_000
+comptime DEFAULT_MAX_QUEUE_DELAY_US: UInt64 = 100_000
+"""A safety net, on by default but only catching real collapse; lower it towards your own latency goal."""
 
 
 struct ProtectionConfig(Copyable, Movable):

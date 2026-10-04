@@ -1,9 +1,9 @@
 """Overload governor core: histogram, sensor arithmetic, controller, per-connection limits, facade (pure, fake clock)."""
 
 from std.bit import bit_width
-from navette.protect.governor import DelayHist, interval_us, retry_after_s, kwait_us, MIN_SAMPLES, DATAGRAM_TRUESIZE
+from navette.protect.governor import DelayHist, interval_us, calm_us, retry_after_s, kwait_us, MIN_SAMPLES, DATAGRAM_TRUESIZE
 from navette.protect.governor import GovState, Mode, Sample, Decision, step, UNLIMITED, RELEASE, PENDING_MAX, REFUSE_AFTER, MEASURED
-from navette.protect.governor import conn_limit, Governor, FEW_ACTIVE, WARN_EVERY, MIN_CREDIT
+from navette.protect.governor import conn_limit, Governor, FEW_ACTIVE, WARN_EVERY_US, MIN_CREDIT
 from tests._test_util import assert_true
 from tests.protect._prop import Rng, prop_iters
 
@@ -45,10 +45,17 @@ def test_insert_pass_and_reset() raises:
 
 
 def test_derived_constants() raises:
-    assert_true(interval_us(5_000) == 100_000, "I = 20 t")
-    assert_true(retry_after_s(5_000) == 1, "1 s at the default")
-    assert_true(retry_after_s(1_000) == 1, "at least 1 s")
-    assert_true(retry_after_s(10_000_000) == 2_000, "200 t in whole seconds")
+    """Timings scale with the dial between their bounds: interval 100..500 ms, calm 1..5 s; a calm is always RELEASE intervals."""
+    var ts: List[UInt64] = [1_000, 5_000, 10_000, 100_000, 1_000_000, 10_000_000]
+    var i_want: List[UInt64] = [100_000, 100_000, 200_000, 500_000, 500_000, 500_000]
+    var retry_want: List[UInt64] = [1, 1, 2, 5, 5, 5]
+    for k in range(len(ts)):
+        var tag = "t=" + String(ts[k]) + ": "
+        assert_true(interval_us(ts[k]) == i_want[k], tag + "interval " + String(interval_us(ts[k])))
+        assert_true(calm_us(ts[k]) == UInt64(RELEASE) * i_want[k], tag + "calm " + String(calm_us(ts[k])))
+        assert_true(retry_after_s(ts[k]) == retry_want[k], tag + "Retry-After " + String(retry_after_s(ts[k])))
+    assert_true(kwait_us(UInt64.MAX, MIN_SAMPLES, 100_000) == 2_000_000, "kernel wait still reaches 20 t at 100 ms, past 4 t")
+    assert_true(kwait_us(UInt64.MAX, MIN_SAMPLES, 1_000) == 100_000, "and at least an interval")
 
 
 def _edge(mut rng: Rng) -> UInt64:
@@ -64,18 +71,19 @@ def _edge(mut rng: Rng) -> UInt64:
 def test_kwait_bounds_property() raises:
     var rng = Rng(0x4A17)
     for c in range(prop_iters(300)):
-        var i_us = interval_us(UInt64(1_000 + rng.below(10_000_000)))
+        var t = UInt64(1_000 + rng.below(10_000_000))
+        var cap = max(interval_us(t), 20 * t)
         var rmem = _edge(rng)
         var d = _edge(rng)
-        var w = kwait_us(rmem, d, i_us)
+        var w = kwait_us(rmem, d, t)
         var tag = "case " + String(c) + ": "
-        assert_true(w <= i_us, tag + "capped at I")
+        assert_true(w <= cap, tag + "capped at max(I, 20 t)")
         if rmem == 0 or d < MIN_SAMPLES:
             assert_true(w == 0, tag + "empty socket or unknown read rate reads 0")
         var more = rmem + UInt64(rng.below(1 << 20))
         if more >= rmem:
-            assert_true(kwait_us(more, d, i_us) >= w, tag + "monotone in rmem")
-    assert_true(kwait_us(100 * DATAGRAM_TRUESIZE, 500, 100_000) == 20_000, "100 datagrams ahead at 500 per interval")
+            assert_true(kwait_us(more, d, t) >= w, tag + "monotone in rmem")
+    assert_true(kwait_us(100 * DATAGRAM_TRUESIZE, 500, 5_000) == 20_000, "100 datagrams ahead at 500 per interval")
 
 
 def test_kwait_under_sustained_overload() raises:
@@ -434,17 +442,18 @@ def _overloaded_close(mut g: Governor, mut now: UInt64, active: UInt64):
 
 
 def test_slow_handler_warning() raises:
-    """Cutting with few active connections points at handlers slower than the dial: warned once per WARN_EVERY closes."""
+    """Cutting with few active connections points at handlers slower than the dial: warned at most once per WARN_EVERY_US."""
     var now = UInt64(1_000_000)
     var g = Governor(5_000, now)
     _overloaded_close(g, now, FEW_ACTIVE)
     assert_true(g.state.mode == Mode.CUTTING and g.stats.slow_handler_warnings == 1, "warned on the first cut")
     _overloaded_close(g, now, FEW_ACTIVE)
     _overloaded_close(g, now, FEW_ACTIVE)
-    assert_true(g.state.cuts == 2 and g.stats.slow_handler_warnings == 1, "not again within WARN_EVERY closes")
-    for _ in range(WARN_EVERY):
+    assert_true(g.state.cuts == 2 and g.stats.slow_handler_warnings == 1, "not again within WARN_EVERY_US")
+    now += WARN_EVERY_US
+    for _ in range(MEASURED):
         _overloaded_close(g, now, FEW_ACTIVE)
-    assert_true(g.stats.slow_handler_warnings == 2, "again after WARN_EVERY closes")
+    assert_true(g.state.cuts == 3 and g.stats.slow_handler_warnings == 2, "again on the next cut after WARN_EVERY_US")
     var h = Governor(5_000, now)
     _overloaded_close(h, now, FEW_ACTIVE + 1)
     assert_true(h.state.cuts == 1 and h.stats.slow_handler_warnings == 0, "not with more active connections")

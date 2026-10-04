@@ -127,7 +127,7 @@ def _close_with_wait(mut h: UdpServerHarness[OkHandler], wait_us: UInt64) raises
 
 
 comptime _T: UInt64 = 1_000_000
-"""Dial of the governor tests: a 20 s interval, so only `_close_with_wait` closes one while the clients pump."""
+"""Dial of the governor tests: the longest interval (500 ms), so only `_close_with_wait` closes one while the clients pump."""
 
 
 def _governed() raises -> UdpServerHarness[OkHandler]:

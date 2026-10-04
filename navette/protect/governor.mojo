@@ -2,7 +2,16 @@
 
 Pure (`std` only, no clock reads, no allocation, no floats, no wrap; one rate-limited warning print): the server shell
 passes time and counters in.
-Every time constant derives from the one dial `t = max_queue_delay_us`.
+Every time constant derives from the one dial `t = max_queue_delay_us`; the timings scale with it between bounds,
+so a large safety-net dial still reacts and recovers within seconds:
+
+| t      | interval I (20 t, 100..500 ms) | calm (10 I) | Retry-After | refuse above 4 t |
+|--------|--------------------------------|-------------|-------------|------------------|
+| 5 ms   | 100 ms                         | 1 s         | 1 s         | 20 ms            |
+| 10 ms  | 200 ms                         | 2 s         | 2 s         | 40 ms            |
+| 100 ms | 500 ms                         | 5 s         | 5 s         | 400 ms           |
+
+The calm is the release (`RELEASE` clear closes) and the one-cut timeout (`PENDING_MAX` closes).
 """
 
 from std.bit import bit_width
@@ -13,13 +22,18 @@ comptime MIN_SAMPLES = 20
 
 
 def interval_us(t: UInt64) -> UInt64:
-    """Sensing interval `I = 20 t` (CoDel's 5 ms / 100 ms ratio)."""
-    return 20 * t
+    """Sensing interval `I = 20 t` (CoDel's 5 ms / 100 ms ratio), clamped to 100..500 ms."""
+    return min(max(20 * t, 100_000), 500_000)
+
+
+def calm_us(t: UInt64) -> UInt64:
+    """Calm time `RELEASE` intervals (`200 t` within 1..5 s): clear time before release, the most a cut stays pending."""
+    return UInt64(RELEASE) * interval_us(t)
 
 
 def retry_after_s(t: UInt64) -> UInt64:
-    """`Retry-After` of a refusal: the calm time `200 t` rounded up to whole seconds, at least 1."""
-    return max(UInt64(1), (200 * t + 999_999) // 1_000_000)
+    """`Retry-After` of a refusal: the calm time rounded up to whole seconds (1..5)."""
+    return (calm_us(t) + 999_999) // 1_000_000
 
 
 comptime DATAGRAM_TRUESIZE: UInt64 = 2_304
@@ -27,15 +41,17 @@ comptime DATAGRAM_TRUESIZE: UInt64 = 2_304
 1,472 B UDP payloads on Linux (a 2 KiB data slab plus the sk_buff); NIC page-fragment buffers land in the same range."""
 
 
-def kwait_us(rmem: UInt64, deliveries_prev: UInt64, interval: UInt64) -> UInt64:
-    """Kernel socket-queue wait: the datagrams in `rmem` bytes drain at the last interval's read rate, capped at `interval`.
+def kwait_us(rmem: UInt64, deliveries_prev: UInt64, t: UInt64) -> UInt64:
+    """Kernel socket-queue wait: the datagrams in `rmem` bytes drain at the last interval's read rate.
 
-    0 when the queue is empty or the rate is unknown (fewer than `MIN_SAMPLES` reads last interval).
+    Capped at `max(I, 20 t)`, so it can cross the `4 t` refusal threshold at any dial. 0 when the queue is empty or
+    the rate is unknown (fewer than `MIN_SAMPLES` reads last interval).
     """
     if rmem == 0 or deliveries_prev < MIN_SAMPLES:
         return 0
+    var interval = interval_us(t)
     var w = UInt128(rmem) * UInt128(interval) // (UInt128(DATAGRAM_TRUESIZE) * UInt128(deliveries_prev))
-    return UInt64(min(w, UInt128(interval)))
+    return UInt64(min(w, UInt128(max(interval, 20 * t))))
 
 
 struct DelayHist(Copyable, Movable):
@@ -85,9 +101,9 @@ comptime MIN_CREDIT: UInt64 = 2
 acknowledges a response (completions count fully closed streams), so with 1 each request would also wait out the
 client's ACK delay; 2 overlaps the next request with it."""
 comptime RELEASE = 10
-"""Consecutive clear closes (`200 t`) before the budget returns to unlimited: the metastability guard."""
+"""Consecutive clear closes (the calm time) before the budget returns to unlimited: the metastability guard."""
 comptime PENDING_MAX = 10
-"""Closes after which a cut counts as taken effect even if open work is still above the budget."""
+"""Closes (the calm time) after which a cut counts as taken effect even if open work is still above the budget."""
 comptime MEASURED: UInt64 = 2
 """Closes after a cut before another: the interval in which a cut lands ran partly under the old budget, so a cut is
 judged only on the next one, measured whole under it (CoDel waits an interval after acting)."""
@@ -230,14 +246,14 @@ comptime MEMINFO_EVERY = 16
 """Passes between forced `SO_MEMINFO` reads while ingest keeps draining the socket."""
 comptime FEW_ACTIVE: UInt64 = 4
 """A cut over at most this many active connections reads as handlers slower than the dial, not overload."""
-comptime WARN_EVERY: UInt64 = 100
-"""Interval closes between two slow-handler warnings (10 s at the default dial)."""
+comptime WARN_EVERY_US: UInt64 = 10_000_000
+"""Least time between two slow-handler warnings."""
 
 
 @fieldwise_init
 struct OverloadStats(Copyable, Movable):
     """The overload governor as of its last interval close: p90 and kernel wait (µs), controller state and decision;
-    `slow_handler_warnings` counts the reported cuts over at most `FEW_ACTIVE` connections (one per `WARN_EVERY` closes)."""
+    `slow_handler_warnings` counts the reported cuts over at most `FEW_ACTIVE` connections (one per `WARN_EVERY_US`)."""
 
     var queue_delay_us: UInt64
     var kernel_wait_us: UInt64
@@ -286,7 +302,7 @@ struct Governor(Movable):
 
     def on_ingest(mut self, rmem: Optional[UInt64], deliveries: UInt64, drained: Bool):
         """`rmem`: queued bytes before ingest (None: not read or failed, no kernel wait)."""
-        self.kwait = kwait_us(rmem.or_else(0), self.deliveries_prev, interval_us(self.t))
+        self.kwait = kwait_us(rmem.or_else(0), self.deliveries_prev, self.t)
         self.deliveries += deliveries
         self.drained = drained
 
@@ -309,8 +325,8 @@ struct Governor(Movable):
         self.decision = step(self.state, Sample(delay_us=delay, done=done, work=work, active=active), self.t, cap)
         self.deliveries_prev, self.deliveries, self.last_close_us = self.deliveries, 0, now_us
         var n, warnings = self.stats.intervals + 1, self.stats.slow_handler_warnings
-        if self.state.mode == Mode.CUTTING and active <= FEW_ACTIVE and (warnings == 0 or n - self.warned_at >= WARN_EVERY):
-            self.warned_at, warnings = n, warnings + 1
+        if self.state.mode == Mode.CUTTING and active <= FEW_ACTIVE and (warnings == 0 or now_us - self.warned_at >= WARN_EVERY_US):
+            self.warned_at, warnings = now_us, warnings + 1
             print("navette: overload cut with", active, "active connections: handlers may be slower than max_queue_delay_us")
         self.stats = OverloadStats(
             queue_delay_us=delay, kernel_wait_us=self.kwait, intervals=n, state=self.state,

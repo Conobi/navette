@@ -30,8 +30,8 @@ def test_validate_rejects_out_of_range_conn_cap() raises:
 
 
 def test_max_queue_delay_dial() raises:
-    """Default 5 ms; 0 (off) and the 1 ms .. 10 s range validate, anything else in between raises."""
-    assert_true(ProtectionConfig().max_queue_delay_us == 5_000, "default 5 ms")
+    """Default 100 ms (a safety net); 0 (off) and the 1 ms .. 10 s range validate, anything else in between raises."""
+    assert_true(ProtectionConfig().max_queue_delay_us == 100_000, "default 100 ms")
     for ok in [UInt64(0), UInt64(1_000), UInt64(10_000_000)]:
         ProtectionConfig(max_queue_delay_us=ok).validate()
     for bad in [UInt64(1), UInt64(999), UInt64(10_000_001), UInt64.MAX]:
