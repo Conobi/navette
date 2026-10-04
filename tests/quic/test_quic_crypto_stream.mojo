@@ -112,6 +112,40 @@ def test_duplicate_rejection() raises:
     print("  test_duplicate_rejection: PASS")
 
 
+def test_crumbled_client_hello() raises:
+    """A ClientHello cut into 12 CRYPTO frames, offset 0 last, reassembles.
+
+    ngtcp2 (h2load, curl) crumbles its Initial CRYPTO data into up to
+    about a dozen frames in random order; with offset 0 last, eleven are
+    pending at once.
+    """
+    var cs = CryptoStream()
+    var piece = List[Byte](capacity=20)
+    for i in range(20):
+        piece.append(UInt8(i))
+    var i = 11
+    while i >= 0:
+        cs.receive(UInt64(i * 20), Span(piece))
+        i -= 1
+    var result = cs.drain_move()
+    assert_equal_int(len(result), 240, "crumbled: all 12 pieces reassembled")
+    print("  test_crumbled_client_hello: PASS")
+
+
+def test_repeated_pending_fragment_takes_no_slot() raises:
+    """An out-of-order fragment received again (a retransmitted Initial) is not buffered twice."""
+    var cs = CryptoStream()
+    var piece = List[Byte](capacity=20)
+    for i in range(20):
+        piece.append(UInt8(i))
+    for _ in range(100):
+        cs.receive(UInt64(20), Span(piece))
+    cs.receive(UInt64(0), Span(piece))
+    var result = cs.drain_move()
+    assert_equal_int(len(result), 40, "repeat: one copy of the pending piece")
+    print("  test_repeated_pending_fragment_takes_no_slot: PASS")
+
+
 def test_send_fragmentation() raises:
     """Write 5000 bytes, pending_crypto_frames(1000); verify 5 frames."""
     var cs = CryptoStream()
@@ -218,6 +252,8 @@ def main() raises:
     test_overlap_receive()
     test_16k_cap()
     test_duplicate_rejection()
+    test_crumbled_client_hello()
+    test_repeated_pending_fragment_takes_no_slot()
     test_send_fragmentation()
     test_drain_clears_buffer()
     print("All test_quic_crypto_stream tests passed.")

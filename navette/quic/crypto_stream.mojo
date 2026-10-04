@@ -5,11 +5,13 @@
 
 from navette.quic.frame import CryptoFrame
 
-# Cap on concurrently-buffered out-of-order CRYPTO fragments. TLS handshake
-# flights arrive in a handful of packets; 8 pending fragments is generous
-# headroom while keeping CryptoStream's storage fixed-capacity (no heap
-# allocation for the reassembly bookkeeping itself).
-comptime MAX_PENDING_FRAGMENTS: Int = 8
+# Cap on concurrently-buffered out-of-order CRYPTO fragments, kept
+# fixed-capacity (no heap allocation for the bookkeeping itself). Clients
+# cut their ClientHello into many small CRYPTO frames in random order
+# against middlebox inspection (ngtcp2 up to about a dozen per packet), so
+# one Initial can leave a dozen fragments pending; at 8 those handshakes
+# never completed.
+comptime MAX_PENDING_FRAGMENTS: Int = 32
 
 
 struct CryptoFragment(Copyable, Movable):
@@ -91,7 +93,12 @@ struct CryptoStream(Copyable, Movable):
             self._merge_pending()
             return
 
-        # Out-of-order: store as pending fragment.
+        # Out-of-order: store as pending fragment, unless one already
+        # holds it (a retransmitted Initial must not take a second slot).
+        for i in range(self.pending_fragments_len):
+            ref f = self.pending_fragments[i]
+            if f.offset <= offset and offset + data_len <= f.offset + UInt64(len(f.data)):
+                return
         if self.pending_fragments_len >= MAX_PENDING_FRAGMENTS:
             raise "CRYPTO pending fragment buffer full"
         var frag_data = List[Byte](capacity=len(data))
