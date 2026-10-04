@@ -747,7 +747,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self.protection = protection.copy()
         self._guard = Optional[IngressGuard](None)
         self.governor = Governor(protection.max_queue_delay_us, 0)
-        self._gov_acc = ConnTally(work=0, active=0, done=0, rtt_us=0, refused_503=0, cap=0)
+        self._gov_acc = ConnTally(work=0, active=0, done=0, refused_503=0, cap=0)
         self._unvalidated = 0
 
         self._tls = tls^
@@ -1229,11 +1229,11 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     def _gov_close(mut self, now: UInt64):
         """Close the governor interval over every connection's tally; hand each the decision, draining those it grants."""
         var acc = self._gov_acc.copy()
-        self._gov_acc = ConnTally(work=0, active=0, done=0, rtt_us=0, refused_503=0, cap=0)
+        self._gov_acc = ConnTally(work=0, active=0, done=0, refused_503=0, cap=0)
         for i in range(len(self.conn_slots)):
             self.conn_slots[i].h3[].h3().gov_tally(acc)
         self.governor.refused_503 += acc.refused_503
-        self.governor.close(now, acc.done, acc.rtt_us, acc.work, acc.active, acc.cap)
+        self.governor.close(now, acc.done, acc.work, acc.active, acc.cap)
         var d = self.governor.decision
         for i in range(len(self.conn_slots)):
             if self.conn_slots[i].h3[].h3().apply_governor(d.budget, acc.work, acc.active, d.shed_above, d.retry_after_s):

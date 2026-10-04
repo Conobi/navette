@@ -235,7 +235,6 @@ struct ConnTally(Copyable, Movable):
     var work: UInt64
     var active: UInt64
     var done: UInt64
-    var rtt_us: UInt64
     var refused_503: UInt64
     var cap: UInt64
 
@@ -582,13 +581,13 @@ struct H3Connection(Movable):
         return n
 
     def gov_tally(mut self, mut acc: ConnTally, live: Bool = True):
-        """Add to `acc`: completions (`done x min_rtt`) and 503s since the last tally; while `live` (not being freed),
+        """Add to `acc`: completions and 503s since the last tally; while `live` (not being freed),
         open streams minus `long_lived` as work."""
         ref sm = self._quic.stream_map
         var open_c = sm.peer_opened_bidi - min(sm.peer_opened_bidi, sm.peer_completed_bidi) if live else 0
         var done = sm.peer_completed_bidi - self._gov_done
         acc.work, acc.active = acc.work + open_c - min(open_c, self.long_lived), acc.active + UInt64(Int(open_c > 0))
-        acc.done, acc.rtt_us = acc.done + done, acc.rtt_us + done * self._quic.recovery.min_rtt
+        acc.done += done
         acc.refused_503, acc.cap = acc.refused_503 + self.refused_503, max(acc.cap, sm.initial_max_streams_bidi)
         self._gov_done, self.refused_503 = sm.peer_completed_bidi, 0
 

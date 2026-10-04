@@ -128,11 +128,10 @@ struct GovState(ImplicitlyCopyable, Movable):
 
 @fieldwise_init
 struct Sample(ImplicitlyCopyable, Movable):
-    """One closed interval: p90 wait and summed path RTT of its completions (µs), open work at close, connections holding some."""
+    """One closed interval: p90 wait (µs) and completions, open work at close, connections holding some."""
 
     var delay_us: UInt64
     var done: UInt64
-    var rtt_sum_us: UInt64
     var work: UInt64
     var active: UInt64
 
@@ -159,7 +158,9 @@ def step(mut s: GovState, x: Sample, t: UInt64, cap: UInt64) -> Decision:
     `over` is `x.delay_us > t`; the last cut has taken effect once `x.work <= budget` (always in
     NORMAL) or `PENDING_MAX` closes passed.
     - any, over, cut taken effect -> CUTTING: budget cut from usage `min(budget, work)` towards
-      Little's operating point `(done t + rtt) / I`, by at most half, never below the floor.
+      `work - done (delay - t) / I`, by at most half, never below the floor. Only the excess server queue is
+      cut: `work` spans whole stream lifetimes, including the RTT, ACK delay and client turnaround that hold credit
+      outside the server, so Little's `done t / I` would cut that credit too and starve throughput.
     - any, over, cut not taken effect -> HOLDING: budget kept (MAX_STREAMS credit is irrevocable,
       so stacked cuts undershoot).
     - CUTTING, HOLDING or RECOVERING, clear -> RECOVERING: budget grows by `active` while at least
@@ -167,13 +168,14 @@ def step(mut s: GovState, x: Sample, t: UInt64, cap: UInt64) -> Decision:
       budget covers every active connection's full credit.
     - NORMAL, clear -> NORMAL.
     `refuse_new` is set by the `REFUSE_AFTER`-th consecutive close above `4 t` once the budget is already at
-    `max(floor, Little's point)` (no cut left to make), cleared by a clear close. Under pressure
+    `max(floor, target)` (no cut left to make), cleared by a clear close. Under pressure
     (CUTTING, HOLDING) `shed_above` is the even split `max(1, budget / active)` and the share is the same, at least
     `MIN_CREDIT` (overshoot at most `MIN_CREDIT x active` streams; refusing new connections covers the rest)."""
     var floor = min(FLOOR, cap)
     s.since_cut = min(s.since_cut + 1, PENDING_MAX)
     if x.delay_us > t:
-        var target = (UInt128(x.done) * UInt128(t) + UInt128(x.rtt_sum_us)) // UInt128(interval_us(t))
+        var excess = UInt128(x.done) * UInt128(x.delay_us - t) // UInt128(interval_us(t))
+        var target = UInt128(x.work) - min(UInt128(x.work), excess)
         s.clear_streak = 0
         s.hot_streak = min(s.hot_streak + 1, REFUSE_AFTER) if x.delay_us > 4 * t else 0
         s.refuse_new = s.refuse_new or (s.hot_streak >= REFUSE_AFTER and UInt128(s.budget) <= max(UInt128(floor), target))
@@ -298,10 +300,10 @@ struct Governor(Movable):
         """An interval has passed since the last close: the current `decision` is stale until `close` runs."""
         return now_us - min(now_us, self.last_close_us) >= interval_us(self.t)
 
-    def close(mut self, now_us: UInt64, done: UInt64, rtt_sum_us: UInt64, work: UInt64, active: UInt64, cap: UInt64):
+    def close(mut self, now_us: UInt64, done: UInt64, work: UInt64, active: UInt64, cap: UInt64):
         """Close the interval: step the controller on its p90 wait and the shell's counts (as in `Sample`), refresh `stats`; warn (print) on a slow-handler cut."""
         var delay = self.hist.close_delay()
-        self.decision = step(self.state, Sample(delay_us=delay, done=done, rtt_sum_us=rtt_sum_us, work=work, active=active), self.t, cap)
+        self.decision = step(self.state, Sample(delay_us=delay, done=done, work=work, active=active), self.t, cap)
         self.deliveries_prev, self.deliveries, self.last_close_us = self.deliveries, 0, now_us
         var n, warnings = self.stats.intervals + 1, self.stats.slow_handler_warnings
         if self.state.mode == Mode.CUTTING and active <= FEW_ACTIVE and (warnings == 0 or n - self.warned_at >= WARN_EVERY):

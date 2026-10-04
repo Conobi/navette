@@ -86,7 +86,7 @@ def test_kwait_under_sustained_overload() raises:
         g.on_ingest(UInt64(100) * DATAGRAM_TRUESIZE, 10, False)
         now += 2_000
         g.on_pass(now, now - 100)
-    g.close(now, 500, 0, 50, 10, 100)
+    g.close(now, 500, 50, 10, 100)
     g.on_ingest(UInt64(100) * DATAGRAM_TRUESIZE, 10, False)
     assert_true(g.kwait == 20_000, "100 datagrams ahead, 500 read last interval: " + String(g.kwait))
 
@@ -129,7 +129,7 @@ def _rand_sample(mut rng: Rng, t: UInt64, over: Int) -> Sample:
     var d = UInt64(rng.below(Int(t) + 1))
     if over == 1 or (over == -1 and rng.chance(50)):
         d = t + 1 + (UInt64(rng.below(Int(8 * t))) if rng.chance(90) else _edge(rng) >> 1)
-    return Sample(delay_us=d, done=_edge(rng), rtt_sum_us=_edge(rng), work=_edge(rng), active=_edge(rng))
+    return Sample(delay_us=d, done=_edge(rng), work=_edge(rng), active=_edge(rng))
 
 
 def test_step_properties() raises:
@@ -163,15 +163,15 @@ def test_step_properties() raises:
 
 def _hot(mut s: GovState, t: UInt64, delay: UInt64, work: UInt64, done: UInt64) -> Bool:
     """One close with p90 `delay`; returns refuse_new."""
-    return step(s, Sample(delay_us=delay, done=done, rtt_sum_us=0, work=work, active=10), t, 100).refuse_new
+    return step(s, Sample(delay_us=delay, done=done, work=work, active=10), t, 100).refuse_new
 
 
 def test_refuse_new_needs_a_streak_at_the_floor() raises:
     """Refusing new connections takes REFUSE_AFTER consecutive closes above 4 t with nothing left to cut."""
     var t = UInt64(5_000)
     var s = GovState()
-    assert_true(not _hot(s, t, 5 * t, 1_000, 0), "one close above 4 t is not enough")
-    assert_true(not _hot(s, t, 5 * t, 1_000, 0) and not _hot(s, t, 5 * t, 1_000, 0), "nor three while cuts remain")
+    assert_true(not _hot(s, t, 5 * t, 1_000, 3_000), "one close above 4 t is not enough")
+    assert_true(not _hot(s, t, 5 * t, 1_000, 3_000) and not _hot(s, t, 5 * t, 1_000, 3_000), "nor three while cuts remain")
     s = GovState()
     s.mode, s.budget = Mode.HOLDING, 32
     assert_true(not _hot(s, t, 5 * t, 1_000, 0) and not _hot(s, t, 5 * t, 1_000, 0), "at the floor: not after two")
@@ -185,35 +185,41 @@ def test_refuse_new_needs_a_streak_at_the_floor() raises:
     assert_true(not _hot(s, t, 5 * t, 1_000, 0), "the streak is consecutive")
     s = GovState()
     s.mode, s.budget = Mode.HOLDING, 147
-    _ = _hot(s, t, 5 * t, 100, 3_000)
-    _ = _hot(s, t, 5 * t, 100, 3_000)
-    assert_true(_hot(s, t, 5 * t, 100, 3_000), "a budget at Little's operating point has nothing left to cut")
+    _ = _hot(s, t, 5 * t, 200, 200)
+    _ = _hot(s, t, 5 * t, 200, 200)
+    assert_true(_hot(s, t, 5 * t, 200, 200), "a budget at or below the target (work 200 - excess 40) has nothing left to cut")
 
 
 def test_cut_grow_release_rules() raises:
-    """Pinned values: the cut lands on Little's operating point `(done t + rtt) / I`, at most halving the used budget;
-    recovery grows by `active` while half used; release on `RELEASE` clear closes or full credit for every connection."""
+    """Pinned values: the cut removes the excess queue `done (d - t) / I` from the open work, at most halving the used
+    budget; recovery grows by `active` while half used; release on `RELEASE` clear closes or full credit for every connection."""
     var t = UInt64(5_000)
     var s = GovState()
-    _ = step(s, Sample(delay_us=2 * t, done=3_000, rtt_sum_us=0, work=1_000, active=10), t, 100)
+    _ = step(s, Sample(delay_us=2 * t, done=30_000, work=1_000, active=10), t, 100)
     assert_true(s.budget == 500, "at most half of the used budget: " + String(s.budget))
     s = GovState()
-    _ = step(s, Sample(delay_us=2 * t, done=3_000, rtt_sum_us=0, work=200, active=10), t, 100)
-    assert_true(s.budget == 150, "Little's point done t / I: " + String(s.budget))
-    s = GovState()
-    _ = step(s, Sample(delay_us=2 * t, done=3_000, rtt_sum_us=1_000_000, work=200, active=10), t, 100)
-    assert_true(s.budget == 160, "plus the summed path RTT / I: " + String(s.budget))
+    _ = step(s, Sample(delay_us=3 * t, done=3_000, work=1_000, active=10), t, 100)
+    assert_true(s.budget == 700, "work minus the excess 3000 x 2t / I: " + String(s.budget))
     s.mode, s.budget = Mode.RECOVERING, 100
-    _ = step(s, Sample(delay_us=0, done=0, rtt_sum_us=0, work=50, active=7), t, 100)
+    _ = step(s, Sample(delay_us=0, done=0, work=50, active=7), t, 100)
     assert_true(s.budget == 107 and s.mode == Mode.RECOVERING, "grows by active while half used: " + String(s.budget))
-    _ = step(s, Sample(delay_us=0, done=0, rtt_sum_us=0, work=52, active=7), t, 100)
+    _ = step(s, Sample(delay_us=0, done=0, work=52, active=7), t, 100)
     assert_true(s.budget == 107, "not below half used")
-    _ = step(s, Sample(delay_us=0, done=0, rtt_sum_us=0, work=0, active=1), t, 100)
+    _ = step(s, Sample(delay_us=0, done=0, work=0, active=1), t, 100)
     assert_true(s.budget == UNLIMITED and s.mode == Mode.NORMAL, "released once it covers every connection's credit")
     s.mode, s.budget, s.clear_streak = Mode.RECOVERING, 100, 0
     for k in range(RELEASE):
-        _ = step(s, Sample(delay_us=0, done=0, rtt_sum_us=0, work=0, active=1_000), t, 100)
+        _ = step(s, Sample(delay_us=0, done=0, work=0, active=1_000), t, 100)
         assert_true((s.budget == UNLIMITED) == (k == RELEASE - 1), "released on the RELEASE-th clear close")
+
+
+def test_credit_held_outside_the_server_is_kept() raises:
+    """200 connections x 10 streams, 29.4 K req/s, p90 6 ms: most of each stream's life is RTT, ACK delay and client
+    turnaround, not server queue. Only the 1 ms excess (29 streams) is cut, not down to `done t / I` = 147."""
+    var s = GovState()
+    var d = step(s, Sample(delay_us=6_000, done=2_940, work=2_000, active=200), 5_000, 100)
+    assert_true(s.mode == Mode.CUTTING and s.budget == 1_971, "budget " + String(s.budget))
+    assert_true(d.shed_above == 9 and d.share == 9, "credit stays near 10 per connection: " + String(d.share))
 
 
 def test_recovery_and_liveness() raises:
@@ -289,13 +295,13 @@ def test_shed_threshold_binds_with_many_connections() raises:
     """200 connections x 10 in flight: the credit share comes down to the 503 split, never below MIN_CREDIT."""
     var s = GovState()
     s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
-    var d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=200), 5_000, 100)
+    var d = step(s, Sample(delay_us=100_000, done=3_000, work=2_000, active=200), 5_000, 100)
     assert_true(d.share == MIN_CREDIT and d.shed_above == 1, "share " + String(d.share) + ", shed above " + String(d.shed_above))
     s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
-    d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=10), 5_000, 100)
+    d = step(s, Sample(delay_us=100_000, done=3_000, work=2_000, active=10), 5_000, 100)
     assert_true(d.shed_above == 14 and d.share == 14, "budget / active: " + String(d.shed_above))
     s.mode, s.budget, s.since_cut = Mode.HOLDING, 853, 0
-    d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=200), 5_000, 100)
+    d = step(s, Sample(delay_us=100_000, done=3_000, work=2_000, active=200), 5_000, 100)
     assert_true(d.share == 4 and d.shed_above == 4, "the local overload smoke's split: " + String(d.share))
 
 
@@ -336,7 +342,7 @@ def test_fluid_recovery_model() raises:
             queue -= served
             done += served
         var delay = h.close_delay()
-        _ = step(s, Sample(delay_us=delay, done=done, rtt_sum_us=0, work=work, active=10), t, 100)
+        _ = step(s, Sample(delay_us=delay, done=done, work=work, active=10), t, 100)
         if i >= surge_end:
             if delay_ok_at < 0 and delay <= t:
                 delay_ok_at = i
@@ -374,7 +380,7 @@ def test_facade_interval_close() raises:
         g.on_pass(now, now - 100)
     now = 1_100_000
     assert_true(g.close_due(now), "close due after one interval")
-    g.close(now, 500, 0, 50, 10, 100)
+    g.close(now, 500, 50, 10, 100)
     assert_true(g.stats.state.mode == Mode.NORMAL and g.stats.queue_delay_us == 0, "idle")
     for _ in range(25):
         g.on_ingest(UInt64(100) * DATAGRAM_TRUESIZE, 10, False)
@@ -384,7 +390,7 @@ def test_facade_interval_close() raises:
     assert_true(g.kwait == 20_000 and g.requests == 0, "20 ms of socket queue; requests consumed per pass")
     assert_true(not g.close_due(now), "interval still open")
     now = 1_200_000
-    g.close(now, 2_500, 0, 400, 10, 100)
+    g.close(now, 2_500, 400, 10, 100)
     var st = g.stats.copy()
     assert_true(st.state.mode == Mode.CUTTING and st.decision.budget != UNLIMITED and st.state.cuts == 1, "over target: one cut")
     assert_true(st.queue_delay_us >= 16_384 and st.kernel_wait_us == 20_000, "p90 wait " + String(st.queue_delay_us))
@@ -396,10 +402,10 @@ def test_facade_interval_close() raises:
     now += 150_000
     g.requests = 5
     g.on_pass(now, now - 100)
-    g.close(now, 5, 0, 1, 10, 100)
+    g.close(now, 5, 1, 10, 100)
     assert_true(g.stats.queue_delay_us == 0 and g.state.mode == Mode.RECOVERING and g.decision.share == UNLIMITED, "an idle gap drops the stale samples")
     g.refused_503 += 3
-    g.close(now + 100_000, 0, 0, 0, 0, 100)
+    g.close(now + 100_000, 0, 0, 0, 100)
     assert_true(g.stats.refused_streams_503 == 3, "503 count reaches the stats at close")
     assert_true(g.stats.slow_handler_warnings == 0, "a cut over 10 active connections is real overload")
 
@@ -410,7 +416,7 @@ def _overloaded_close(mut g: Governor, mut now: UInt64, active: UInt64):
         g.requests += 10
         now += 3_000
         g.on_pass(now, now - 20_000)
-    g.close(now, 50, 0, 1, active, 100)
+    g.close(now, 50, 1, active, 100)
 
 
 def test_slow_handler_warning() raises:
@@ -439,6 +445,7 @@ def main() raises:
     test_step_properties()
     test_refuse_new_needs_a_streak_at_the_floor()
     test_cut_grow_release_rules()
+    test_credit_held_outside_the_server_is_kept()
     test_recovery_and_liveness()
     test_conn_limit_properties()
     test_refuse_only_culprits()

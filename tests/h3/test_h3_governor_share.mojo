@@ -46,7 +46,7 @@ def _shed_at(mut h3: H3Connection, k: UInt64):
 
 
 def _tally(mut p: RawPair) -> ConnTally:
-    var acc = ConnTally(work=0, active=0, done=0, rtt_us=0, refused_503=0, cap=0)
+    var acc = ConnTally(work=0, active=0, done=0, refused_503=0, cap=0)
     p.srv.gov_tally(acc)
     return acc^
 
@@ -59,16 +59,15 @@ def test_tally() raises:
     for i in range(3):
         _respond(p, sids[i])
     p.pump(10)
-    var min_rtt = p.srv._quic.recovery.min_rtt
     var t = _tally(p)
     assert_true(t.work == 2 and t.active == 1, "two open, one active connection: " + String(t.work))
-    assert_true(t.done == 3 and t.rtt_us == 3 * min_rtt, "three completions: " + String(t.done))
+    assert_true(t.done == 3, "three completions: " + String(t.done))
     assert_true(t.cap == 100, "cap is the stream ceiling")
     t = _tally(p)
     assert_true(t.done == 0 and t.work == 2, "completions are counted once")
     p.srv.long_lived = 1
     assert_true(_tally(p).work == 1, "long-lived streams are not work")
-    var dying = ConnTally(work=0, active=0, done=0, rtt_us=0, refused_503=0, cap=0)
+    var dying = ConnTally(work=0, active=0, done=0, refused_503=0, cap=0)
     _respond(p, sids[3])
     p.pump(10)
     p.srv.gov_tally(dying, live=False)
@@ -161,7 +160,7 @@ def test_credit_first_then_503() raises:
     var sids = _requests(p, 10, False)
     var s = GovState()
     s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
-    var d = step(s, Sample(delay_us=100_000, done=3_000, rtt_sum_us=0, work=2_000, active=200), 5_000, 100)
+    var d = step(s, Sample(delay_us=100_000, done=3_000, work=2_000, active=200), 5_000, 100)
     _ = p.srv.apply_governor(d.budget, 2_000, 200, d.shed_above, d.retry_after_s)
     assert_true(p.srv._quic.stream_map.regrant_window == 50 and not p.srv.shed_if_over_share(sids[9]), "credit 50: no 503")
     for _ in range(4):
@@ -284,7 +283,7 @@ def test_detached_stream_is_long_lived() raises:
     _ = p.request()
     p.pump(5)
     assert_true(p.srv.h3().long_lived == 1, "a detached body is long-lived: " + String(p.srv.h3().long_lived))
-    var acc = ConnTally(work=0, active=0, done=0, rtt_us=0, refused_503=0, cap=0)
+    var acc = ConnTally(work=0, active=0, done=0, refused_503=0, cap=0)
     p.srv.h3().gov_tally(acc)
     assert_true(acc.work == 1, "work excludes it: " + String(acc.work))
     p.cli.reset_stream(sid, UInt64(0x10C))
