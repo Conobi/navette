@@ -96,10 +96,11 @@ comptime UNLIMITED = UInt64.MAX
 """Budget value meaning released: no window below the configured stream credit, no refusals."""
 comptime FLOOR: UInt64 = 32
 """Budget floor, server-wide; `cap` when lower."""
-comptime MIN_CREDIT: UInt64 = 2
+comptime MIN_CREDIT: UInt64 = 8
 """Least stream credit a connection keeps under pressure; `cap` when lower. Credit returns only once the client
-acknowledges a response (completions count fully closed streams), so with 1 each request would also wait out the
-client's ACK delay; 2 overlaps the next request with it."""
+acknowledges a response (completions count fully closed streams), so every window costs a client ACK, a grant and
+fewer requests per packet. Measured on h2load, per request: window 2 = 2.9 datagrams and ~128 K instructions,
+8 = 1.5 and ~90 K, 32 = 1.0 and ~82 K. Below 8 the squeeze costs the overloaded server ~1.4x CPU per request."""
 comptime RELEASE = 10
 """Consecutive clear closes (the calm time) before the budget returns to unlimited: the metastability guard."""
 comptime PENDING_MAX = 10

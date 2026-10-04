@@ -290,8 +290,9 @@ def test_conn_limit_properties() raises:
                 assert_true(w == min(max(l, floor), cap), tag + "no second cut before the first took effect")
     assert_true(conn_limit(40, 500, UNLIMITED, 10_000, 3, 100) == 100, "unlimited gives CAP")
     assert_true(conn_limit(32, 10, 853, 2_000, 200, 100) == 16, "credit halves below 32 under pressure")
-    assert_true(conn_limit(6, 6, 853, 2_000, 200, 100) == 4, "down to the even split")
-    assert_true(conn_limit(4, 4, 147, 2_000, 200, 100) == MIN_CREDIT, "never below MIN_CREDIT")
+    assert_true(conn_limit(24, 24, 2_400, 3_000, 200, 100) == 12, "down to the even split")
+    assert_true(conn_limit(6, 6, 853, 2_000, 200, 100) == 8, "an even split of 4 stays at MIN_CREDIT = 8")
+    assert_true(conn_limit(4, 4, 147, 2_000, 200, 100) == 8, "never below MIN_CREDIT = 8")
 
 
 def test_refuse_only_culprits() raises:
@@ -318,13 +319,13 @@ def test_shed_threshold_binds_with_many_connections() raises:
     var s = GovState()
     s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
     var d = step(s, Sample(delay_us=100_000, done=3_000, work=2_000, active=200), 5_000, 100)
-    assert_true(d.share == MIN_CREDIT and d.shed_above == 1, "share " + String(d.share) + ", shed above " + String(d.shed_above))
+    assert_true(d.share == 8 and d.shed_above == 1, "share " + String(d.share) + ", shed above " + String(d.shed_above))
     s.mode, s.budget, s.since_cut = Mode.HOLDING, 147, 0
     d = step(s, Sample(delay_us=100_000, done=3_000, work=2_000, active=10), 5_000, 100)
     assert_true(d.shed_above == 14 and d.share == 14, "budget / active: " + String(d.shed_above))
     s.mode, s.budget, s.since_cut = Mode.HOLDING, 853, 0
     d = step(s, Sample(delay_us=100_000, done=3_000, work=2_000, active=200), 5_000, 100)
-    assert_true(d.share == 4 and d.shed_above == 4, "the local overload smoke's split: " + String(d.share))
+    assert_true(d.share == 8 and d.shed_above == 4, "the local overload smoke's split, credit floored at 8: " + String(d.share))
 
 
 def test_fluid_recovery_model() raises:

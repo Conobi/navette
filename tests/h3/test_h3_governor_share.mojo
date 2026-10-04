@@ -165,10 +165,10 @@ def test_credit_first_then_503() raises:
     assert_true(p.srv._quic.stream_map.regrant_window == 50 and not p.srv.shed_if_over_share(sids[9]), "credit 50: no 503")
     for _ in range(4):
         _ = p.srv.apply_governor(d.budget, 2_000, 200, d.shed_above, d.retry_after_s)
-    assert_true(p.srv._quic.stream_map.regrant_window == 6, "one halving per close while open <= window: " + String(p.srv._quic.stream_map.regrant_window))
+    assert_true(p.srv._quic.stream_map.regrant_window == 8, "one halving per close while open <= window, down to MIN_CREDIT: " + String(p.srv._quic.stream_map.regrant_window))
     for i in range(10):
-        assert_true(p.srv.shed_if_over_share(sids[i]) == (i >= 6), "request " + String(i + 1))
-    assert_true(p.srv.refused_503 == 4, "four 503s: " + String(p.srv.refused_503))
+        assert_true(p.srv.shed_if_over_share(sids[i]) == (i >= 8), "request " + String(i + 1))
+    assert_true(p.srv.refused_503 == 2, "two 503s: " + String(p.srv.refused_503))
 
 
 def test_threshold_moves_with_completions() raises:
