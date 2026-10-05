@@ -109,9 +109,10 @@ struct H2TcpConn[H: StreamHandler](Movable):
     var _recv_future: Optional[RecvFuture]
     var _send_future: Optional[SendFuture]
     var _loop_ptr: Pointer[NoneType, MutUntrackedOrigin]
-    # Accept or last completed stream; PINGs and trickled frames never move it.
+    # Accept, last completed stream, or a write carrying response DATA; PINGs and trickled frames never move it.
     var _since_us: UInt64
     var _completed_seen: Int
+    var _data_seen: UInt64  # `data_bytes_sent` at the last full flush
 
     def __init__(
         out self,
@@ -141,6 +142,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
         self._loop_ptr = loop_ptr
         self._since_us = monotonic_us()
         self._completed_seen = 0
+        self._data_seen = 0
 
     def is_drained(self) -> Bool:
         """Check if the connection is closed and has no I/O in flight.
@@ -347,6 +349,9 @@ struct H2TcpConn[H: StreamHandler](Movable):
             return
 
         var sent = Int(result)
+        # nginx send_timeout: a write restarts the budget, but only while response DATA is queued.
+        if sent > 0 and self.http._conn.data_bytes_sent != self._data_seen:
+            self._since_us = monotonic_us()
         var buf_len = len(self.send_buf)
 
         # Partial send — keep the unsent tail and re-queue.
@@ -372,6 +377,7 @@ struct H2TcpConn[H: StreamHandler](Movable):
             self.send_buf = pending^
             self._submit_send()
             return
+        self._data_seen = self.http._conn.data_bytes_sent
 
         if self.http.should_close():
             self._begin_close()
@@ -497,7 +503,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
             make_handler: Factory producing one H per connection.
             tls: TLS backend instance (moved in).
             server_tls_config: Server TLS config with ALPN=h2 (moved in).
-            request_timeout_secs: Budget while a stream is open or its data is flow-control blocked, counted from accept or the last completed stream.
+            request_timeout_secs: Budget while a stream is open or its data is flow-control blocked, counted from accept, the last completed stream, or the last write carrying response DATA.
             keep_alive_timeout_secs: The same budget otherwise (TLS handshake included).
             max_connections: Past it accept parks; clients wait in the kernel backlog.
         """

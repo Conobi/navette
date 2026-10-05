@@ -515,6 +515,8 @@ struct H2Connection(Movable):
     var _discarding: Bool
     var _refusing: Bool
     var refused_streams: UInt64
+    # DATA payload bytes emitted; only peer window grants let it grow.
+    var data_bytes_sent: UInt64
 
     def __init__(out self, *, client_side: Bool, config: H2Config = H2Config()):
         self._config = H2Config(copy=config)
@@ -552,6 +554,7 @@ struct H2Connection(Movable):
         self._discarding = False
         self._refusing = False
         self.refused_streams = UInt64(0)
+        self.data_bytes_sent = UInt64(0)
 
     def initiate_connection(mut self) raises:
         """Send connection preface. Must be called before any other operation."""
@@ -978,6 +981,7 @@ struct H2Connection(Movable):
                 offset = end
             self._send_window -= sendable
             stream.send_window -= sendable
+            self.data_bytes_sent += UInt64(sendable)
 
         if sendable < total:
             var remainder = List[Byte](capacity=total - sendable)
@@ -1076,6 +1080,7 @@ struct H2Connection(Movable):
                     offset = end
                 self._send_window -= sendable
                 stream.send_window -= sendable
+                self.data_bytes_sent += UInt64(sendable)
 
             if emit_full:
                 if data_end_stream and is_last_chunk:
