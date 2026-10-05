@@ -1059,7 +1059,10 @@ struct QuicConnection(Movable):
         if space_idx < 0:
             return (2, -1, -1, 0)
         var key_slot = ZERO_RTT_KEY_SLOT_IDX if space_idx == ZERO_RTT_SPACE_IDX else space_idx
-        if not self.protect.has_keys(key_slot):
+        # RFC 9001 Section 5.7: a server holds 1-RTT keys early but must not
+        # process (and so ACK) 1-RTT packets before its TLS handshake ends.
+        var early_1rtt = self.is_server and space_idx == 2 and (self.state & CONN_HANDSHAKING) != 0
+        if early_1rtt or not self.protect.has_keys(key_slot):
             if header.is_long_header:
                 var skip = header.pn_offset + Int(header.payload_length)
                 if skip > remaining_len:
