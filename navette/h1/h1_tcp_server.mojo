@@ -64,7 +64,7 @@ from bouclette.net import Shutdown
 from navette.http.handler import StreamHandler
 from navette.h1.handler_server import H1HandlerServer
 from navette.h1.config import ParseConfig
-from navette.http.config import DEADLINE_SWEEP_MS, DEFAULT_KEEP_ALIVE_TIMEOUT_SECS, DEFAULT_REQUEST_TIMEOUT_SECS
+from navette.http.config import DEADLINE_SWEEP_MS, DEFAULT_KEEP_ALIVE_TIMEOUT_SECS, DEFAULT_MAX_CONNECTIONS, DEFAULT_REQUEST_TIMEOUT_SECS
 from navette.net.peer_addr import peer_addr_from_fd
 from navette.quic.profile import monotonic_us
 from navette.util.null_ptr import null_ptr
@@ -370,6 +370,7 @@ struct H1TcpServer[H: StreamHandler](Movable):
     var request_timeout_us: UInt64
     var keep_alive_timeout_us: UInt64
     var _sweep_timer: Optional[TimerFuture]
+    var max_connections: Int
 
     def __init__(
         out self,
@@ -378,6 +379,7 @@ struct H1TcpServer[H: StreamHandler](Movable):
         var parse_config: ParseConfig,
         request_timeout_secs: Int = DEFAULT_REQUEST_TIMEOUT_SECS,
         keep_alive_timeout_secs: Int = DEFAULT_KEEP_ALIVE_TIMEOUT_SECS,
+        max_connections: Int = DEFAULT_MAX_CONNECTIONS,
     ):
         """Construct an H1TcpServer.
 
@@ -390,6 +392,7 @@ struct H1TcpServer[H: StreamHandler](Movable):
             parse_config: HTTP/1.1 parse configuration (moved in).
             request_timeout_secs: Budget from a request's first byte to its flushed response; each completed send restarts it.
             keep_alive_timeout_secs: Idle budget before the first request and between requests.
+            max_connections: Past it accept parks; clients wait in the kernel backlog.
         """
         self.listen_socket = Socket(listen_handle^)
         self.connections = List[Pointer[H1TcpConn[Self.H], MutUntrackedOrigin]]()
@@ -400,6 +403,7 @@ struct H1TcpServer[H: StreamHandler](Movable):
         self._needs_accept_rearm = False
         self.request_timeout_us = UInt64(request_timeout_secs) * 1_000_000
         self.keep_alive_timeout_us = UInt64(keep_alive_timeout_secs) * 1_000_000
+        self.max_connections = max_connections
         self._sweep_timer = Optional[TimerFuture](None)
 
     def __deinit__(deinit self):
@@ -475,7 +479,7 @@ struct H1TcpServer[H: StreamHandler](Movable):
                 i += 1
 
         # Retry deferred accept rearm (transient error or SQ-full).
-        if self._needs_accept_rearm:
+        if self._needs_accept_rearm and len(self.connections) < self.max_connections:
             try:
                 self._submit_accept()
                 self._needs_accept_rearm = False
@@ -490,6 +494,9 @@ struct H1TcpServer[H: StreamHandler](Movable):
         Stores the returned AcceptFuture. Called from start() for the
         initial accept and from _handle_accept_impl for re-arming.
         """
+        if len(self.connections) >= self.max_connections:
+            self._needs_accept_rearm = True  # Parked: reap_closed re-arms once a slot frees.
+            return
         var loop = self._loop_ptr
         self._accept_future = Optional(loop[].accept(self.listen_socket))
 

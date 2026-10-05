@@ -27,4 +27,6 @@ comptime DEFAULT_KEEP_ALIVE_TIMEOUT_SECS = 20
 comptime DEFAULT_REQUEST_TIMEOUT_SECS = 60
 # TCP servers close expired connections once per sweep, so up to this much late.
 comptime DEADLINE_SWEEP_MS: UInt64 = 1000
+# Open connections per TCP server; at the cap accept parks (h2o max-connections).
+comptime DEFAULT_MAX_CONNECTIONS = 1024
 comptime DEFAULT_MAX_LOCAL_RESET_STREAMS = 1024

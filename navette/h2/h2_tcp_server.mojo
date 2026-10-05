@@ -59,7 +59,7 @@ from bouclette.watch import WatchLoop, RecvFuture, SendFuture, AcceptFuture, Tim
 
 from navette.http.handler import StreamHandler
 from navette.h2.h2_handler_server import H2HandlerServer
-from navette.http.config import DEADLINE_SWEEP_MS, DEFAULT_KEEP_ALIVE_TIMEOUT_SECS, DEFAULT_REQUEST_TIMEOUT_SECS
+from navette.http.config import DEADLINE_SWEEP_MS, DEFAULT_KEEP_ALIVE_TIMEOUT_SECS, DEFAULT_MAX_CONNECTIONS, DEFAULT_REQUEST_TIMEOUT_SECS
 from navette.net.peer_addr import peer_addr_from_fd
 from navette.quic.profile import monotonic_us
 from navette.tls import TlsBackend, TlsServerConfig, TlsConnection
@@ -475,6 +475,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
     var request_timeout_us: UInt64
     var keep_alive_timeout_us: UInt64
     var _sweep_timer: Optional[TimerFuture]
+    var max_connections: Int
 
     def __init__(
         out self,
@@ -484,6 +485,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
         var server_tls_config: TlsServerConfig,
         request_timeout_secs: Int = DEFAULT_REQUEST_TIMEOUT_SECS,
         keep_alive_timeout_secs: Int = DEFAULT_KEEP_ALIVE_TIMEOUT_SECS,
+        max_connections: Int = DEFAULT_MAX_CONNECTIONS,
     ):
         """Construct an H2TcpServer.
 
@@ -497,6 +499,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
             server_tls_config: Server TLS config with ALPN=h2 (moved in).
             request_timeout_secs: Budget while a stream is open or its data is flow-control blocked, counted from accept or the last completed stream.
             keep_alive_timeout_secs: The same budget otherwise (TLS handshake included).
+            max_connections: Past it accept parks; clients wait in the kernel backlog.
         """
         self.listen_socket = Socket(listen_handle^)
         self.connections = List[Pointer[H2TcpConn[Self.H], MutUntrackedOrigin]]()
@@ -508,6 +511,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
         self._needs_accept_rearm = False
         self.request_timeout_us = UInt64(request_timeout_secs) * 1_000_000
         self.keep_alive_timeout_us = UInt64(keep_alive_timeout_secs) * 1_000_000
+        self.max_connections = max_connections
         self._sweep_timer = Optional[TimerFuture]()
 
     def __deinit__(deinit self):
@@ -584,7 +588,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
                 i += 1
 
         # Retry deferred accept rearm (transient error or SQ-full).
-        if self._needs_accept_rearm:
+        if self._needs_accept_rearm and len(self.connections) < self.max_connections:
             try:
                 self._submit_accept()
                 self._needs_accept_rearm = False
@@ -599,6 +603,9 @@ struct H2TcpServer[H: StreamHandler](Movable):
         Stores the returned AcceptFuture. Called from start() for the
         initial accept and from _handle_accept_impl for re-arming.
         """
+        if len(self.connections) >= self.max_connections:
+            self._needs_accept_rearm = True  # Parked: reap_closed re-arms once a slot frees.
+            return
         var loop = Pointer[WatchLoop, MutUntrackedOrigin](
             unsafe_from_address=Int(self._loop_ptr)
         )

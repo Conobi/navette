@@ -1,4 +1,4 @@
-"""Connection deadlines of the H1 and H2 TCP servers.
+"""Connection deadlines and the accept cap of the H1 and H2 TCP servers.
 
 Drives a real server on an ephemeral loopback port with in-process
 blocking clients. Timeouts are 1 s and the sweep runs once per second,
@@ -109,7 +109,7 @@ def _pump_h2(mut loop: WatchLoop, srv: Pointer[H2TcpServer[StubHandler], MutUntr
 
 
 def _h1_server(
-    request_secs: Int, idle_secs: Int,
+    request_secs: Int, idle_secs: Int, max_conns: Int = 1024,
 ) raises -> Tuple[Pointer[H1TcpServer[StubHandler], MutUntrackedOrigin], Int]:
     var sock = tcp_listener(0)
     var port = _port_of(sock)
@@ -118,12 +118,13 @@ def _h1_server(
         sock^, make_stub, ParseConfig(),
         request_timeout_secs=request_secs,
         keep_alive_timeout_secs=idle_secs,
+        max_connections=max_conns,
     ))
     return (srv, port)
 
 
 def _h2_server(
-    idle_secs: Int,
+    idle_secs: Int, max_conns: Int = 1024,
 ) raises -> Tuple[Pointer[H2TcpServer[StubHandler], MutUntrackedOrigin], Int]:
     var cert = read_file(String("certs/server.crt"))
     var key = read_file(String("certs/server.key"))
@@ -137,6 +138,7 @@ def _h2_server(
         server_tls_config=config^,
         request_timeout_secs=30,
         keep_alive_timeout_secs=idle_secs,
+        max_connections=max_conns,
     ))
     return (srv, port)
 
@@ -194,6 +196,46 @@ def test_h2_idle_connection_hits_idle_deadline() raises:
     srv.unsafe_free()
 
 
+def test_h1_accept_cap() raises:
+    """Past the cap, accept parks until a connection frees a slot."""
+    var loop = WatchLoop(capacity=64)
+    var sp = _h1_server(request_secs=30, idle_secs=30, max_conns=2)
+    var srv = sp[0]
+    srv[].start(loop)
+    var c1 = _connect(sp[1])
+    var c2 = _connect(sp[1])
+    var c3 = _connect(sp[1])  # completes in the kernel backlog
+    _pump_h1(loop, srv, 300)
+    assert_equal(len(srv[].connections), 2, "cap exceeded")
+    _ = c1^  # free one slot: the parked accept must pick up c3
+    _pump_h1(loop, srv, 300)
+    assert_equal(len(srv[].connections), 2, "slot not reused")
+    _ = c2.raw()
+    _ = c3.raw()
+    srv.unsafe_deinit_pointee()
+    srv.unsafe_free()
+
+
+def test_h2_accept_cap() raises:
+    """Past the cap, accept parks until a connection frees a slot."""
+    var loop = WatchLoop(capacity=64)
+    var sp = _h2_server(idle_secs=30, max_conns=2)
+    var srv = sp[0]
+    srv[].start(loop)
+    var c1 = _connect(sp[1])
+    var c2 = _connect(sp[1])
+    var c3 = _connect(sp[1])
+    _pump_h2(loop, srv, 300)
+    assert_equal(len(srv[].connections), 2, "cap exceeded")
+    _ = c1^
+    _pump_h2(loop, srv, 300)
+    assert_equal(len(srv[].connections), 2, "slot not reused")
+    _ = c2.raw()
+    _ = c3.raw()
+    srv.unsafe_deinit_pointee()
+    srv.unsafe_free()
+
+
 def main() raises:
     test_h1_slowloris_headers_hit_request_deadline()
     print("PASS: test_h1_slowloris_headers_hit_request_deadline")
@@ -201,3 +243,7 @@ def main() raises:
     print("PASS: test_h1_silent_connection_hits_idle_deadline")
     test_h2_idle_connection_hits_idle_deadline()
     print("PASS: test_h2_idle_connection_hits_idle_deadline")
+    test_h1_accept_cap()
+    print("PASS: test_h1_accept_cap")
+    test_h2_accept_cap()
+    print("PASS: test_h2_accept_cap")
