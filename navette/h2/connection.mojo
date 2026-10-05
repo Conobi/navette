@@ -687,7 +687,7 @@ struct H2Connection(Movable):
             pos = H2_CLIENT_MAGIC_LEN
         # Parse frames
         while pos < len(self._inbuf):
-            var result = decode_frame(self._inbuf, pos)
+            var result = decode_frame(self._inbuf, pos, H2FrameConfig(max_frame_size=Int(self._local_settings.max_frame_size)))
             var frame = result[0].copy()
             var consumed = result[1]
             if consumed == 0:

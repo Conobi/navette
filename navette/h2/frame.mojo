@@ -218,7 +218,8 @@ def decode_frame(
 
     Returns (frame, bytes_consumed, error_string).
     On success error_string is empty and frame.ok() is True.
-    On error the frame still contains whatever was parsed, plus error info.
+    On error the frame still contains whatever was parsed, plus error info;
+    an oversized frame is rejected from its 9-byte header (consumed 9).
     """
     var available = len(wire) - pos
 
@@ -247,6 +248,24 @@ def decode_frame(
         | Int(wire[pos + 8])
     ) & 0x7FFFFFFF  # mask reserved bit
 
+    # --- Check max_frame_size on the header alone, so an oversized
+    # declared length is never buffered (RFC 9113 Section 4.2) ---
+    if not config.allow_oversized_frame and length > config.max_frame_size:
+        var f = _make_error_frame(
+            length,
+            frame_type,
+            flags,
+            stream_id,
+            List[Byte](),
+            "frame payload "
+            + String(length)
+            + " exceeds max_frame_size "
+            + String(config.max_frame_size),
+            H2_FRAME_SIZE_ERROR,
+            SCOPE_CONNECTION,
+        )
+        return (f^, 9, f.error)
+
     # --- Check payload fits in wire ---
     if available < 9 + length:
         var f = Frame()
@@ -263,25 +282,6 @@ def decode_frame(
         f.error_code = H2_FRAME_SIZE_ERROR
         f.error_scope = SCOPE_CONNECTION
         return (f^, 0, f.error)
-
-    # --- Check max_frame_size ---
-    if not config.allow_oversized_frame and length > config.max_frame_size:
-        var payload = List[Byte](capacity=length)
-        payload.extend(Span(wire)[pos + 9 : pos + 9 + length])
-        var f = _make_error_frame(
-            length,
-            frame_type,
-            flags,
-            stream_id,
-            payload,
-            "frame payload "
-            + String(length)
-            + " exceeds max_frame_size "
-            + String(config.max_frame_size),
-            H2_FRAME_SIZE_ERROR,
-            SCOPE_CONNECTION,
-        )
-        return (f^, 9 + length, f.error)
 
     # --- Copy payload ---
     var payload = List[Byte](capacity=length)

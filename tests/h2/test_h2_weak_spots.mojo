@@ -1,4 +1,4 @@
-"""H2Connection (server side) resource bounds: closed-stream pruning, reset floods, CONTINUATION floods.
+"""H2Connection (server side) resource bounds: closed-stream pruning, reset floods, CONTINUATION floods, oversized frame headers.
 
 Drives a real `H2Connection(client_side=False)` with hand-built frames and
 a client-side `HpackEncoder`. Iteration counts stay just past each limit,
@@ -22,6 +22,7 @@ from navette.h2.frame import (
     H2_PROTOCOL_ERROR,
     H2_CANCEL,
     H2_STREAM_CLOSED,
+    H2_FRAME_SIZE_ERROR,
     H2_ENHANCE_YOUR_CALM,
 )
 from navette.h2.hpack import HpackEncoder
@@ -283,6 +284,25 @@ def test_split_header_block_still_accepted() raises:
     print("PASS: test_split_header_block_still_accepted")
 
 
+# ── C. Oversized declared frame length ───────────────────────────────────
+
+
+def test_oversized_frame_rejected_at_header() raises:
+    """A 9-byte header declaring 16 MiB is a FRAME_SIZE_ERROR before any payload is buffered."""
+    var srv = _server()
+    var hdr = List[Byte]()
+    hdr.append(0xFF)
+    hdr.append(0xFF)
+    hdr.append(0xFF)
+    hdr.append(UInt8(FRAME_DATA))
+    hdr.append(0)
+    hdr.extend(Span(_u32(1)))
+    _ = srv.receive_data(hdr)
+    assert_true(srv.is_closed(), "rejected at the header")
+    assert_equal_int(_goaway_code(srv.data_to_send()), H2_FRAME_SIZE_ERROR, "GOAWAY(FRAME_SIZE_ERROR)")
+    print("PASS: test_oversized_frame_rejected_at_header")
+
+
 def main() raises:
     test_closed_streams_are_forgotten()
     test_late_frames_on_forgotten_stream_are_closed_not_idle()
@@ -292,3 +312,4 @@ def main() raises:
     test_continuation_flood_is_capped()
     test_empty_continuation_flood_is_capped()
     test_split_header_block_still_accepted()
+    test_oversized_frame_rejected_at_header()
