@@ -90,6 +90,7 @@ comptime DEFAULT_MAX_CONCURRENT_STREAMS = 200
 comptime DEFAULT_MAX_HEADER_LIST_SIZE = 16384
 comptime DEFAULT_MAX_CLOSED_STREAMS = 1024
 comptime DEFAULT_CONNECTION_WINDOW = 65535
+comptime MAX_CONTINUATIONS = 8  # per header block, nghttp2's default
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +499,7 @@ struct H2Connection(Movable):
     var _hpack_encoder: HpackEncoder
     var _hpack_decoder: HpackDecoder
     var _expecting_continuation_for: UInt32
+    var _continuation_count: Int
     var _client_magic_validated: Bool
     var _reset_stream_count: Int
     var _pending_data: Dict[Int, List[PendingDataChunk]]
@@ -539,6 +541,7 @@ struct H2Connection(Movable):
         self._hpack_encoder = HpackEncoder(hpack_config)
         self._hpack_decoder = HpackDecoder(hpack_config)
         self._expecting_continuation_for = UInt32(0)
+        self._continuation_count = 0
         self._client_magic_validated = client_side
         self._reset_stream_count = 0
         self._pending_data = Dict[Int, List[PendingDataChunk]]()
@@ -708,6 +711,7 @@ struct H2Connection(Movable):
             elif frame.frame_type == FRAME_WINDOW_UPDATE:
                 self._handle_window_update(frame, events)
             elif frame.frame_type == FRAME_HEADERS:
+                self._continuation_count = 0
                 self._handle_headers(frame, events)
             elif frame.frame_type == FRAME_CONTINUATION:
                 self._handle_continuation(frame, events)
@@ -1542,6 +1546,20 @@ struct H2Connection(Movable):
         except:
             return False
 
+    def _continuation_overflows(mut self, block_size: Int, mut events: List[H2Event]) -> Bool:
+        """CONTINUATION flood (CVE-2024-27316): past twice MAX_HEADER_LIST_SIZE bytes or MAX_CONTINUATIONS frames, GOAWAY(ENHANCE_YOUR_CALM).
+
+        HPACK spends under the 32 bytes per field the list size counts, so
+        twice the limit only leaves room for Huffman an encoder did not
+        minimise. The frame cap stops empty CONTINUATIONs, which never grow
+        the block, each costing a copy of it.
+        """
+        self._continuation_count += 1
+        if block_size <= 2 * Int(self._local_settings.max_header_list_size) and self._continuation_count <= MAX_CONTINUATIONS:
+            return False
+        self._connection_error(events, H2_ENHANCE_YOUR_CALM, String("Header block too large"))
+        return True
+
     def _handle_continuation(mut self, frame: Frame, mut events: List[H2Event]):
         """Process inbound CONTINUATION: append fragment, finalize if END_HEADERS."""
         var stream_id = frame.stream_id
@@ -1556,6 +1574,8 @@ struct H2Connection(Movable):
             self._connection_error(events, H2_PROTOCOL_ERROR, String("Invalid CONTINUATION"))
             return
         if self._discarding:
+            if self._continuation_overflows(len(self._discard_block) + len(cp.headers_block), events):
+                return
             self._discard_block.extend(Span(cp.headers_block))
             if frame.flags & FLAG_END_HEADERS != 0:
                 self._expecting_continuation_for = UInt32(0)
@@ -1570,6 +1590,8 @@ struct H2Connection(Movable):
         # Read-modify-write for Dict value
         try:
             var stream = self._streams[stream_id].copy()
+            if self._continuation_overflows(len(stream.header_block_buffer) + len(cp.headers_block), events):
+                return
             stream.header_block_buffer.extend(Span(cp.headers_block))
             if frame.flags & FLAG_END_HEADERS != 0:
                 # Assembly complete — HPACK decode

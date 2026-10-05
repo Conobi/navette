@@ -1,4 +1,4 @@
-"""H2Connection (server side) resource bounds: closed-stream pruning and reset floods.
+"""H2Connection (server side) resource bounds: closed-stream pruning, reset floods, CONTINUATION floods.
 
 Drives a real `H2Connection(client_side=False)` with hand-built frames and
 a client-side `HpackEncoder`. Iteration counts stay just past each limit,
@@ -16,6 +16,7 @@ from navette.h2.frame import (
     FRAME_SETTINGS,
     FRAME_GOAWAY,
     FRAME_WINDOW_UPDATE,
+    FRAME_CONTINUATION,
     FLAG_END_STREAM,
     FLAG_END_HEADERS,
     H2_PROTOCOL_ERROR,
@@ -221,9 +222,73 @@ def test_completed_streams_do_not_count_as_resets() raises:
     print("PASS: test_completed_streams_do_not_count_as_resets")
 
 
+# ── B. CONTINUATION flood ────────────────────────────────────────────────
+
+
+def _continuation_flood(refused: Bool) raises -> H2Connection:
+    """HEADERS without END_HEADERS, then 16 KiB CONTINUATIONs that never end the block."""
+    var srv = _server(1)
+    var enc = HpackEncoder()
+    var sid = 1
+    if refused:
+        _ = srv.receive_data(_frame(FRAME_HEADERS, FLAG_END_HEADERS, 1, enc.encode(_req())))
+        sid = 3
+    _ = srv.receive_data(_frame(FRAME_HEADERS, 0, sid, List[Byte](length=10, fill=Byte(0))))
+    var chunk = List[Byte](length=16384, fill=Byte(0))
+    for _ in range(64):
+        _ = srv.receive_data(_frame(FRAME_CONTINUATION, 0, sid, chunk))
+        assert_true(len(srv._discard_block) <= 2 * 16384, "discarded block stays bounded")
+        if srv.is_closed():
+            break
+    return srv^
+
+
+def test_continuation_flood_is_capped() raises:
+    """CVE-2024-27316: a header block past MAX_HEADER_LIST_SIZE closes with ENHANCE_YOUR_CALM, accepted or refused stream."""
+    var srv = _continuation_flood(False)
+    assert_true(srv.is_closed(), "accepted stream: flood closes the connection")
+    assert_equal_int(_goaway_code(srv.data_to_send()), H2_ENHANCE_YOUR_CALM, "GOAWAY(ENHANCE_YOUR_CALM)")
+    var srv2 = _continuation_flood(True)
+    assert_true(srv2.is_closed(), "refused stream: flood closes the connection")
+    assert_equal_int(_goaway_code(srv2.data_to_send()), H2_ENHANCE_YOUR_CALM, "GOAWAY(ENHANCE_YOUR_CALM)")
+    print("PASS: test_continuation_flood_is_capped")
+
+
+def test_empty_continuation_flood_is_capped() raises:
+    """Zero-length CONTINUATIONs never grow the block but are still bounded in count."""
+    var srv = _server()
+    var enc = HpackEncoder()
+    var block = enc.encode(_req())
+    var w = _frame(FRAME_HEADERS, 0, 1, block)
+    for _ in range(1000):
+        w.extend(Span(_frame(FRAME_CONTINUATION, 0, 1, List[Byte]())))
+    _ = srv.receive_data(w)
+    assert_true(srv.is_closed(), "endless empty CONTINUATIONs close the connection")
+    assert_equal_int(_goaway_code(srv.data_to_send()), H2_ENHANCE_YOUR_CALM, "GOAWAY(ENHANCE_YOUR_CALM)")
+    print("PASS: test_empty_continuation_flood_is_capped")
+
+
+def test_split_header_block_still_accepted() raises:
+    """A normal block split over a few CONTINUATIONs still decodes."""
+    var srv = _server()
+    var enc = HpackEncoder()
+    var block = enc.encode(_req())
+    var w = _frame(FRAME_HEADERS, FLAG_END_STREAM, 1, List[Byte](block[:4]))
+    w.extend(Span(_frame(FRAME_CONTINUATION, 0, 1, List[Byte](block[4:8]))))
+    w.extend(Span(_frame(FRAME_CONTINUATION, 0, 1, List[Byte]())))
+    w.extend(Span(_frame(FRAME_CONTINUATION, FLAG_END_HEADERS, 1, List[Byte](block[8:]))))
+    var ev = srv.receive_data(w)
+    assert_true(not srv.is_closed(), "connection stays up")
+    assert_equal_int(len(ev), 1, "one request event")
+    print("PASS: test_split_header_block_still_accepted")
+
+
 def main() raises:
     test_closed_streams_are_forgotten()
     test_late_frames_on_forgotten_stream_are_closed_not_idle()
     test_rapid_reset_is_capped()
     test_made_you_reset_is_capped()
     test_completed_streams_do_not_count_as_resets()
+    test_continuation_flood_is_capped()
+    test_empty_continuation_flood_is_capped()
+    test_split_header_block_still_accepted()
