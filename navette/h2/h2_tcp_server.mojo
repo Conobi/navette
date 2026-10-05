@@ -55,11 +55,13 @@ from std.ffi import external_call
 
 from bouclette.handle import OwnedHandle
 from bouclette.net.socket import Socket
-from bouclette.watch import WatchLoop, RecvFuture, SendFuture, AcceptFuture
+from bouclette.watch import WatchLoop, RecvFuture, SendFuture, AcceptFuture, TimerFuture
 
 from navette.http.handler import StreamHandler
 from navette.h2.h2_handler_server import H2HandlerServer
+from navette.http.config import DEADLINE_SWEEP_MS, DEFAULT_KEEP_ALIVE_TIMEOUT_SECS, DEFAULT_REQUEST_TIMEOUT_SECS
 from navette.net.peer_addr import peer_addr_from_fd
+from navette.quic.profile import monotonic_us
 from navette.tls import TlsBackend, TlsServerConfig, TlsConnection
 from navette.util.null_ptr import null_ptr
 
@@ -107,6 +109,9 @@ struct H2TcpConn[H: StreamHandler](Movable):
     var _recv_future: Optional[RecvFuture]
     var _send_future: Optional[SendFuture]
     var _loop_ptr: Pointer[NoneType, MutUntrackedOrigin]
+    # Accept or last completed stream; PINGs and trickled frames never move it.
+    var _since_us: UInt64
+    var _completed_seen: Int
 
     def __init__(
         out self,
@@ -134,6 +139,8 @@ struct H2TcpConn[H: StreamHandler](Movable):
         self._recv_future = Optional[RecvFuture]()
         self._send_future = Optional[SendFuture]()
         self._loop_ptr = loop_ptr
+        self._since_us = monotonic_us()
+        self._completed_seen = 0
 
     def is_drained(self) -> Bool:
         """Check if the connection is closed and has no I/O in flight.
@@ -293,6 +300,8 @@ struct H2TcpConn[H: StreamHandler](Movable):
         #    requests via StreamHandler.
         if len(plaintext) > 0:
             self.http.feed(Span(plaintext))
+            if self.http.completed_streams != self._completed_seen:
+                self._completed_seen, self._since_us = self.http.completed_streams, monotonic_us()
             var h2_out = self.http.drain()
             # Slice into TLS-record-sized chunks so the wire format is
             # nginx-like (multiple records → client can interleave
@@ -463,6 +472,9 @@ struct H2TcpServer[H: StreamHandler](Movable):
     var _accept_future: Optional[AcceptFuture]
     var _loop_ptr: Pointer[NoneType, MutUntrackedOrigin]
     var _needs_accept_rearm: Bool
+    var request_timeout_us: UInt64
+    var keep_alive_timeout_us: UInt64
+    var _sweep_timer: Optional[TimerFuture]
 
     def __init__(
         out self,
@@ -470,6 +482,8 @@ struct H2TcpServer[H: StreamHandler](Movable):
         make_handler: def () thin raises -> Self.H,
         var tls: TlsBackend,
         var server_tls_config: TlsServerConfig,
+        request_timeout_secs: Int = DEFAULT_REQUEST_TIMEOUT_SECS,
+        keep_alive_timeout_secs: Int = DEFAULT_KEEP_ALIVE_TIMEOUT_SECS,
     ):
         """Construct an H2TcpServer.
 
@@ -481,6 +495,8 @@ struct H2TcpServer[H: StreamHandler](Movable):
             make_handler: Factory producing one H per connection.
             tls: TLS backend instance (moved in).
             server_tls_config: Server TLS config with ALPN=h2 (moved in).
+            request_timeout_secs: Budget while a stream is open or its data is flow-control blocked, counted from accept or the last completed stream.
+            keep_alive_timeout_secs: The same budget otherwise (TLS handshake included).
         """
         self.listen_socket = Socket(listen_handle^)
         self.connections = List[Pointer[H2TcpConn[Self.H], MutUntrackedOrigin]]()
@@ -490,6 +506,9 @@ struct H2TcpServer[H: StreamHandler](Movable):
         self._accept_future = Optional[AcceptFuture]()
         self._loop_ptr = null_ptr[NoneType, MutUntrackedOrigin]()
         self._needs_accept_rearm = False
+        self.request_timeout_us = UInt64(request_timeout_secs) * 1_000_000
+        self.keep_alive_timeout_us = UInt64(keep_alive_timeout_secs) * 1_000_000
+        self._sweep_timer = Optional[TimerFuture]()
 
     def __deinit__(deinit self):
         """Free all heap-allocated connections on server teardown."""
@@ -501,7 +520,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
     # ── Lifecycle — start ────────────────────────────────────────
 
     def start(mut self, mut loop: WatchLoop) raises:
-        """Submit the initial accept on the listener socket.
+        """Submit the initial accept and arm the deadline-sweep timer.
 
         Must be called after heap-allocation and before the first step.
         Stores the loop pointer for all I/O (accept, recv, send).
@@ -513,6 +532,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
             unsafe_from_address=Int(Pointer(to=loop))
         )
         self._submit_accept()
+        self._sweep_timer = Optional(loop.timeout(DEADLINE_SWEEP_MS))
 
     def poll_connections(mut self):
         """Poll all connection recv/send futures and process completed ones.
@@ -535,7 +555,20 @@ struct H2TcpServer[H: StreamHandler](Movable):
 
         Also retries any deferred accept rearm (set by transient errors
         or SQ-full conditions in _handle_accept_impl).
+
+        Each `DEADLINE_SWEEP_MS` tick first closes expired connections (it wakes `step(-1)`).
         """
+        if self._sweep_timer and self._sweep_timer.value().done():
+            var now = monotonic_us()
+            for ref c in self.connections:
+                var busy = len(c[].http._streams) > 0 or len(c[].http._conn._pending_data) > 0
+                if now - c[]._since_us > (self.request_timeout_us if busy else self.keep_alive_timeout_us):
+                    c[]._begin_close()
+            try:
+                var loop = Pointer[WatchLoop, MutUntrackedOrigin](unsafe_from_address=Int(self._loop_ptr))
+                self._sweep_timer = Optional(loop[].timeout(DEADLINE_SWEEP_MS))
+            except:
+                pass  # The done timer stays: retried next tick.
         var i = 0
         while i < len(self.connections):
             if self.connections[i][].is_drained():

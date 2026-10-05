@@ -23,4 +23,8 @@ comptime DEFAULT_MAX_CONCURRENT_STREAMS  = 200
 
 # Timeouts and DoS limits
 comptime DEFAULT_KEEP_ALIVE_TIMEOUT_SECS = 20
+# Budget for one request from its first byte (nginx client_header_timeout).
+comptime DEFAULT_REQUEST_TIMEOUT_SECS = 60
+# TCP servers close expired connections once per sweep, so up to this much late.
+comptime DEADLINE_SWEEP_MS: UInt64 = 1000
 comptime DEFAULT_MAX_LOCAL_RESET_STREAMS = 1024

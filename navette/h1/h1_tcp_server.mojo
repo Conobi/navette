@@ -56,6 +56,7 @@ from bouclette import (
     TransferFailed,
     Socket,
     AcceptFuture,
+    TimerFuture,
 )
 from bouclette.handle import OwnedHandle
 from bouclette.net import Shutdown
@@ -63,7 +64,9 @@ from bouclette.net import Shutdown
 from navette.http.handler import StreamHandler
 from navette.h1.handler_server import H1HandlerServer
 from navette.h1.config import ParseConfig
+from navette.http.config import DEADLINE_SWEEP_MS, DEFAULT_KEEP_ALIVE_TIMEOUT_SECS, DEFAULT_REQUEST_TIMEOUT_SECS
 from navette.net.peer_addr import peer_addr_from_fd
+from navette.quic.profile import monotonic_us
 from navette.util.null_ptr import null_ptr
 
 
@@ -98,6 +101,9 @@ struct H1TcpConn[H: StreamHandler](Movable):
     var _recv_future: Optional[RecvFuture]
     var _send_future: Optional[SendFuture]
     var _loop_ptr: Pointer[WatchLoop, MutUntrackedOrigin]
+    # Busy from a request's first byte to its flushed response; `_since_us` moves only then and on completed sends.
+    var _busy: Bool
+    var _since_us: UInt64
 
     def __init__(
         out self,
@@ -120,6 +126,8 @@ struct H1TcpConn[H: StreamHandler](Movable):
         self._recv_future = Optional[RecvFuture](None)
         self._send_future = Optional[SendFuture](None)
         self._loop_ptr = loop_ptr
+        self._busy = False
+        self._since_us = monotonic_us()
 
     def is_drained(self) -> Bool:
         """Check if the connection is closed and has no I/O in flight.
@@ -177,7 +185,7 @@ struct H1TcpConn[H: StreamHandler](Movable):
         self.send_buf = data^
         self._submit_send()
 
-    def _begin_close(mut self) raises:
+    def _begin_close(mut self):
         """Initiate connection shutdown via shutdown(SHUT_RDWR).
 
         Calls shutdown(2) with SHUT_RDWR to send FIN, then sets
@@ -246,6 +254,8 @@ struct H1TcpConn[H: StreamHandler](Movable):
             if count <= 0:
                 self._begin_close()
                 return
+            if not self._busy:
+                self._busy, self._since_us = True, monotonic_us()
 
             # Feed plaintext into H1 parser + dispatch any complete requests.
             self.http.feed(Span(chunk))
@@ -291,6 +301,7 @@ struct H1TcpConn[H: StreamHandler](Movable):
             if count < 0:
                 self._begin_close()
                 return
+            self._since_us = monotonic_us()
 
             var buf_len = len(self.send_buf)
 
@@ -322,6 +333,7 @@ struct H1TcpConn[H: StreamHandler](Movable):
             if self.http.should_close():
                 self._begin_close()
             else:
+                self._busy = False
                 self._submit_recv()
         except e:
             self._begin_close()
@@ -355,12 +367,17 @@ struct H1TcpServer[H: StreamHandler](Movable):
     var _accept_future: Optional[AcceptFuture]
     var _loop_ptr: Pointer[WatchLoop, MutUntrackedOrigin]
     var _needs_accept_rearm: Bool
+    var request_timeout_us: UInt64
+    var keep_alive_timeout_us: UInt64
+    var _sweep_timer: Optional[TimerFuture]
 
     def __init__(
         out self,
         var listen_handle: OwnedHandle,
         make_handler: def () thin raises -> Self.H,
         var parse_config: ParseConfig,
+        request_timeout_secs: Int = DEFAULT_REQUEST_TIMEOUT_SECS,
+        keep_alive_timeout_secs: Int = DEFAULT_KEEP_ALIVE_TIMEOUT_SECS,
     ):
         """Construct an H1TcpServer.
 
@@ -371,6 +388,8 @@ struct H1TcpServer[H: StreamHandler](Movable):
             listen_handle: Owned listening TCP socket (moved in).
             make_handler: Factory producing one H per connection.
             parse_config: HTTP/1.1 parse configuration (moved in).
+            request_timeout_secs: Budget from a request's first byte to its flushed response; each completed send restarts it.
+            keep_alive_timeout_secs: Idle budget before the first request and between requests.
         """
         self.listen_socket = Socket(listen_handle^)
         self.connections = List[Pointer[H1TcpConn[Self.H], MutUntrackedOrigin]]()
@@ -379,6 +398,9 @@ struct H1TcpServer[H: StreamHandler](Movable):
         self._accept_future = Optional[AcceptFuture](None)
         self._loop_ptr = null_ptr[WatchLoop, MutUntrackedOrigin]()
         self._needs_accept_rearm = False
+        self.request_timeout_us = UInt64(request_timeout_secs) * 1_000_000
+        self.keep_alive_timeout_us = UInt64(keep_alive_timeout_secs) * 1_000_000
+        self._sweep_timer = Optional[TimerFuture](None)
 
     def __deinit__(deinit self):
         """Free all heap-allocated connections on server teardown."""
@@ -390,7 +412,7 @@ struct H1TcpServer[H: StreamHandler](Movable):
     # ── Lifecycle — start ────────────────────────────────────────
 
     def start(mut self, mut loop: WatchLoop) raises:
-        """Submit the initial accept on the listener socket.
+        """Submit the initial accept and arm the deadline-sweep timer.
 
         Must be called after heap-allocation and before the first step.
         Stores the loop pointer for all I/O (accept, recv, send).
@@ -402,6 +424,7 @@ struct H1TcpServer[H: StreamHandler](Movable):
             unsafe_from_address=Int(Pointer(to=loop))
         )
         self._submit_accept()
+        self._sweep_timer = Optional(loop.timeout(DEADLINE_SWEEP_MS))
 
     def poll_connections(mut self):
         """Poll all connections' recv/send futures for completed results.
@@ -425,7 +448,18 @@ struct H1TcpServer[H: StreamHandler](Movable):
 
         Also retries any deferred accept rearm (set by transient errors
         or SQ-full conditions in _handle_accept_impl).
+
+        Each `DEADLINE_SWEEP_MS` tick first closes expired connections (it wakes `step(-1)`).
         """
+        if self._sweep_timer and self._sweep_timer.value().done():
+            var now = monotonic_us()
+            for ref c in self.connections:
+                if now - c[]._since_us > (self.request_timeout_us if c[]._busy else self.keep_alive_timeout_us):
+                    c[]._begin_close()
+            try:
+                self._sweep_timer = Optional(self._loop_ptr[].timeout(DEADLINE_SWEEP_MS))
+            except:
+                pass  # The done timer stays: retried next tick.
         var i = 0
         while i < len(self.connections):
             if self.connections[i][].is_drained():
@@ -522,7 +556,4 @@ struct H1TcpServer[H: StreamHandler](Movable):
         try:
             conn_ptr[]._submit_recv()
         except:
-            try:
-                conn_ptr[]._begin_close()
-            except:
-                pass
+            conn_ptr[]._begin_close()

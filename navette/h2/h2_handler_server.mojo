@@ -83,6 +83,8 @@ struct H2HandlerServer[H: StreamHandler](Movable):
     var _outbuf: List[Byte]
     var _streams: Dict[Int, PtrBox[_StreamCtx]]
     var _peer_addr: String
+    # Streams freed with both sides ended (resets excluded): the transport's proof of progress.
+    var completed_streams: Int
 
     # --- Constructors -------------------------------------------------------
 
@@ -97,6 +99,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[_StreamCtx]]()
         self._peer_addr = peer_addr^
+        self.completed_streams = 0
         self._flush_outbound()
 
     def __init__(out self, *, var handler: Self.H, config: H2Config, var peer_addr: String = "") raises:
@@ -107,6 +110,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
         self._outbuf = List[Byte]()
         self._streams = Dict[Int, PtrBox[_StreamCtx]]()
         self._peer_addr = peer_addr^
+        self.completed_streams = 0
         self._flush_outbound()
 
     def __deinit__(deinit self):
@@ -332,6 +336,7 @@ struct H2HandlerServer[H: StreamHandler](Movable):
             ctx_ptr.unsafe_deinit_pointee()
             ctx_ptr.unsafe_free()
             _ = self._streams.pop(stream_id)
+            self.completed_streams += 1
 
     def _drain_responses(mut self) raises:
         """Drain pending response data from stream contexts into the H2
