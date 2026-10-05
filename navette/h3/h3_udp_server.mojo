@@ -107,6 +107,7 @@ from bouclette.socle.platform import sockaddr_in6
 from navette.runtime.udp_socket_state import (
     UdpSocketState,
     advertised_max_udp_payload,
+    gso_run_limit,
     recv_payload_window,
 )
 from navette.tls.lib import TlsBackend
@@ -1306,9 +1307,10 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             if self._gso_max_segments > 1:
                 var seg_size = len(self._egress_backlog[i].data)
                 var run_end = i + 1
+                var run_cap = gso_run_limit(seg_size, self._gso_max_segments)
                 while (
                     run_end < n
-                    and run_end - i < self._gso_max_segments
+                    and run_end - i < run_cap
                     and len(self._egress_backlog[run_end].data) == seg_size
                     and _egress_addrs_eq(
                         self._egress_backlog[run_end].addr,

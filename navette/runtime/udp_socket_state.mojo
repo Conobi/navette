@@ -55,6 +55,13 @@ def recv_buffer_size_for(coalesced: Bool, name_capacity: Int, control_capacity: 
     return window + DELIVERY_HEADER_LEN + name_capacity + control_capacity
 
 
+def gso_run_limit(segment_size: Int, max_segments: Int) -> Int:
+    """Segments one GSO send may carry: the whole run must fit a 65,507-byte
+    UDP payload or the kernel fails it with EMSGSIZE (quiche caps a burst
+    the same way, `MAX_BUF_SIZE` in apps/src/bin/quiche-server.rs)."""
+    return max(1, min(max_segments, 65507 // max(segment_size, 1)))
+
+
 def advertised_max_udp_payload(configured: UInt64, window: Int) -> UInt64:
     """`max_udp_payload_size` to advertise: never more than the receive window (RFC 9000 Section 18.2)."""
     return min(configured, UInt64(window))
