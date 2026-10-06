@@ -210,6 +210,12 @@ comptime _TP_BUF_SIZE: Int = 1024
 # dropped silently: a spoofer can keep the idle timer alive by trickling
 # Initials, so idle alone does not bound an abandoned handshake.
 comptime HANDSHAKE_TIMEOUT_US: UInt64 = 10_000_000
+# Early 1-RTT packets a handshaking server holds (TQUIC v1.6.0
+# `max_undecryptable_packets`, src/lib.rs:404), each at most a 1500-byte
+# MTU's UDP payload: at most 10 x 1,472 B per handshaking connection, and
+# only for a sender that knows the CID from the server's first flight.
+comptime _EARLY_1RTT_MAX_PKTS: Int = 10
+comptime _EARLY_1RTT_MAX_PKT_LEN: Int = 1472
 # Close reasons for a server's CID transport parameters that fail RFC 9000
 # Section 7.3 on a client.
 comptime _REASON_ORIGINAL_DCID = "original_destination_connection_id does not match our first DCID"
@@ -457,6 +463,10 @@ struct QuicConnection(Movable):
     # must come back as retry_source_connection_id.
     var _retry_token: List[Byte]
     var _retry_scid: Optional[CidBuf]
+    # Server only: 1-RTT packets that arrived before the handshake
+    # completed, replayed by `_replay_early_1rtt`. Empty, so unallocated,
+    # unless the client's Finished came late.
+    var _early_1rtt: List[List[Byte]]
     var bytes_received: UInt64
     var bytes_sent: UInt64
     var events: List[QuicEvent]
@@ -563,6 +573,7 @@ struct QuicConnection(Movable):
         self.initial_dcid = CidBuf(copy=initial_dcid)
         self._retry_token = List[Byte]()
         self._retry_scid = None
+        self._early_1rtt = List[List[Byte]]()
         self.bytes_received = UInt64(0)
         self.bytes_sent = UInt64(0)
         self.events = List[QuicEvent]()
@@ -919,6 +930,8 @@ struct QuicConnection(Movable):
                 ph_sm = self.prof.stamp()
                 self._drive_handshake(now)
                 self._drain_zero_rtt_buffer(now, ecn_mark)
+                if self._early_1rtt and (self.state & CONN_HANDSHAKING) == 0:
+                    self._replay_early_1rtt(now, ecn_mark)
                 ph_sm = self.prof.elapsed(ph_sm)
             self.prof.end_iter(t_iter, ph_hp, ph_ae, ph_hdr, ph_fp, ph_sm)
             offset += pkt_len
@@ -1060,8 +1073,11 @@ struct QuicConnection(Movable):
             return (2, -1, -1, 0)
         var key_slot = ZERO_RTT_KEY_SLOT_IDX if space_idx == ZERO_RTT_SPACE_IDX else space_idx
         # RFC 9001 Section 5.7: a server holds 1-RTT keys early but must not
-        # process (and so ACK) 1-RTT packets before its TLS handshake ends.
+        # process (and so ACK) 1-RTT packets before its TLS handshake ends;
+        # it may keep them for later. A short-header packet ends the datagram.
         var early_1rtt = self.is_server and space_idx == 2 and (self.state & CONN_HANDSHAKING) != 0
+        if early_1rtt and len(self._early_1rtt) < _EARLY_1RTT_MAX_PKTS and remaining_len <= _EARLY_1RTT_MAX_PKT_LEN:
+            self._early_1rtt.append(List[Byte](Span(unsafe_ptr=remaining_ptr, length=remaining_len)))
         if early_1rtt or not self.protect.has_keys(key_slot):
             if header.is_long_header:
                 var skip = header.pn_offset + Int(header.payload_length)
@@ -1073,6 +1089,27 @@ struct QuicConnection(Movable):
         if pkt_len > remaining_len:
             return (2, -1, -1, 0)
         return (0, space_idx, key_slot, pkt_len)
+
+    def _replay_early_1rtt(mut self, now: UInt64, ecn_mark: UInt8) raises:
+        """Process the held early 1-RTT packets, in arrival order, once the handshake has completed.
+
+        Each goes through `recv` as if just received (TQUIC v1.6.0
+        `try_process_undecryptable_packets`, src/connection/connection.rs
+        1306, called on completion at 1144), so one that fails to decrypt or
+        repeats a packet number is dropped. The current datagram's ECN mark
+        stands in for theirs; its byte count and path flags are kept, since
+        the held bytes were counted on arrival and came earlier.
+        """
+        var pending = self._early_1rtt^
+        self._early_1rtt = List[List[Byte]]()
+        var authenticated = self.last_datagram_authenticated
+        var may_migrate = self.last_datagram_may_migrate
+        var received = self.bytes_received
+        for ref pkt in pending:
+            self.recv(Span(pkt), now, ecn_mark)
+        self.last_datagram_authenticated = authenticated
+        self.last_datagram_may_migrate = may_migrate
+        self.bytes_received = received
 
     def _run_anti_replay_check(mut self) raises:
         """Execute the one-shot anti-replay check against the early data store."""
@@ -1842,6 +1879,7 @@ struct QuicConnection(Movable):
     ) raises:
         """Handle CONNECTION_CLOSE: enter draining state, emit event."""
         self.state = self.state | CONN_DRAINING
+        self._early_1rtt = List[List[Byte]]()
         self.close.drain_timer = now + 3 * self._pto_interval()
         var reason = String("")
         for ref byte in reason_bytes:
@@ -3852,6 +3890,7 @@ struct QuicConnection(Movable):
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
         self.state = self.state | CONN_CLOSING
+        self._early_1rtt = List[List[Byte]]()
         self.close.timer = now + 3 * self._pto_interval()
         self.close.owed = True
         for s in range(3):
