@@ -58,7 +58,7 @@ from navette.tls.guard_tags import (
     GUARD_TAG_TLS_NO_ALPN,
     GUARD_TAG_TLS_END_OF_EARLY_DATA,
 )
-from navette.quic.connection import _tls_guard_tag_for
+from navette.quic.connection import _tls_guard_tag_for, _create_server_tls_conn, _create_client_tls_conn
 from navette.quic.cid import CID_ACTIVE
 from navette.quic.frame import Frame, StreamFrame, ResetStreamFrame
 from navette.quic.path import PathKey
@@ -4818,6 +4818,94 @@ def test_timeout_pacer_clause_order() raises:
     print("  test_timeout_pacer_clause_order: PASS")
 
 
+def test_server_flight_spans_two_write_hs_chunks() raises:
+    """The server's first drain takes two write_hs chunks and the client accepts them byte for byte.
+
+    ServerHello lands at Initial, then a key change moves the certificate
+    flight to Handshake. The client's Finished check covers the whole
+    transcript, so completing the handshake proves both chunks were copied
+    out of the stack buffer exactly.
+    """
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+    var params = _default_params()
+    var now = UInt64(1_000_000)
+    var client = QuicConnection.client(tls.shared(), client_config, "localhost", params, now)
+    var orig_dcid = List[Byte](client.initial_dcid.as_span())
+    var client_dcid = List[Byte](client.initial_dcid.as_span())
+    var server = QuicConnection.server(tls.shared(), server_config, params, Span(orig_dcid), Span(client_dcid), now)
+
+    # A post-quantum ClientHello can span two Initials; feed the client's
+    # datagrams until the server answers, without letting it send yet.
+    var c_dg = List[List[Byte]](capacity=1)
+    for _ in range(4):
+        if len(server.crypto_streams[1].send_buf) > 0:
+            break
+        now += UInt64(1_000)
+        var c_n = client.send(now, c_dg)
+        for i in range(c_n):
+            server.recv(Span(c_dg[i]), now)
+    var initial_len = len(server.crypto_streams[0].send_buf)
+    var handshake_len = len(server.crypto_streams[1].send_buf)
+    assert_true(initial_len > 0, "server wrote no Initial CRYPTO (ServerHello)")
+    assert_true(handshake_len > 400, "server Handshake flight lacks the certificate: " + String(handshake_len))
+
+    now = _establish_handshake(client, server, now)
+    _ = tls^
+    print("  test_server_flight_spans_two_write_hs_chunks: PASS")
+
+
+def test_empty_ffi_inputs_do_not_fault() raises:
+    """Zero-length TLS inputs reach rustls with a valid pointer; oversize ones raise."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert_bytes = ck[0].copy()
+    var key_bytes = ck[1].copy()
+    var ca_bytes = load_test_ca()
+    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
+    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
+
+    # Empty transport parameters: rustls may accept or reject, but must not fault.
+    try:
+        var h = _create_server_tls_conn(tls.shared(), server_config.handle(), List[Byte](), None)
+        _ = tls.shared().inner_ptr()[].quic_conn_free(h)
+    except:
+        pass
+    # Empty server name: rejected by rustls, not a fault.
+    var empty_sni_raised = False
+    try:
+        var h = _create_client_tls_conn(tls.shared(), client_config.handle(), "", List[Byte]())
+        _ = tls.shared().inner_ptr()[].quic_conn_free(h)
+    except:
+        empty_sni_raised = True
+    assert_true(empty_sni_raised, "empty server name accepted")
+    var long_sni_raised = False
+    try:
+        _ = _create_client_tls_conn(tls.shared(), client_config.handle(), String("a") * 256, List[Byte]())
+    except:
+        long_sni_raised = True
+    assert_true(long_sni_raised, "256-byte server name accepted")
+
+    var protect = PacketProtect(tls.shared())
+    protect.derive_initial_keys(Span(List[Byte]()), is_client=True)
+    assert_true(protect.has_keys(0), "empty DCID derived no Initial keys")
+    var long_dcid = List[Byte](length=21, fill=UInt8(7))
+    var long_dcid_raised = False
+    try:
+        protect.derive_initial_keys(Span(long_dcid), is_client=True)
+    except:
+        long_dcid_raised = True
+    assert_true(long_dcid_raised, "21-byte DCID accepted")
+    assert_true(protect.has_keys(0), "rejected DCID discarded the existing Initial keys")
+    _ = tls^
+    print("  test_empty_ffi_inputs_do_not_fault: PASS")
+
+
 def main() raises:
     print("test_quic_connection:")
     test_loopback_handshake()
@@ -4918,4 +5006,6 @@ def main() raises:
     test_send_datagram_refused_when_oversize()
     test_datagram_round_trip_client_to_server()
     test_timeout_pacer_clause_order()
+    test_server_flight_spans_two_write_hs_chunks()
+    test_empty_ffi_inputs_do_not_fault()
     print("All test_quic_connection tests passed.")

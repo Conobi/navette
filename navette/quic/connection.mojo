@@ -206,6 +206,7 @@ comptime CONN_CLOSED: UInt8 = 0x80
 
 comptime _WRITE_HS_BUF_SIZE: Int = 4096
 comptime _TP_BUF_SIZE: Int = 1024
+comptime _MAX_SNI_LEN: Int = 255
 # A server connection not established this long after it was created is
 # dropped silently: a spoofer can keep the idle timer alive by trickling
 # Initials, so idle alone does not bound an abandoned handshake.
@@ -238,72 +239,69 @@ comptime _REASON_RECV_GAPS = "too many gaps in a stream's receive buffer"
 def _create_server_tls_conn(
     lib: SharedLibrary,
     config_handle: Int32,
-    tp_bytes: List[Byte],
+    var tp_bytes: List[Byte],
     profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]],
 ) raises -> Int32:
-    """Create a QUIC server TLS connection via FFI, return conn handle."""
+    """Create a QUIC server TLS connection via FFI, return conn handle.
+
+    `tp_bytes` is passed to rustls in place; an empty list gets a dummy byte
+    so the pointer stays valid for the length-0 call.
+    """
     var tp_len = len(tp_bytes)
-    var tp_buf_buf = Owned[UInt8](tp_len)
-    var tp_buf = tp_buf_buf.ptr()
-    for i in range(tp_len):
-        tp_buf[unsafe_offset=i] = tp_bytes[i]
-    var out_handle_buf = Owned[Int32](1)
-    var out_handle = out_handle_buf.ptr()
-    out_handle[unsafe_offset=0] = Int32(-1)
+    if tp_len == 0:
+        tp_bytes.append(0)
+    var out_handle = Int32(-1)
     var rlib = lib.inner_ptr()
     var t_tls_start: UInt64 = 0
     comptime if PROFILE_ACCEPT:
         t_tls_start = monotonic_us()
     var rc = rlib[].quic_server_conn_new(
-        config_handle, Int32(1), tp_buf, Int32(tp_len), out_handle,
+        config_handle, Int32(1), Pointer(to=tp_bytes[0]), Int32(tp_len), Pointer(to=out_handle),
     )
+    _ = tp_bytes
     comptime if PROFILE_ACCEPT:
         if profile_ptr is not None:
             profile_ptr.value()[].record_alloc_tls_handle_us(monotonic_us() - t_tls_start)
     if rc < 0:
         var err = rlib[].last_error()
         raise "quic_server_conn_new failed: " + err
-    var conn_handle = out_handle[unsafe_offset=0]
-    _ = out_handle_buf
-    if conn_handle < 0:
+    if out_handle < 0:
         raise "quic_server_conn_new returned invalid handle"
-    return conn_handle
+    return out_handle
 
 
 def _create_client_tls_conn(
     lib: SharedLibrary,
     config_handle: Int32,
     server_name: String,
-    tp_bytes: List[Byte],
+    var tp_bytes: List[Byte],
 ) raises -> Int32:
-    """Create a QUIC client TLS connection via FFI, return conn handle."""
+    """Create a QUIC client TLS connection via FFI, return conn handle.
+
+    Raises on a server name over 255 bytes (a DNS name is at most 253).
+    """
     var sni_bytes = server_name.as_bytes()
     var sni_len = len(sni_bytes)
-    var sni_buf_buf = Owned[UInt8](sni_len)
-    var sni_buf = sni_buf_buf.ptr()
-    for i in range(sni_len):
-        sni_buf[unsafe_offset=i] = sni_bytes[i]
+    if sni_len > _MAX_SNI_LEN:
+        raise "quic_client_conn_new: server name longer than 255 bytes"
+    var sni = InlineArray[UInt8, _MAX_SNI_LEN](uninitialized=True)
+    Span(sni)[:sni_len].copy_from(sni_bytes)
     var tp_len = len(tp_bytes)
-    var tp_buf_buf = Owned[UInt8](tp_len)
-    var tp_buf = tp_buf_buf.ptr()
-    for i in range(tp_len):
-        tp_buf[unsafe_offset=i] = tp_bytes[i]
-    var out_handle_buf = Owned[Int32](1)
-    var out_handle = out_handle_buf.ptr()
-    out_handle[unsafe_offset=0] = Int32(-1)
+    if tp_len == 0:
+        tp_bytes.append(0)
+    var out_handle = Int32(-1)
     var rlib = lib.inner_ptr()
     var rc = rlib[].quic_client_conn_new(
-        config_handle, Int32(1), sni_buf, Int32(sni_len),
-        tp_buf, Int32(tp_len), out_handle,
+        config_handle, Int32(1), Pointer(to=sni[0]), Int32(sni_len),
+        Pointer(to=tp_bytes[0]), Int32(tp_len), Pointer(to=out_handle),
     )
+    _ = tp_bytes
     if rc < 0:
         var err = rlib[].last_error()
         raise "quic_client_conn_new failed: " + err
-    var conn_handle = out_handle[unsafe_offset=0]
-    _ = out_handle_buf
-    if conn_handle < 0:
+    if out_handle < 0:
         raise "quic_client_conn_new returned invalid handle"
-    return conn_handle
+    return out_handle
 
 
 def _tls_guard_tag_for(
@@ -706,9 +704,8 @@ struct QuicConnection(Movable):
         params_copy.initial_scid = List[Byte](copy=local_cid)
         _apply_m3c_defaults(params_copy)
         serialize_transport_params(params_copy, tp_writer)
-        var tp_bytes = tp_writer.finish()
         var conn_handle = _create_client_tls_conn(
-            lib, config_handle, server_name, tp_bytes,
+            lib, config_handle, server_name, tp_writer.finish(),
         )
         var conn = QuicConnection(
             is_server=False, lib=lib, conn_handle=conn_handle,
@@ -773,9 +770,8 @@ struct QuicConnection(Movable):
         if len(retry_scid) > 0:
             params_copy.retry_scid = retry_scid.copy()
         serialize_transport_params(params_copy, tp_writer)
-        var tp_bytes = tp_writer.finish()
         var conn_handle = _create_server_tls_conn(
-            lib, config_handle, tp_bytes, profile_ptr,
+            lib, config_handle, tp_writer.finish(), profile_ptr,
         )
         var conn = QuicConnection(
             is_server=True, lib=lib, conn_handle=conn_handle,
@@ -2479,8 +2475,7 @@ struct QuicConnection(Movable):
         """Drain crypto data and feed/read from TLS state machine.
 
         On established connections with no pending crypto data, the TLS
-        engine has nothing to process — skip the FFI round-trip and the
-        three Owned buffer allocations inside _drain_tls_output.
+        engine has nothing to process, so the FFI round-trip is skipped.
         """
         if self.conn_handle < 0:
             return
@@ -2515,12 +2510,7 @@ struct QuicConnection(Movable):
             self.crypto_streams[level].drain(crypto_data)
             if len(crypto_data) == 0:
                 continue
-            var t_input_start = self.prof.stamp()
-            var data_buf_owned = Owned[UInt8](len(crypto_data))
-            var data_buf = data_buf_owned.ptr()
-            for i in range(len(crypto_data)):
-                data_buf[unsafe_offset=i] = crypto_data[i]
-            var input_marshalling_us = self.prof.elapsed(t_input_start)
+            var data_buf = Pointer(to=crypto_data[0])
             var t_start = self.prof.stamp_ffi()
             var rc: Int32 = Int32(0)
             var out_sm_us: UInt64 = UInt64(0)
@@ -2540,8 +2530,9 @@ struct QuicConnection(Movable):
                 rc = lib[].quic_conn_read_hs(
                     self.conn_handle, data_buf, Int32(len(crypto_data)),
                 )
+            _ = crypto_data
             self.prof.record_ffi_read_hs_end(
-                t_start, input_marshalling_us, out_sm_us, out_lookup_us,
+                t_start, UInt64(0), out_sm_us, out_lookup_us,
             )
             if rc < 0:
                 var alert_code = lib[].quic_conn_alert(self.conn_handle)
@@ -2553,33 +2544,26 @@ struct QuicConnection(Movable):
         mut self,
         lib: Pointer[mut=True, T=RustlsLibrary, origin=_],
     ) raises:
-        """Loop write_hs to drain TLS output and install new keys."""
-        var out_buf_owned = Owned[UInt8](_WRITE_HS_BUF_SIZE)
-        var out_buf = out_buf_owned.ptr()
-        var out_written_owned = Owned[Int32](1)
-        var out_written = out_written_owned.ptr()
-        var out_kc_owned = Owned[UInt8](1)
-        var out_kc = out_kc_owned.ptr()
+        """Loop write_hs to drain TLS output and install new keys.
+
+        The 4 KB output buffer lives on the stack: this runs on the event
+        loop's thread stack, never inside a 64 KB handler coroutine.
+        """
+        var out_buf = InlineArray[UInt8, _WRITE_HS_BUF_SIZE](uninitialized=True)
         while True:
-            out_written[unsafe_offset=0] = Int32(0)
-            out_kc[unsafe_offset=0] = UInt8(0)
+            var written = Int32(0)
+            var kc = UInt8(0)
             var t_start = self.prof.stamp_ffi()
             var rc = lib[].quic_conn_write_hs(
-                self.conn_handle, out_buf,
-                Int32(_WRITE_HS_BUF_SIZE), out_written, out_kc,
+                self.conn_handle, Pointer(to=out_buf[0]),
+                Int32(_WRITE_HS_BUF_SIZE), Pointer(to=written), Pointer(to=kc),
             )
             self.prof.record_ffi_write_hs_end(t_start)
             if rc < 0:
                 var err = lib[].last_error()
                 raise "quic_conn_write_hs failed: " + err
-            var kc = out_kc[unsafe_offset=0]
-            var written = Int(out_written[unsafe_offset=0])
             if written > 0:
-                var target_level = self.current_level
-                var tls_data = List[Byte](capacity=written)
-                for i in range(written):
-                    tls_data.append(out_buf[unsafe_offset=i])
-                self.crypto_streams[target_level].write(Span(tls_data))
+                self.crypto_streams[self.current_level].write(Span(out_buf)[:Int(written)])
             if kc != UInt8(0):
                 self._install_new_keys(lib, kc)
             if written == 0 and kc == UInt8(0):
@@ -2591,19 +2575,15 @@ struct QuicConnection(Movable):
         kc: UInt8,
     ) raises:
         """Take keys from TLS and install at the appropriate level."""
-        var keys_handle_buf_owned = Owned[Int32](1)
-        var keys_handle_buf = keys_handle_buf_owned.ptr()
-        keys_handle_buf[unsafe_offset=0] = Int32(-1)
+        var new_keys = Int32(-1)
         var t_start = self.prof.stamp_ffi()
         var take_rc = lib[].quic_conn_take_keys(
-            self.conn_handle, keys_handle_buf
+            self.conn_handle, Pointer(to=new_keys)
         )
         self.prof.record_ffi_take_keys_end(t_start)
         if take_rc < 0:
             var err = lib[].last_error()
             raise "quic_conn_take_keys failed: " + err
-        var new_keys = keys_handle_buf[unsafe_offset=0]
-        _ = keys_handle_buf_owned
         if kc == UInt8(1):
             self.protect.set_keys(1, new_keys)
             self.current_level = 1
@@ -2672,23 +2652,18 @@ struct QuicConnection(Movable):
 
     def _apply_peer_transport_params(mut self, now: UInt64) raises:
         """Read, parse, validate, and apply peer transport parameters."""
-        var tp_buf_owned = Owned[UInt8](_TP_BUF_SIZE)
-        var tp_buf = tp_buf_owned.ptr()
-        var tp_written_owned = Owned[Int32](1)
-        var tp_written = tp_written_owned.ptr()
-        tp_written[unsafe_offset=0] = Int32(0)
+        var tp_buf = InlineArray[UInt8, _TP_BUF_SIZE](uninitialized=True)
+        var tp_written = Int32(0)
         var lib = self._lib.inner_ptr()
         var rc = lib[].quic_conn_transport_params(
-            self.conn_handle, tp_buf, Int32(_TP_BUF_SIZE), tp_written,
+            self.conn_handle, Pointer(to=tp_buf[0]), Int32(_TP_BUF_SIZE), Pointer(to=tp_written),
         )
-        if rc != Int32(0) or Int(tp_written[unsafe_offset=0]) <= 0:
+        if rc != Int32(0) or tp_written <= 0:
             return
-        var tp_len = Int(tp_written[unsafe_offset=0])
+        var tp_len = Int(tp_written)
         var tp_bytes = List[Byte](capacity=tp_len)
         for i in range(tp_len):
-            tp_bytes.append(tp_buf[unsafe_offset=i])
-        _ = tp_written_owned
-        _ = tp_buf_owned
+            tp_bytes.append(tp_buf[i])
         var peer_tp: TransportParams
         try:
             peer_tp = parse_transport_params(Span(tp_bytes))

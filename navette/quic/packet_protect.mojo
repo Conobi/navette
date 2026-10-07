@@ -16,7 +16,6 @@
 from std.memory import Pointer
 from std.collections import Span
 
-from navette.util.owned_alloc import Owned
 from navette.tls.lib import SharedLibrary
 
 comptime _AEAD_TAG_LEN: Int = 16
@@ -156,17 +155,12 @@ struct PacketProtect(Movable):
         """
         self.discard_keys(ZERO_RTT_KEY_SLOT_IDX)
 
-        var out_handle_buf = Owned[Int32](1)
-        var out_handle = out_handle_buf.ptr()
-        out_handle[unsafe_offset=0] = Int32(-1)
+        var out_handle = Int32(-1)
         var rlib = self._lib.inner_ptr()
-        var rc = rlib[].quic_server_conn_zero_rtt_keys(conn_handle, out_handle)
+        var rc = rlib[].quic_server_conn_zero_rtt_keys(conn_handle, Pointer(to=out_handle))
 
         if rc == Int32(0):
-            var kh = out_handle[unsafe_offset=0]
-            # Keep out_handle_buf alive through the post-FFI read above.
-            _ = out_handle_buf
-            self.keys[ZERO_RTT_KEY_SLOT_IDX] = kh
+            self.keys[ZERO_RTT_KEY_SLOT_IDX] = out_handle
             return True
         elif rc == Int32(1):
             return False
@@ -177,24 +171,24 @@ struct PacketProtect(Movable):
     def derive_initial_keys(mut self, dcid: Span[Byte, _], is_client: Bool) raises:
         """Derive QUIC v1 Initial keys from a destination connection ID.
 
-        Stores the resulting keys handle at level 0 (Initial). Raises if
-        the FFI call fails (returns -1).
+        Stores the resulting keys handle at level 0 (Initial). Raises on a
+        DCID over 20 bytes (RFC 9000 Section 17.2) or if the FFI call fails.
 
         Args:
             dcid: The destination connection ID bytes.
             is_client: True for client-side keys, False for server-side.
         """
-        self.discard_keys(0)  # Free existing Initial keys if any
         var dcid_len = len(dcid)
-        var dcid_owned = Owned[UInt8](dcid_len)
-        var dcid_buf = dcid_owned.ptr()
-        for i in range(dcid_len):
-            dcid_buf[unsafe_offset=i] = dcid[i]
+        if dcid_len > 20:
+            raise "derive_initial_keys: DCID longer than 20 bytes"
+        self.discard_keys(0)  # Free existing Initial keys if any
+        var dcid_buf = InlineArray[UInt8, 20](uninitialized=True)
+        Span(dcid_buf)[:dcid_len].copy_from(dcid)
 
         var is_client_i32 = Int32(1) if is_client else Int32(0)
         var handle = self._lib.inner_ptr()[].initial_keys(
             Int32(1),  # version = QUIC v1
-            dcid_buf,
+            Pointer(to=dcid_buf[0]),
             Int32(dcid_len),
             is_client_i32,
         )
@@ -380,39 +374,6 @@ struct PacketProtect(Movable):
             raise "encrypt_payload failed: " + self._lib.inner_ptr()[].last_error()
 
         return Int(rc)
-
-    def encrypt_payload(
-        self,
-        mut buf: List[Byte],
-        level: Int,
-        pn: UInt64,
-        header: Span[Byte, _],
-        plaintext: Span[Byte, _],
-    ) raises:
-        """Encrypt payload, appending the ciphertext (without header) to buf."""
-        var header_len = len(header)
-        var pt_len = len(plaintext)
-        var capacity = header_len + pt_len + _AEAD_TAG_LEN
-
-        # Build contiguous buffer: header + plaintext + tag space
-        var scratch_owned = Owned[UInt8](capacity)
-        var scratch = scratch_owned.ptr()
-        for i in range(header_len):
-            scratch[unsafe_offset=i] = header[i]
-        for i in range(pt_len):
-            scratch[unsafe_offset=header_len + i] = plaintext[i]
-        for i in range(_AEAD_TAG_LEN):
-            scratch[unsafe_offset=header_len + pt_len + i] = 0
-
-        var ct_len = self.encrypt_payload_in_place(
-            level, pn, scratch, header_len, pt_len, capacity,
-        )
-
-        # Append ciphertext (without header) to buf.
-        buf.extend(Span(unsafe_ptr=scratch.unsafe_offset(header_len), length=ct_len))
-
-        # Keep scratch_owned alive through the post-FFI read above.
-        _ = scratch_owned
 
     # -- Header protection (encrypt direction) ---------------------------------
 
