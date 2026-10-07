@@ -140,8 +140,8 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     variant of the 0-RTT policy."""
 
     # Test-only: when True the next `drain_datagrams` clears it and raises
-    # before touching the connection, so the server's refresh-on-raise
-    # path can be exercised. Never set by production code.
+    # after draining, so the server's refresh-on-raise and drop-on-raise
+    # paths can be exercised. Never set by production code.
     var _raise_on_next_drain: Bool
 
     def __init__(
@@ -221,17 +221,17 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             else:
                 self._drain_responses(now)
 
-    def drain_datagrams(mut self, now: UInt64, hold: Bool = False) raises -> List[List[Byte]]:
-        """Send-until-empty drain, capped, or held; see `H3Connection.drain_datagrams`.
+    def drain_datagrams(mut self, now: UInt64, mut out: List[List[Byte]], hold: Bool = False) raises:
+        """Send-until-empty drain appended to `out`, capped, or held; see `H3Connection.drain_datagrams`.
 
         Test-only: with `_raise_on_next_drain` set, clears it and raises
-        before the connection is touched, so no datagram is produced and no
-        state moves.
+        after the drain, as a `send()` raising mid-drain would: the
+        datagrams already in `out` are built but never sent.
         """
+        self._h3.drain_datagrams(now, out, hold)
         if self._raise_on_next_drain:
             self._raise_on_next_drain = False
             raise "H3HandlerServer: forced drain failure (test-only)"
-        return self._h3.drain_datagrams(now, hold)
 
     def should_close(self) -> Bool:
         return self._h3.is_closed()

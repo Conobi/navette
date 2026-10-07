@@ -19,7 +19,6 @@ from tests.h3.test_h3_udp_server import (
     _params,
     _send_get,
     _send_partial_request,
-    _addrs_eq,
 )
 from navette.quic.path import MAX_PENDING_CHALLENGES
 
@@ -72,7 +71,7 @@ def test_full_cap_victim_gets_nothing() raises:
     h.advance(UInt64(4_000_000))
     _ = _drain_victim(h, victim, 2)
     assert_equal_int(len(h.server_conn(0)[]._h3._quic.path.validator.pending), 0, "pending challenges expired")
-    assert_true(_addrs_eq(h.server_addr(0), home), "destination reverted to the validated address")
+    assert_true(h.server_addr(0) == home, "destination reverted to the validated address")
     _ = junk^
     _ = victim^
     _ = c^

@@ -477,14 +477,13 @@ struct PacketNumberSpace(Copyable, Movable):
         ack.ack_delay = self.ack_delay_field(now, ack_delay_exponent)
         ack.first_ack_range = self.ack_ranges[0].end - self.ack_ranges[0].start
 
-        var ranges = List[AckRange](capacity=self.ack_ranges_len)
+        ack.ranges.reserve(self.ack_ranges_len - 1)  # 0 extra ranges: no allocation
         for i in range(1, self.ack_ranges_len):
             var prev_start = self.ack_ranges[i - 1].start
             var curr_end = self.ack_ranges[i].end
             var gap = prev_start - curr_end - 2
             var ack_range = self.ack_ranges[i].end - self.ack_ranges[i].start
-            ranges.append(AckRange(gap, ack_range))
-        ack.ranges = ranges^
+            ack.ranges.append(AckRange(gap, ack_range))
 
         # Include ECN counts when we've received ECN-marked packets (RFC 9000 §13.4.3).
         if not self.recv_ecn.is_zero():

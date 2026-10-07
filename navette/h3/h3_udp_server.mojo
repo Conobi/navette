@@ -233,23 +233,6 @@ def _timer_arm_ms(deadline: Optional[UInt64], now: UInt64) -> UInt64:
     return ms
 
 
-def _path_key_to_sockaddr(key: PathKey) -> List[Byte]:
-    """The Linux sockaddr_in / sockaddr_in6 blob for `key`, the inverse of `_sockaddr_to_path_key`.
-
-    IPv6 flowinfo is zero; the scope id is kept so link-local peers route.
-    """
-    var v6 = key.family == Int32(10)
-    var out = List[Byte](length=28 if v6 else 16, fill=Byte(0))
-    out[0] = UInt8(key.family & 0xFF)
-    out[2] = UInt8(key.port >> 8)
-    out[3] = UInt8(key.port & 0xFF)
-    for i in range(16 if v6 else 4):
-        out[(8 + i) if v6 else (4 + i)] = key.addr[i if v6 else 12 + i]
-    for i in range(4 if v6 else 0):  # sin6_scope_id, host order (LE)
-        out[24 + i] = UInt8((key.scope_id >> UInt32(8 * i)) & 0xFF)
-    return out^
-
-
 def _sockaddr_to_path_key(
     buf_ptr: Pointer[mut=True, T=UInt8, origin=_],
     addr_offset: Int,
@@ -316,62 +299,25 @@ def _sockaddr_to_path_key(
         return PathKey.zero()
 
 
-def _set_msg_peer_raw(mut msg: Message, addr: List[Byte]):
-    """Set a Message's peer from raw sockaddr bytes (Linux layout).
+def _set_msg_peer(mut msg: Message, key: PathKey):
+    """Address `msg` to `key`, the inverse of `_sockaddr_to_path_key`; an unknown family leaves the peer unset.
 
-    Parses sa_family (LE on x86_64) to choose between AF_INET and
-    AF_INET6, builds the typed address, and calls `msg.set_peer`.
-    Does nothing when the addr is too short or has an unknown family.
+    IPv6 flowinfo is zero; the scope id is kept so link-local peers route.
     """
-    if len(addr) < 4:
-        return
-
-    # sa_family is little-endian on Linux x86_64.
-    var family = Int(addr[0]) | (Int(addr[1]) << 8)
-    # Port is network-order (big-endian).
-    var port = (UInt16(addr[2]) << 8) | UInt16(addr[3])
-
-    if family == 2:  # AF_INET
-        if len(addr) < 8:
-            return
-        msg.set_peer(SocketAddrV4(
-            addr[4], addr[5], addr[6], addr[7], port=port,
-        ))
-    elif family == 10:  # AF_INET6
-        if len(addr) < 24:
-            return
-        # 8 segments of 2 bytes each, big-endian, at offset [8..24).
-        # SocketAddrV6 expects host-order segments.
-        var s0 = (UInt16(addr[8]) << 8) | UInt16(addr[9])
-        var s1 = (UInt16(addr[10]) << 8) | UInt16(addr[11])
-        var s2 = (UInt16(addr[12]) << 8) | UInt16(addr[13])
-        var s3 = (UInt16(addr[14]) << 8) | UInt16(addr[15])
-        var s4 = (UInt16(addr[16]) << 8) | UInt16(addr[17])
-        var s5 = (UInt16(addr[18]) << 8) | UInt16(addr[19])
-        var s6 = (UInt16(addr[20]) << 8) | UInt16(addr[21])
-        var s7 = (UInt16(addr[22]) << 8) | UInt16(addr[23])
-        var scope_id = UInt32(0)
-        if len(addr) >= 28:
-            scope_id = (
-                UInt32(addr[24])
-                | (UInt32(addr[25]) << 8)
-                | (UInt32(addr[26]) << 16)
-                | (UInt32(addr[27]) << 24)
-            )
+    ref a = key.addr
+    if key.family == Int32(2):
+        msg.set_peer(SocketAddrV4(a[12], a[13], a[14], a[15], port=key.port))
+    elif key.family == Int32(10):
         msg.set_peer(SocketAddrV6(
-            s0, s1, s2, s3, s4, s5, s6, s7,
-            port=port, scope_id=scope_id,
+            _seg(a, 0), _seg(a, 1), _seg(a, 2), _seg(a, 3), _seg(a, 4), _seg(a, 5), _seg(a, 6), _seg(a, 7),
+            port=key.port, scope_id=key.scope_id,
         ))
 
 
-def _egress_addrs_eq(a: List[Byte], b: List[Byte]) -> Bool:
-    """Byte-compare two raw sockaddr blobs for GSO grouping."""
-    if len(a) != len(b):
-        return False
-    for i in range(len(a)):
-        if a[i] != b[i]:
-            return False
-    return True
+@always_inline
+def _seg(a: InlineArray[UInt8, 16], i: Int) -> UInt16:
+    """Host-order IPv6 segment `i` of the network-order address `a`."""
+    return (UInt16(a[2 * i]) << 8) | UInt16(a[2 * i + 1])
 
 
 # ── Pending datagram (ingress queue) ──────────────────────────────────────────
@@ -425,38 +371,19 @@ struct PendingDatagram(Copyable, Movable):
 # ── Egress packet (queued for flush submission) ─────────────────────────────
 
 
+@fieldwise_init
 struct EgressPacket(Movable):
-    """A queued egress datagram — payload + destination address + ECN mark.
+    """A queued egress datagram: payload, destination, owning slot (-1 for a stateless reply) and ECN mark.
 
-    Buffered during CQE callbacks (timeout drains) and injected
-    cross-transport responses. Submitted via DatagramSink in
-    flush()'s _submit_egress phase.
+    The destination stays a `PathKey` until `_submit_egress` writes it
+    into the `Message`, so queueing a datagram copies no address bytes
+    to the heap.
     """
 
     var data: List[Byte]
-    var addr: List[Byte]
+    var dest: PathKey
     var conn_idx: Int
     var ecn_mark: UInt8
-
-    def __init__(
-        out self,
-        var data: List[Byte],
-        var addr: List[Byte],
-        conn_idx: Int,
-        ecn_mark: UInt8,
-    ):
-        """Construct an egress packet.
-
-        Args:
-            data: Packet payload bytes (moved in).
-            addr: Peer sockaddr bytes for sendmsg routing (moved in).
-            conn_idx: Index into conn_slots for bookkeeping.
-            ecn_mark: ECN codepoint from the QUIC connection's ecn_mark().
-        """
-        self.data = data^
-        self.addr = addr^
-        self.conn_idx = conn_idx
-        self.ecn_mark = ecn_mark
 
 
 # ── Connection slot + DCID demux entry ──────────────────────────────────────
@@ -618,6 +545,8 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
     # Egress backlog — packets queued for the next _submit_egress.
     var _egress_backlog: List[EgressPacket]
+    # One connection's drain, reused (cleared) per drain; its datagrams move into the backlog.
+    var _drain_out: List[List[Byte]]
 
     # Maximum datagrams that may be packed into one GSO super-buffer.
     # Starts at 1 (no GSO); wired from UdpSocketState in start().
@@ -759,6 +688,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self._dgram_refcounts = List[UInt16]()
 
         self._egress_backlog = List[EgressPacket]()
+        self._drain_out = List[List[Byte]]()
 
         self._gso_max_segments = 1
         self._socket_state = Optional[UdpSocketState](None)
@@ -1312,10 +1242,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                     run_end < n
                     and run_end - i < run_cap
                     and len(self._egress_backlog[run_end].data) == seg_size
-                    and _egress_addrs_eq(
-                        self._egress_backlog[run_end].addr,
-                        self._egress_backlog[i].addr,
-                    )
+                    and self._egress_backlog[run_end].dest == self._egress_backlog[i].dest
                 ):
                     run_end += 1
 
@@ -1339,9 +1266,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                         combined^,
                         control_capacity=_SEND_CONTROL_CAPACITY_GSO,
                     )
-                    _set_msg_peer_raw(
-                        msg, self._egress_backlog[i].addr
-                    )
+                    _set_msg_peer(msg, self._egress_backlog[i].dest)
                     try:
                         msg.set_ecn(
                             self._egress_backlog[i].ecn_mark
@@ -1375,17 +1300,14 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 break
 
             var data = List[Byte]()
-            var addr = List[Byte]()
             swap(data, self._egress_backlog[i].data)
-            swap(addr, self._egress_backlog[i].addr)
-            var ecn_mark = self._egress_backlog[i].ecn_mark
             var msg = Message(
                 data^,
                 control_capacity=_SEND_CONTROL_CAPACITY,
             )
-            _set_msg_peer_raw(msg, addr)
+            _set_msg_peer(msg, self._egress_backlog[i].dest)
             try:
-                msg.set_ecn(ecn_mark)
+                msg.set_ecn(self._egress_backlog[i].ecn_mark)
             except:
                 pass
 
@@ -1412,20 +1334,14 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     def _take_backlog_entry(mut self, j: Int) -> EgressPacket:
         """Move `_egress_backlog[j]` out, leaving an empty husk behind.
 
-        Mojo cannot move out of a list subscript; swapping the two lists
-        with fresh empties is the O(1) equivalent. The husk is discarded
+        Mojo cannot move out of a list subscript; swapping the payload
+        with a fresh empty is the O(1) equivalent. The husk is discarded
         when the backlog is replaced at the end of `_submit_egress`.
         """
         var data = List[Byte]()
-        var addr = List[Byte]()
         swap(data, self._egress_backlog[j].data)
-        swap(addr, self._egress_backlog[j].addr)
-        return EgressPacket(
-            data^,
-            addr^,
-            self._egress_backlog[j].conn_idx,
-            self._egress_backlog[j].ecn_mark,
-        )
+        ref e = self._egress_backlog[j]
+        return EgressPacket(data^, PathKey(copy=e.dest), e.conn_idx, e.ecn_mark)
 
     # ── Ingress (DatagramStream drain) ─────────────────────────────
 
@@ -1550,14 +1466,12 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 # Keep the lease alive until _flush_ingress completes.
                 self._live_datagrams.append(dgram_opt^)
 
-    def _queue_stateless(mut self, name: Span[Byte, _]):
-        """Queue the guard's last stateless reply (`out`) to the raw sockaddr `name`.
+    def _queue_stateless(mut self, var dest: PathKey):
+        """Queue the guard's last stateless reply (`out`) to `dest`.
 
         Copies it at once: the next stateless reply overwrites `out`.
         """
-        var data = List[Byte](self._guard.value().out)
-        var addr = List[Byte](name)
-        self._egress_backlog.append(EgressPacket(data^, addr^, -1, UInt8(0)))
+        self._egress_backlog.append(EgressPacket(List[Byte](self._guard.value().out), dest^, -1, UInt8(0)))
 
     # ── Per-connection construction ──────────────────────────────
 
@@ -1691,7 +1605,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         except:
             return -1
         if verdict == ADMIT_REPLY:
-            self._queue_stateless(name)
+            self._queue_stateless(_sockaddr_to_path_key(pd.name_ptr, 0, pd.name_len))
         if verdict != ADMIT_CREATE:
             return -1
 
@@ -1903,21 +1817,15 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         """
         try:
             ref quic = self.conn_slots[conn_idx].h3[].quic()
-            var datagrams = self.conn_slots[conn_idx].h3[].drain_datagrams(now, hold=len(self._egress_backlog) >= EGRESS_HOLD_AT)
-            # An empty drain (a timer pass with nothing due) needs no sockaddr.
-            if len(datagrams) > 0:
-                var dest = _path_key_to_sockaddr(quic.send_destination())
-                var ecn = quic.ecn_mark()
-                for i in range(len(datagrams)):
-                    # Move the payload out of the drained list (swap with an
-                    # empty husk) rather than copying 1200 bytes per datagram.
-                    var pkt = List[Byte]()
-                    swap(pkt, datagrams[i])
-                    if len(pkt) == 0:
-                        continue
-                    self._egress_backlog.append(
-                        EgressPacket(pkt^, dest.copy(), conn_idx, ecn)
-                    )
+            # Cleared here, so a raise mid-drain queues nothing it built.
+            self._drain_out.clear()
+            self.conn_slots[conn_idx].h3[].drain_datagrams(now, self._drain_out, hold=len(self._egress_backlog) >= EGRESS_HOLD_AT)
+            var dest = quic.send_destination()
+            var ecn = quic.ecn_mark()
+            for ref dg in self._drain_out:
+                var pkt = List[Byte]()
+                swap(pkt, dg)  # Mojo cannot move out of a subscript: swap with an empty husk
+                self._egress_backlog.append(EgressPacket(pkt^, PathKey(copy=dest), conn_idx, ecn))
         finally:
             # A raise above (drain, anti-amp accounting) still leaves a
             # fresh cache: the PTO armed by the dropped datagrams must be

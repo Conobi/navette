@@ -82,13 +82,15 @@ def _pump_server_client[H: StreamHandler](
     """Exchange datagrams between server adapter and raw client H3Connection."""
     for _ in range(rounds):
         now += UInt64(10_000)
-        var s_dgs = server.drain_datagrams(now)
+        var s_dgs = List[List[Byte]]()
+        server.drain_datagrams(now, s_dgs)
         for i in range(len(s_dgs)):
             try:
                 client.feed_datagram(Span(s_dgs[i]), now)
             except:
                 pass
-        var c_dgs = client.drain_datagrams(now)
+        var c_dgs = List[List[Byte]]()
+        client.drain_datagrams(now, c_dgs)
         for i in range(len(c_dgs)):
             try:
                 server.feed_datagram(Span(c_dgs[i]), now)
@@ -251,13 +253,15 @@ def _pump_e2e[H: StreamHandler](
     """Exchange datagrams between HandlerServer and H3Session."""
     for _ in range(rounds):
         now += UInt64(10_000)
-        var s_dgs = server.drain_datagrams(now)
+        var s_dgs = List[List[Byte]]()
+        server.drain_datagrams(now, s_dgs)
         for i in range(len(s_dgs)):
             try:
                 client.feed_datagram(Span(s_dgs[i]), now)
             except:
                 pass
-        var c_dgs = client.drain_datagrams(now)
+        var c_dgs = List[List[Byte]]()
+        client.drain_datagrams(now, c_dgs)
         for i in range(len(c_dgs)):
             try:
                 server.feed_datagram(Span(c_dgs[i]), now)
@@ -490,21 +494,25 @@ def test_h3_drain_terminates() raises:
     # Idle exchange: the drain runs dry within the cap, and a second call
     # at the same clock returns nothing.
     now += UInt64(10_000)
-    var first = server.drain_datagrams(now)
+    var first = List[List[Byte]]()
+    server.drain_datagrams(now, first)
     assert_true(
         len(first) < MAX_DATAGRAMS_PER_DRAIN,
         "idle drain must terminate below the cap",
     )
     assert_true(not server.has_pending_egress(), "idle drain must not report pending egress")
-    var second = server.drain_datagrams(now)
+    var second = List[List[Byte]]()
+    server.drain_datagrams(now, second)
     assert_equal_int(len(second), 0, "second idle drain must be empty")
 
     # Local close: exactly one CLOSE datagram, then empty.
     server._h3._quic.close_app(UInt64(0x100), String("bye"), now)
-    var close_dgs = server.drain_datagrams(now)
+    var close_dgs = List[List[Byte]]()
+    server.drain_datagrams(now, close_dgs)
     assert_equal_int(len(close_dgs), 1, "close drain must yield exactly one datagram")
     assert_true(not server.has_pending_egress(), "close drain must not report pending egress")
-    var after_close = server.drain_datagrams(now)
+    var after_close = List[List[Byte]]()
+    server.drain_datagrams(now, after_close)
     assert_equal_int(len(after_close), 0, "drain after the CLOSE must be empty")
     print("  test_h3_drain_terminates: PASS")
 
@@ -541,27 +549,35 @@ def test_h3_drain_cap_is_observable() raises:
 
     _ = _send_get(client)
     now += UInt64(10_000)
-    var c_dgs = client.drain_datagrams(now)
+    var c_dgs = List[List[Byte]]()
+    client.drain_datagrams(now, c_dgs)
     for i in range(len(c_dgs)):
         server.feed_datagram(Span(c_dgs[i]), now)
 
     now += UInt64(10_000)
-    var first = server.drain_datagrams(now)
+    var first = List[List[Byte]]()
+    server.drain_datagrams(now, first)
     assert_equal_int(
         len(first), MAX_DATAGRAMS_PER_DRAIN,
         "first drain must stop exactly at the cap",
     )
     assert_true(server.has_pending_egress(), "capped drain must report pending egress")
 
-    var second = server.drain_datagrams(now)
-    assert_true(len(second) > 0, "second drain must carry the remainder")
+    # Drained into a non-empty list: the cap counts what this drain appends.
+    var second = List[List[Byte]]()
+    second.append(List[Byte]())
+    server.drain_datagrams(now, second)
+    assert_true(len(second) > 1, "second drain must carry the remainder")
+    assert_equal_int(len(second[0]), 0, "drain appends, never clears")
+    _ = second.pop(0)
 
     # Keep draining without feeding the client: the total must cover the
     # body and the loop must eventually run dry (egress_capped cleared).
     var total = len(first) + len(second)
     var calls = 2
     while server.has_pending_egress() and calls < 32:
-        var more = server.drain_datagrams(now)
+        var more = List[List[Byte]]()
+        server.drain_datagrams(now, more)
         total += len(more)
         calls += 1
     assert_true(not server.has_pending_egress(), "drain must run dry once the response is out")

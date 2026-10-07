@@ -84,10 +84,12 @@ struct _Pair(Movable):
         for _ in range(60):
             self.now += UInt64(10_000)
             for _ in range(32):
+                buf.clear()
                 if self.client.send(self.now, buf) == 0:
                     break
                 self.server.recv(Span(buf[0]), self.now)
             for _ in range(32):
+                buf.clear()
                 if self.server.send(self.now, buf) == 0:
                     break
                 self.client.recv(Span(buf[0]), self.now)
@@ -98,10 +100,12 @@ struct _Pair(Movable):
         for _ in range(8):
             self.now += UInt64(30_000)
             for _ in range(32):
+                buf.clear()
                 if self.client.send(self.now, buf) == 0:
                     break
                 self.server.recv(Span(buf[0]), self.now)
             for _ in range(32):
+                buf.clear()
                 if self.server.send(self.now, buf) == 0:
                     break
                 self.client.recv(Span(buf[0]), self.now)
@@ -127,6 +131,7 @@ def test_silent_peer_gets_bounded_challenges() raises:
     var buf = List[List[Byte]](capacity=1)
     for _ in range(3000):
         p.now += UInt64(1_000)
+        buf.clear()
         sent += p.server.send(p.now, buf)
     assert_true(sent <= 16, "datagrams in 3 s to a silent new address: " + String(sent))
     print("  test_silent_peer_gets_bounded_challenges: PASS")
@@ -140,6 +145,7 @@ def test_challenge_resent_from_timeout() raises:
     var buf = List[List[Byte]](capacity=1)
     var most = 0
     for _ in range(200):
+        buf.clear()
         _ = p.server.send(p.now, buf)
         if len(p.server.path.validator.pending) == 0:
             break

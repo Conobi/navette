@@ -34,8 +34,10 @@ def _handshake(tls: TlsBackend, max_early_data: UInt32, stream_window: UInt64) r
     var s_dg = List[List[Byte]]()
     for _ in range(30):
         now += 10_000
+        c_dg.clear()
         for i in range(client.send(now, c_dg)):
             server.recv(Span(c_dg[i]), now)
+        s_dg.clear()
         for i in range(server.send(now, s_dg)):
             client.recv(Span(s_dg[i]), now)
         if client.is_established() and server.is_established():

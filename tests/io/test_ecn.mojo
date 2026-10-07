@@ -54,12 +54,14 @@ def _establish(
     var s_dg = List[List[Byte]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -83,12 +85,14 @@ def _pump(
     var b_dg = List[List[Byte]](capacity=1)
     for _ in range(rounds):
         now += UInt64(10_000)
+        a_dg.clear()
         var a_n = a.send(now, a_dg)
         for i in range(a_n):
             try:
                 b.recv(Span(a_dg[i]), now)
             except:
                 pass
+        b_dg.clear()
         var b_n = b.send(now, b_dg)
         for i in range(b_n):
             try:
@@ -320,12 +324,14 @@ def test_ecn_probing_to_disabled_no_counts() raises:
     var c_ack = List[List[Byte]](capacity=1)
     for _ in range(5):
         now += UInt64(10_000)
+        s_dg2.clear()
         _ = server.send(now, s_dg2)
         for i in range(len(s_dg2)):
             try:
                 client.recv(Span(s_dg2[i]), now)
             except:
                 pass
+        c_ack.clear()
         _ = client.send(now, c_ack)
         for i in range(len(c_ack)):
             try:

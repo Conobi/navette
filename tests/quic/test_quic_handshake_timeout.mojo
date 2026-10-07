@@ -35,8 +35,10 @@ def test_abandoned_handshake_closes_silently() raises:
     assert_true(Bool(t) and t.value() <= deadline, "the handshake deadline bounds timeout()")
 
     batch.clear()
+    batch.clear()
     _ = server.send(deadline - 1, batch)
     assert_true(not server.is_closed(), "alive just before the deadline")
+    batch.clear()
     batch.clear()
     assert_equal_int(server.send(deadline, batch), 0, "nothing sent at the deadline")
     assert_true(server.is_closed(), "closed at the deadline")

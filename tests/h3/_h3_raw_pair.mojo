@@ -107,6 +107,7 @@ struct RawPair(Movable):
         for _ in range(rounds):
             self.now += UInt64(10_000)
             for _ in range(64):
+                scratch.clear()
                 var n = self.cli.send(self.now, scratch)
                 if n == 0:
                     break
@@ -118,7 +119,8 @@ struct RawPair(Movable):
                             self.srv.feed_datagram(Span(scratch[i]), self.now)
                     except:
                         pass
-            var dgs = self.srv.drain_datagrams(self.now)
+            var dgs = List[List[Byte]]()
+            self.srv.drain_datagrams(self.now, dgs)
             for i in range(len(dgs)):
                 try:
                     self.cli.recv(Span(dgs[i]), self.now)

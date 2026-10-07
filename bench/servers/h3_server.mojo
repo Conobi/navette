@@ -1022,7 +1022,8 @@ struct H3UdpHandler(Movable):
         _submit_egress sends them all via WatchLoop.send_msg after
         _flush_impl completes.
         """
-        var datagrams = self.conn_h3s[conn_idx][].drain_datagrams(now)
+        var datagrams = List[List[Byte]]()
+        self.conn_h3s[conn_idx][].drain_datagrams(now, datagrams)
         for i in range(len(datagrams)):
             # Move the payload out of the drained list (swap with an
             # empty husk) rather than copying 1200 bytes per datagram.

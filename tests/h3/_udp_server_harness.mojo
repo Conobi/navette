@@ -24,10 +24,11 @@ from bouclette import WatchLoop, Socket, SocketAddrV6
 
 from navette.h3.connection import H3Connection
 from navette.h3.h3_handler_server import H3HandlerServer
-from navette.h3.h3_udp_server import H3UdpServer, _path_key_to_sockaddr
+from navette.h3.h3_udp_server import H3UdpServer
 from navette.http.handler import StreamHandler
 from navette.protect.config import ProtectionConfig
 from navette.quic.connection import QuicConnection
+from navette.quic.path import PathKey
 from navette.quic.trans_param import TransportParams
 from navette.runtime.socket_helpers import udp_listener
 from navette.tls.config import QuicClientConfig, QuicServerConfig
@@ -221,9 +222,9 @@ struct UdpServerHarness[H: StreamHandler](Movable):
         """The per-connection adapter behind slot `i` (no bounds check)."""
         return self.srv[].conn_slots[i].h3
 
-    def server_addr(self, i: Int) -> List[Byte]:
-        """Slot `i`'s send destination as a raw sockaddr blob."""
-        return _path_key_to_sockaddr(self.srv[].conn_slots[i].h3[].quic().send_destination())
+    def server_addr(self, i: Int) -> PathKey:
+        """Slot `i`'s send destination."""
+        return self.srv[].conn_slots[i].h3[].quic().send_destination()
 
     # ── Client side ───────────────────────────────────────────────
 
@@ -251,14 +252,17 @@ struct UdpServerHarness[H: StreamHandler](Movable):
 
     def client_send(mut self, mut client: HarnessClient) raises -> Int:
         """Drain the client's datagrams onto its socket; returns the count."""
-        var dgs = client.h3.drain_datagrams(self.now())
+        var dgs = List[List[Byte]]()
+        client.h3.drain_datagrams(self.now(), dgs)
         for i in range(len(dgs)):
             _ = client.sock.send(Span(dgs[i]))
         return len(dgs)
 
     def client_capture(mut self, mut client: HarnessClient) raises -> List[List[Byte]]:
         """Drain the client's datagrams without sending them, so a test can replay them from any socket."""
-        return client.h3.drain_datagrams(self.now())
+        var dgs = List[List[Byte]]()
+        client.h3.drain_datagrams(self.now(), dgs)
+        return dgs^
 
     def send_raw(self, ref sock: Socket, dg: List[Byte]) raises:
         """Write one prebuilt datagram on an arbitrary socket."""

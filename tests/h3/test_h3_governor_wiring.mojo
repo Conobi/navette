@@ -13,6 +13,7 @@ from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.protect.config import ProtectionConfig
 from navette.protect.governor import Mode, UNLIMITED
+from navette.quic.path import PathKey
 from navette.quic.trans_param import TransportParams, default_transport_params
 
 from tests._test_util import assert_true
@@ -69,11 +70,11 @@ def _send_get(mut client: HarnessClient, fin: Bool = True) raises -> UInt64:
     return sid
 
 
-def _fill_backlog(mut h: UdpServerHarness[OkHandler], n: Int, addr: List[Byte]):
+def _fill_backlog(mut h: UdpServerHarness[OkHandler], n: Int, addr: PathKey):
     """Replace the egress backlog with `n` dummies (connection index -1) for `addr`."""
     h.srv[]._egress_backlog.clear()
     for _ in range(n):
-        h.srv[]._egress_backlog.append(EgressPacket(List[Byte](length=40, fill=0), addr.copy(), -1, UInt8(0)))
+        h.srv[]._egress_backlog.append(EgressPacket(List[Byte](length=40, fill=0), PathKey(copy=addr), -1, UInt8(0)))
 
 
 def _served(h: UdpServerHarness[OkHandler], conn_idx: Int) -> Bool:
@@ -93,7 +94,7 @@ def test_egress_hold_and_rotation() raises:
     var junk = h.new_socket()  # dummies land here, never on a client
     var addr = h.server_addr(0)
     var port = junk.local_addr_v6().port
-    addr[2], addr[3] = UInt8(port >> 8), UInt8(port & 0xFF)
+    addr.port = port
     _fill_backlog(h, EGRESS_HOLD_AT, addr)
     _ = _send_get(c0)
     _ = _send_get(c1)

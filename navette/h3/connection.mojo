@@ -281,12 +281,6 @@ struct H3Connection(Movable):
     # rather than because `send()` ran dry; the server treats such a
     # connection as due for another drain right now.
     var egress_capped:               Bool
-    # Reusable out-parameter for `QuicConnection.send`, which emits at most
-    # one datagram per call; `drain_datagrams` calls it in a loop and moves
-    # each result into its own accumulator, so this buffer amortizes the
-    # outer List allocation across every `send()` call instead of just
-    # across one `drain_datagrams` invocation.
-    var _send_scratch:               List[List[Byte]]
     # Reusable scratch buffer for frame encoding in send_headers / send_goaway /
     # _bootstrap_local_streams — avoids a fresh allocation per call.
     var _wire_scratch:               List[Byte]
@@ -331,7 +325,6 @@ struct H3Connection(Movable):
         self._local_h3_datagram_enabled = False
         self._peer_h3_datagram_enabled = False
         self.profile_ptr = None
-        self._send_scratch = List[List[Byte]](capacity=1)
         self._wire_scratch = List[Byte](capacity=256)
         self.shed_above, self.retry_after_s, self.long_lived, self._gov_opened, self._gov_done, self.refused_503 = UInt64.MAX, 1, 0, 0, 0, 0
 
@@ -539,40 +532,29 @@ struct H3Connection(Movable):
             if self.profile_ptr is not None:
                 self.profile_ptr.value()[].call_tracker.record(CallId.POLL_QUIC_EVENTS, rdtsc() - _ct_start)
 
-    def drain_datagrams(mut self, now: UInt64, hold: Bool = False) raises -> List[List[Byte]]:
-        """Collect UDP payloads until `send()` runs dry or the drain cap hits.
+    def drain_datagrams(mut self, now: UInt64, mut out: List[List[Byte]], hold: Bool = False) raises:
+        """Append UDP payloads to `out` until `send()` runs dry or the drain cap hits.
 
         `QuicConnection.send` emits at most one datagram per call; this
         loop keeps calling it, so a whole response leaves in one drain
-        instead of one datagram per received packet. Stopping at
-        `MAX_DATAGRAMS_PER_DRAIN` sets `egress_capped`, which the server
-        reads through `has_pending_egress()` to schedule the remainder.
-        A closing connection yields its CLOSE and nothing more.
+        instead of one datagram per received packet. Stopping after
+        `MAX_DATAGRAMS_PER_DRAIN` appended datagrams sets `egress_capped`,
+        which the server reads through `has_pending_egress()` to schedule
+        the remainder. A closing connection yields its CLOSE and nothing more.
 
-        If `send()` raises mid-loop the datagrams already collected are
-        dropped: their packets are recorded in the PN spaces and loss
-        detection retransmits them, exactly as a single dropped datagram.
-        `hold` (egress backlog full) drains nothing but marks the connection capped, so it stays due.
+        If `send()` raises mid-loop the datagrams already appended stay in
+        `out` and the caller drops them: their packets are recorded in the
+        PN spaces and loss detection retransmits them, exactly as a single
+        dropped datagram. `hold` (egress backlog full) drains nothing but
+        marks the connection capped, so it stays due.
         """
-        if hold:
-            self.egress_capped = True
-            return List[List[Byte]]()
-        var out = List[List[Byte]](capacity=MAX_DATAGRAMS_PER_DRAIN)
-        while len(out) < MAX_DATAGRAMS_PER_DRAIN:
-            var n = self._quic.send(now, self._send_scratch)
-            if n == 0:
+        var cap = len(out) + MAX_DATAGRAMS_PER_DRAIN
+        while not hold and len(out) < cap:
+            # One CLOSE per trigger; nothing else may follow it.
+            if self._quic.send(now, out) == 0 or self._quic.is_closing():
                 self.egress_capped = False
-                return out^
-            for bi in range(n):
-                var dg = List[Byte]()
-                swap(dg, self._send_scratch[bi])
-                out.append(dg^)
-            if self._quic.is_closing():
-                # One CLOSE per trigger; nothing else may follow it.
-                self.egress_capped = False
-                return out^
+                return
         self.egress_capped = True
-        return out^
 
     def take_opened(mut self) -> UInt64:
         """Peer request streams opened since the last call: the requests that arrived this pass."""

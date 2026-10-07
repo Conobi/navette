@@ -7,8 +7,8 @@
 #
 # Usage:
 #   var conn = QuicConnection.client(lib, cfg, "example.com", tp, now)
-#   var datagrams = List[List[Byte]](capacity=1)
-#   _ = conn.send(now, datagrams)        # Initial with ClientHello
+#   var datagrams = List[List[Byte]]()
+#   _ = conn.send(now, datagrams)        # appends the Initial with ClientHello
 #   conn.recv(response_bytes, now)       # Feed server reply
 #   var ev = conn.poll()                 # HANDSHAKE_COMPLETE, etc.
 
@@ -2897,16 +2897,14 @@ struct QuicConnection(Movable):
     # ── Send path ────────────────────────────────────────────────────
 
     def send(mut self, now: UInt64, mut out: List[List[Byte]]) raises -> Int:
-        """Build at most one datagram into `out`; returns 0 or 1.
+        """Append at most one datagram to `out`; returns how many (0 or 1).
 
-        `out` is cleared (length reset, capacity kept) and reused across
-        calls so the caller amortizes the outer List allocation instead of
-        getting a fresh one back on every call.
+        Never clears `out`: a drain loop collects a whole flight into one
+        caller-owned list, and a caller reusing `out` clears it itself.
         """
         var _ct_start = UInt64(0)
         comptime if PROFILE_ACCEPT:
             _ct_start = rdtsc()
-        out.clear()
         self._check_timers(now)
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
             comptime if PROFILE_ACCEPT:
@@ -2976,20 +2974,17 @@ struct QuicConnection(Movable):
                 if self.prof.ptr is not None:
                     self.prof.ptr.value()[].call_tracker.record(CallId.SEND, rdtsc() - _ct_start)
             return 0
-        var result = self._commit_plans_to_datagram(
+        var dg = self._commit_plans_to_datagram(
             plans, budget, closing, all_close_committed, now,
         )
         self._scratch_plans = plans^
-        for i in range(len(result)):
-            var dg = List[Byte]()
-            swap(dg, result[i])
-            if self.path.has_pending():
-                self.path.record_dest_send(len(dg))
-            out.append(dg^)
+        if self.path.has_pending():
+            self.path.record_dest_send(len(dg))
+        out.append(dg^)
         comptime if PROFILE_ACCEPT:
             if self.prof.ptr is not None:
                 self.prof.ptr.value()[].call_tracker.record(CallId.SEND, rdtsc() - _ct_start)
-        return len(out)
+        return 1
 
     def _plan_space_packet(
         mut self,
@@ -3108,7 +3103,7 @@ struct QuicConnection(Movable):
         closing: Bool,
         all_close_committed: Bool,
         now: UInt64,
-    ) raises -> List[List[Byte]]:
+    ) raises -> List[Byte]:
         """Allocate PNs, build+encrypt packets, coalesce into a datagram."""
         var pad_to = 0
         for ref plan in plans:
@@ -3174,9 +3169,7 @@ struct QuicConnection(Movable):
             self.close.last_sent = now
         debug_assert(len(datagram) <= budget, "datagram exceeds its budget")
         self.bytes_sent += UInt64(len(datagram))
-        var datagrams = List[List[Byte]](capacity=1)
-        datagrams.append(datagram^)
-        return datagrams^
+        return datagram^
 
     def _datagram_budget(self) -> Int:
         """Delegate to packet_builder.datagram_budget."""

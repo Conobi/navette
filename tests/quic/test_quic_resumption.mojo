@@ -207,12 +207,14 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     var established1 = False
     for _ in range(30):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client1.send(now, c_dg)
         for i in range(c_n):
             try:
                 server1.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server1.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -228,12 +230,14 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     # client1.  rustls issues 2 tickets by default; 8 rounds is enough.
     for _ in range(8):
         now += UInt64(10_000)
+        s_dg.clear()
         var s_n2 = server1.send(now, s_dg)
         for i in range(s_n2):
             try:
                 client1.recv(Span(s_dg[i]), now)
             except:
                 pass
+        c_dg.clear()
         var c_n2 = client1.send(now, c_dg)
         for i in range(c_n2):
             try:
@@ -267,12 +271,14 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     var established2 = False
     for _ in range(30):
         now += UInt64(10_000)
+        c2_dg.clear()
         var c2_n = client2.send(now, c2_dg)
         for i in range(c2_n):
             try:
                 server2.recv(Span(c2_dg[i]), now)
             except:
                 pass
+        s2_dg.clear()
         var s2_n = server2.send(now, s2_dg)
         for i in range(s2_n):
             try:
@@ -347,12 +353,14 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     var established = False
     for _ in range(30):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -438,12 +446,14 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
     var established = False
     for _ in range(30):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:

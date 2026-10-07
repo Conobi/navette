@@ -90,7 +90,8 @@ def test_window_narrowed_then_released() raises:
     p.pump(10)
     assert_true(p.cli.stream_map.peer_max_streams_bidi == limit, "no MAX_STREAMS while D + 25 is under the limit")
     assert_true(p.srv.apply_governor(UNLIMITED, 0, 1, UNLIMITED, 1), "release grants")
-    var dgs = p.srv.drain_datagrams(p.now)
+    var dgs = List[List[Byte]]()
+    p.srv.drain_datagrams(p.now, dgs)
     assert_true(len(dgs) > 0, "the grant leaves without a client datagram")
     for i in range(len(dgs)):
         p.cli.recv(Span(dgs[i]), p.now)
@@ -105,9 +106,12 @@ def test_shed_above_share_and_hold() raises:
         var shed = p.srv.shed_if_over_share(sids[i])
         assert_true(shed == (i >= 32), "request " + String(i + 1) + " shed=" + String(shed))
     assert_true(p.srv.refused_503 == 8, "eight 503s")
-    assert_true(len(p.srv.drain_datagrams(p.now, hold=True)) == 0, "a held drain sends nothing")
+    var held = List[List[Byte]]()
+    p.srv.drain_datagrams(p.now, held, hold=True)
+    assert_true(len(held) == 0, "a held drain sends nothing")
     assert_true(p.srv.has_pending_egress(), "and leaves the connection due")
-    var dgs = p.srv.drain_datagrams(p.now)
+    var dgs = List[List[Byte]]()
+    p.srv.drain_datagrams(p.now, dgs)
     assert_true(len(dgs) > 0, "the next drain sends")
     for i in range(len(dgs)):
         p.cli.recv(Span(dgs[i]), p.now)
@@ -249,12 +253,14 @@ struct _HPair(Movable):
         for _ in range(rounds):
             self.now += UInt64(10_000)
             for _ in range(64):
+                scratch.clear()
                 var n = self.cli.send(self.now, scratch)
                 if n == 0:
                     break
                 for i in range(n):
                     self.srv.feed_datagram(Span(scratch[i]), self.now)
-            var dgs = self.srv.drain_datagrams(self.now)
+            var dgs = List[List[Byte]]()
+            self.srv.drain_datagrams(self.now, dgs)
             for i in range(len(dgs)):
                 self.cli.recv(Span(dgs[i]), self.now)
             while self.cli.poll():

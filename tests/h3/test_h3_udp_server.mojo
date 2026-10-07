@@ -45,6 +45,7 @@ from navette.http.body import BodyFrame
 from navette.quic.cc.cc_trait import AckedPacket
 from navette.quic.cid import dcid_to_u64
 from navette.runtime.socket_helpers import udp_listener
+from navette.quic.path import PathKey
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig
@@ -274,15 +275,6 @@ def _server_pto_us[H: StreamHandler](harness: UdpServerHarness[H], slot: Int) ->
     var conn = harness.server_conn(slot)
     var mad = conn[]._h3._quic.local_params.max_ack_delay * UInt64(1000)
     return conn[]._h3._quic.recovery.pto_timeout(mad)
-
-
-def _addrs_eq(a: List[Byte], b: List[Byte]) -> Bool:
-    if len(a) != len(b):
-        return False
-    for i in range(len(a)):
-        if a[i] != b[i]:
-            return False
-    return True
 
 
 def _alloc_clients[H: StreamHandler](
@@ -671,7 +663,7 @@ def test_timer_reserved_before_egress() raises:
         for j in range(64):
             payload.append(UInt8((i + j) & 0xFF))
         h.srv[]._egress_backlog.append(
-            EgressPacket(payload^, List[Byte](copy=addr), 0, UInt8(0))
+            EgressPacket(payload^, PathKey(copy=addr), 0, UInt8(0))
         )
     h.flush()
     assert_equal_int(h.srv[]._timeout_count, timeouts + 1, "timeout() issued before egress submission")
@@ -863,7 +855,8 @@ def test_closing_conn_addr_frozen() raises:
 
     # A valid client datagram, held back for later replay from elsewhere.
     _ = _send_partial_request(c)
-    var held = c.h3.drain_datagrams(h.now())
+    var held = List[List[Byte]]()
+    c.h3.drain_datagrams(h.now(), held)
     assert_true(len(held) >= 1, "client produced a datagram to replay")
 
     # Provoke a server-side close through ingress (SETTINGS on a request
@@ -888,7 +881,7 @@ def test_closing_conn_addr_frozen() raises:
     _ = h.step(20)
     h.flush()
     _ = h.step(20)
-    assert_true(_addrs_eq(h.server_addr(0), old_addr), "address frozen while closing")
+    assert_true(h.server_addr(0) == old_addr, "address frozen while closing")
     var to_spoof = h.recv_raw(spoof, 30)
     assert_equal_int(len(to_spoof), 0, "nothing goes to the spoofed source")
     var to_old = h.client_recv(c, 30, feed=False)
@@ -906,7 +899,8 @@ def test_closing_conn_addr_frozen() raises:
     assert_true(not h2.server_conn(0)[].is_closing_or_draining(), "open before the spoof")
 
     _ = _send_partial_request(c2)
-    var held2 = c2.h3.drain_datagrams(h2.now())
+    var held2 = List[List[Byte]]()
+    c2.h3.drain_datagrams(h2.now(), held2)
     var spoof2 = h2.new_socket()
     h2.send_raw(spoof2, held2[0])
     _ = h2.step(20)
@@ -916,7 +910,7 @@ def test_closing_conn_addr_frozen() raises:
         not h2.server_conn(0)[].is_closing_or_draining(),
         "a new source with migration disabled is dropped, not closed",
     )
-    assert_true(_addrs_eq(h2.server_addr(0), old_addr2), "the dropped datagram did not move the address")
+    assert_true(h2.server_addr(0) == old_addr2, "the dropped datagram did not move the address")
     assert_equal_int(len(h2.recv_raw(spoof2, 30)), 0, "nothing goes to the new source")
     print("PASS: test_closing_conn_addr_frozen")
 
@@ -995,7 +989,7 @@ def test_capped_egress_slot_not_starved() raises:
     assert_true(capped_flushes >= 1, "the 200 kB response must hit the cap at least once")
     assert_true(received >= MAX_DATAGRAMS_PER_DRAIN, "client received only " + String(received))
     assert_equal_int(h.slot_count(), 2, "B untouched")
-    assert_true(_addrs_eq(h.server_addr(1), b_addr), "slot 1 is still B")
+    assert_true(h.server_addr(1) == b_addr, "slot 1 is still B")
     var b_conn = h.server_conn(1)
     var b_closing = b_conn[].is_closing_or_draining()
     assert_true(
@@ -1027,7 +1021,8 @@ def test_closed_in_feed_reaped_before_rearm() raises:
 
     # A valid datagram from A, held back for replay after A is draining.
     _ = _send_partial_request(a)
-    var held = a.h3.drain_datagrams(h.now())
+    var held = List[List[Byte]]()
+    a.h3.drain_datagrams(h.now(), held)
     assert_true(len(held) >= 1, "client A produced a datagram to replay")
 
     var pto = _server_pto_us(h, 0)
@@ -1043,7 +1038,7 @@ def test_closed_in_feed_reaped_before_rearm() raises:
     _ = h.step(20)
     h.flush()
     assert_equal_int(h.slot_count(), 1, "A reaped in the flush that fed the datagram")
-    assert_true(_addrs_eq(h.server_addr(0), b_addr), "B moved into slot 0")
+    assert_true(h.server_addr(0) == b_addr, "B moved into slot 0")
 
     h.srv[]._timer = Optional[TimerFuture](None)
     var timeouts = h.srv[]._timeout_count
@@ -1166,7 +1161,8 @@ def test_only_touched_slots_recomputed() raises:
     _settle(h)
 
     _ = _send_partial_request(clients[0][])
-    var dgs = clients[0][].h3.drain_datagrams(h.now())
+    var dgs = List[List[Byte]]()
+    clients[0][].h3.drain_datagrams(h.now(), dgs)
     assert_true(len(dgs) >= 1, "client 0 produced a datagram")
     h.send_raw(clients[0][].sock, dgs[0])
     _ = h.step(20)
@@ -1424,6 +1420,29 @@ def test_drain_raises_still_refreshes() raises:
     print("PASS: test_drain_raises_still_refreshes")
 
 
+def test_raise_mid_drain_queues_nothing() raises:
+    """A drain that raises after building a datagram queues none of it, then or on the next drain."""
+    var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
+    var c = h.new_client()
+    assert_true(h.handshake(c), "handshake")
+    _settle(h)
+    h.srv[]._egress_backlog.clear()
+    h.server_conn(0)[]._h3._quic.close_app(UInt64(0x100), String("bye"), h.now())
+    h.server_conn(0)[]._raise_on_next_drain = True
+    var raised = False
+    try:
+        h.srv[]._drain_and_send(0, h.now())
+    except:
+        raised = True
+    assert_true(raised, "the drain raised")
+    assert_equal_int(len(h.srv[]._drain_out), 1, "the CLOSE was built")
+    assert_equal_int(len(h.srv[]._egress_backlog), 0, "nothing queued by the raising drain")
+    h.srv[]._drain_and_send(0, h.now())
+    assert_equal_int(len(h.srv[]._egress_backlog), 0, "the next drain does not queue the stale CLOSE")
+    _ = h.slot_count()  # keep the harness alive past the last slot dereference
+    print("PASS: test_raise_mid_drain_queues_nothing")
+
+
 def test_timer_pass_reads_the_cache() raises:
     """timer-pass-reads-the-cache: a poisoned cache alone makes the pass drain that slot."""
     var h = UdpServerHarness[StubHandler](make_stub_handler, _params(), _params())
@@ -1576,6 +1595,10 @@ def main() raises:
         test_drain_raises_still_refreshes()
     except e:
         failed.append(String("test_drain_raises_still_refreshes: ") + String(e))
+    try:
+        test_raise_mid_drain_queues_nothing()
+    except e:
+        failed.append(String("test_raise_mid_drain_queues_nothing: ") + String(e))
     try:
         test_timer_pass_reads_the_cache()
     except e:

@@ -113,12 +113,14 @@ def _establish_handshake(
     var s_dg = List[List[Byte]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -147,12 +149,14 @@ def _pump(
     var b_dg = List[List[Byte]](capacity=1)
     for _ in range(rounds):
         now += UInt64(10_000)
+        a_dg.clear()
         var a_n = a.send(now, a_dg)
         for i in range(a_n):
             try:
                 b.recv(Span(a_dg[i]), now)
             except:
                 pass
+        b_dg.clear()
         var b_n = b.send(now, b_dg)
         for i in range(b_n):
             try:
@@ -240,12 +244,14 @@ def test_loopback_handshake() raises:
     var server_dgrams = List[List[Byte]](capacity=1)
     for round_idx in range(max_rounds):
         now += UInt64(10_000)
+        client_dgrams.clear()
         var client_n = client.send(now, client_dgrams)
         for i in range(client_n):
             try:
                 server.recv(Span(client_dgrams[i]), now)
             except e:
                 print("  [round " + String(round_idx) + "] server.recv: " + String(e))
+        server_dgrams.clear()
         var server_n = server.send(now, server_dgrams)
         for i in range(server_n):
             try:
@@ -328,12 +334,14 @@ def test_connection_close() raises:
     var s_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -363,12 +371,14 @@ def test_connection_close() raises:
     var server_dgrams = List[List[Byte]](capacity=1)
     for _ in range(5):
         now += UInt64(10_000)
+        client_dgrams.clear()
         var client_n = client.send(now, client_dgrams)
         for i in range(client_n):
             try:
                 server.recv(Span(client_dgrams[i]), now)
             except:
                 pass
+        server_dgrams.clear()
         var server_n = server.send(now, server_dgrams)
         for i in range(server_n):
             try:
@@ -430,12 +440,14 @@ def test_idle_timeout() raises:
     var s_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -547,12 +559,14 @@ def test_handshake_with_loss() raises:
     var c_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
                 client.recv(Span(s_dg[i]), now)
             except:
                 pass
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
@@ -653,12 +667,14 @@ def test_handshake_with_retry() raises:
     var s_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -707,6 +723,7 @@ def test_coalesced_packets() raises:
     for _ in range(8):
         for i in range(client_n):
             server.recv(Span(client_dgrams[i]), now)
+        client_dgrams.clear()
         client_n = client.send(now, client_dgrams)
         if client_n == 0:
             break
@@ -738,12 +755,14 @@ def test_coalesced_packets() raises:
     var s_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -834,12 +853,14 @@ def test_anti_amplification() raises:
     var s_dg = List[List[Byte]](capacity=1)
     for round_idx in range(20):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -959,6 +980,7 @@ def _drive_response(
     var c_dg = List[List[Byte]](capacity=1)
     for _ in range(max_rounds):
         now += UInt64(10_000)
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         server_dgs += s_n
         for i in range(s_n):
@@ -969,6 +991,7 @@ def _drive_response(
         if got[1]:
             fin_seen = True
             break
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             server.recv(Span(c_dg[i]), now)
@@ -1078,12 +1101,14 @@ def test_64kb_body_across_sends_intact() raises:
         # partially-drained send buffer.
         for _ in range(3):
             now += UInt64(10_000)
+            s_dg.clear()
             var s_n = server.send(now, s_dg)
             for i in range(s_n):
                 client.recv(Span(s_dg[i]), now)
             var got = client.recv_stream_data(sid)
             for i in range(len(got[0])):
                 body.append(got[0][i])
+            c_dg.clear()
             var c_n = client.send(now, c_dg)
             for i in range(c_n):
                 server.recv(Span(c_dg[i]), now)
@@ -1091,6 +1116,7 @@ def test_64kb_body_across_sends_intact() raises:
         if fin_seen:
             break
         now += UInt64(10_000)
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             client.recv(Span(s_dg[i]), now)
@@ -1099,6 +1125,7 @@ def test_64kb_body_across_sends_intact() raises:
             body.append(got[0][i])
         if got[1]:
             fin_seen = True
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             server.recv(Span(c_dg[i]), now)
@@ -1844,6 +1871,7 @@ def test_reordered_ack_ranges_free_stream_credit() raises:
     var resp = List[List[Byte]]()
     var s_dg = List[List[Byte]](capacity=1)
     for _ in range(10):
+        s_dg.clear()
         var n = server.send(now, s_dg)
         if n == 0:
             break
@@ -2720,12 +2748,14 @@ def test_ecn_disabled_after_probing() raises:
     var s_dg = List[List[Byte]](capacity=1)
     for _ in range(5):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -3684,12 +3714,14 @@ def test_on_handshake_complete_close_transport_on_invalid_tp() raises:
     var s_dg = List[List[Byte]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:
@@ -4847,6 +4879,7 @@ def test_server_flight_spans_two_write_hs_chunks() raises:
         if len(server.crypto_streams[1].send_buf) > 0:
             break
         now += UInt64(1_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             server.recv(Span(c_dg[i]), now)

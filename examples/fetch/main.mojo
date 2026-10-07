@@ -727,6 +727,7 @@ def _request_via_h3(
                 + ". Retry with --http2 or --http1.1."
             )
         now = _monotonic_ms() * UInt64(1000)
+        send_buf.clear()
         var n = quic.send(now, send_buf)
         for i in range(n):
             _udp_send(sock.raw(), send_buf[i])

@@ -98,9 +98,9 @@ struct H3Session(Session):
         self._h3.feed_datagram(data, now)
         self._dispatch_events()
 
-    def drain_datagrams(mut self, now: UInt64) raises -> List[List[Byte]]:
-        """Send-until-empty drain, capped; see `H3Connection.drain_datagrams`."""
-        return self._h3.drain_datagrams(now)
+    def drain_datagrams(mut self, now: UInt64, mut out: List[List[Byte]]) raises:
+        """Send-until-empty drain appended to `out`, capped; see `H3Connection.drain_datagrams`."""
+        self._h3.drain_datagrams(now, out)
 
     # --- Session trait API --------------------------------------------------
 

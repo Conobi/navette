@@ -283,11 +283,8 @@ struct H3CoroServer(Movable):
         self._ctx_pool.release(ctx_ptr)
 
     def _flush_outbound(mut self, now: UInt64) raises:
-        """Move pending outbound QUIC datagrams from the H3Connection into our
-        buffer."""
-        var pending = self._h3.drain_datagrams(now)
-        for ref pkt in pending:
-            self._outbuf.append(pkt.copy())
+        """Append pending outbound QUIC datagrams to the outbound buffer."""
+        self._h3.drain_datagrams(now, self._outbuf)
 
     def _run_handler(mut self, stream_id: Int) raises:
         """Invoke the user handler synchronously. On error, send RST_STREAM

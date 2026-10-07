@@ -130,9 +130,8 @@ struct SessionSlot(Movable):
         elif self.kind == SLOT_H2:
             buf.extend(self.h2.value().drain())
         else:
-            var datagrams = self.h3.value().drain_datagrams(UInt64(0))
-            for ref dg in datagrams:
-                buf.extend(dg.copy())
+            for ref dg in self.drain_datagrams(UInt64(0)):
+                buf.extend(Span(dg))
 
     def feed_datagram(
         mut self, data: Span[Byte, _], now: UInt64
@@ -164,7 +163,8 @@ struct SessionSlot(Movable):
         """
         var out = List[List[Byte]]()
         if self.kind == SLOT_H3:
-            return self.h3.value().drain_datagrams(now)
+            self.h3.value().drain_datagrams(now, out)
+            return out^
         var stream: List[Byte]
         if self.kind == SLOT_H1:
             stream = self.h1.value().drain()

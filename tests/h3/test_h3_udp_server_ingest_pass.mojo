@@ -250,9 +250,11 @@ def test_dirty_connection_drained_once_per_pass() raises:
     _settle(h)
 
     _partial_request(a)
-    var dga = a.h3.drain_datagrams(h.now())
+    var dga = List[List[Byte]]()
+    a.h3.drain_datagrams(h.now(), dga)
     _partial_request(b)
-    var dgb = b.h3.drain_datagrams(h.now())
+    var dgb = List[List[Byte]]()
+    b.h3.drain_datagrams(h.now(), dgb)
     assert_true(len(dga) >= 1 and len(dgb) >= 1, "both clients produced a datagram")
     # Interleaved duplicates: the QUIC layer discards the replays, but each
     # one still reaches the per-datagram ingress path.

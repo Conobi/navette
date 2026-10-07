@@ -48,12 +48,14 @@ def _establish_handshake(
     var s_dg = List[List[Byte]](capacity=1)
     for _ in range(20):
         now += UInt64(10_000)
+        c_dg.clear()
         var c_n = client.send(now, c_dg)
         for i in range(c_n):
             try:
                 server.recv(Span(c_dg[i]), now)
             except:
                 pass
+        s_dg.clear()
         var s_n = server.send(now, s_dg)
         for i in range(s_n):
             try:

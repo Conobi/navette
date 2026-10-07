@@ -62,6 +62,7 @@ def _deliver(
     mut buf: List[List[Byte]],
 ) raises -> Int:
     """One send() on src fed to dst; returns the number of datagrams moved."""
+    buf.clear()
     var n = src.send(now, buf)
     for i in range(n):
         assert_true(len(buf[i]) <= MAX_DATAGRAM_SIZE, "datagram exceeds budget")
@@ -135,6 +136,7 @@ def _client_with_handshake_keys(mut p: _Pair, mut now: UInt64) raises -> UInt64:
     _ = _drain_to(p.client, p.server, now)
     var s = List[List[Byte]](capacity=1)
     for _ in range(8):
+        s.clear()
         _ = p.server.send(now, s)
         assert_true(len(s) > 0, "server keeps emitting its flight")
         try:
@@ -149,6 +151,7 @@ def _client_with_handshake_keys(mut p: _Pair, mut now: UInt64) raises -> UInt64:
     now += UInt64(1_000)
     var c = List[List[Byte]](capacity=1)
     for _ in range(8):
+        c.clear()
         if p.client.send(now, c) == 0:
             break
     return now
@@ -399,10 +402,12 @@ def test_ack_only_bypasses_cc() raises:
     assert_false(Bool(p.server.spaces[2].time_of_last_ae_sent) and p.server.spaces[2].time_of_last_ae_sent.value() == now,
                  "ACK-only send does not re-arm the PTO base")
     assert_true(len(p.server.stream_map.sendable_set) == 1, "stream data still queued (builders did not run)")
+    dgs.clear()
     assert_equal_int(p.server.send(now, dgs), 0, "gate closed: nothing more to send")
 
     p.server.recovery.bytes_in_flight = UInt64(0)
     now += UInt64(100)
+    dgs.clear()
     _ = p.server.send(now, dgs)
     assert_equal_int(len(dgs), 1, "data leaves once the gate opens")
     frames = _frames_of(p.server, 2, _last_sent_pn(p.server, 2))
@@ -460,6 +465,7 @@ def test_no_past_deadline_after_send() raises:
                 now += UInt64(rng.below(2_000_000))
             now += UInt64(rng.below(5_000))
             # Client sends (possibly its CLOSE) and the server receives.
+            cd.clear()
             _ = p.client.send(now, cd)
             _assert_no_past_deadline(p.client, now, "client after send")
             for i in range(len(cd)):
@@ -467,6 +473,7 @@ def test_no_past_deadline_after_send() raises:
                     p.server.recv(Span(cd[i]), now)
                 except:
                     pass
+            sd.clear()
             _ = p.server.send(now, sd)
             _assert_no_past_deadline(p.server, now, "server after send")
             for i in range(len(sd)):
@@ -477,8 +484,10 @@ def test_no_past_deadline_after_send() raises:
                 except:
                     pass
             # A second send at the same instant must also leave no past deadline.
+            _dg.clear()
             _ = p.client.send(now, _dg)
             _assert_no_past_deadline(p.client, now, "client after 2nd send")
+            _dg2.clear()
             _ = p.server.send(now, _dg2)
             _assert_no_past_deadline(p.server, now, "server after 2nd send")
             if p.client.is_closed() and p.server.is_closed():
@@ -503,6 +512,7 @@ def test_pto_armed_only_with_ae_in_flight() raises:
     var dgs = List[List[Byte]](capacity=1)
     for _ in range(10):
         now += p.server._pto_interval() + UInt64(1)
+        dgs.clear()
         _ = p.server.send(now, dgs)
         assert_equal_int(len(dgs), 0, "idle server sends nothing on PTO intervals")
         assert_false(Bool(p.server.timeout(now)), "still no deadline")
@@ -525,6 +535,7 @@ def test_pto_armed_only_with_ae_in_flight() raises:
     var q_buf = List[List[Byte]](capacity=1)
     for _ in range(10):
         now2 += q.server._pto_interval() + UInt64(1)
+        q_buf.clear()
         assert_equal_int(q.server.send(now2, q_buf), 0, "amp-limited server sends nothing more")
         var t = q.server.timeout(now2)
         assert_true(
@@ -639,7 +650,9 @@ def test_close_sent_once_per_trigger() raises:
     _ = p.client.send(now, dgs)
     assert_equal_int(len(dgs), 1, "exactly one CLOSE datagram on transition")
     var first_close = dgs[0].copy()
+    dgs.clear()
     assert_equal_int(p.client.send(now, dgs), 0, "second send is empty")
+    dgs.clear()
     assert_equal_int(p.client.send(now + UInt64(1_000), dgs), 0, "still empty without a trigger")
 
     # Ten peer datagrams within one PTO: at most one CLOSE.
@@ -651,9 +664,11 @@ def test_close_sent_once_per_trigger() raises:
     var close_check = List[List[Byte]](capacity=1)
     for _ in range(10):
         now += UInt64(100)
+        sd.clear()
         _ = p.server.send(now, sd)
         assert_equal_int(len(sd), 1, "server emits one datagram per send")
         p.client.recv(Span(sd[0]), now)
+        close_check.clear()
         closes += p.client.send(now, close_check)
     assert_true(closes <= 1, "at most one CLOSE per PTO; got " + String(closes))
 
@@ -666,6 +681,7 @@ def test_close_sent_once_per_trigger() raises:
     p.client.recv(Span(sd2[0]), now)
     var final_dg = List[List[Byte]](capacity=1)
     assert_equal_int(p.client.send(now, final_dg), 1, "one CLOSE after a PTO-spaced trigger")
+    final_dg.clear()
     assert_equal_int(p.client.send(now, final_dg), 0, "then empty again")
     # The first datagram carried CONNECTION_CLOSE: the peer drains on it.
     p.server.recv(Span(first_close), now)
@@ -689,6 +705,7 @@ def test_close_reason_bounded() raises:
     _ = p.client.send(now, dgs)
     assert_equal_int(len(dgs), 1, "one datagram")
     assert_true(len(dgs[0]) <= MAX_DATAGRAM_SIZE, "within budget")
+    dgs.clear()
     assert_equal_int(p.client.send(now, dgs), 0, "then empty")
 
     var now2 = UInt64(9_000_000)
@@ -736,13 +753,17 @@ def test_send_returns_empty_when_idle() raises:
     var client_buf = List[List[Byte]](capacity=1)
     var server_buf = List[List[Byte]](capacity=1)
     assert_equal_int(p.client.send(now, client_buf), 0, "client idle: empty")
+    client_buf.clear()
     assert_equal_int(p.client.send(now, client_buf), 0, "client idle: empty again")
     assert_equal_int(p.server.send(now, server_buf), 0, "server idle: empty")
+    server_buf.clear()
     assert_equal_int(p.server.send(now, server_buf), 0, "server idle: empty again")
     assert_false(p.client._space_has_other_sendable(2, now), "client predicate false when idle")
     assert_false(p.server._space_has_other_sendable(2, now), "server predicate false when idle")
     p.server.close_transport(UInt64(0), String("bye"), now)
+    server_buf.clear()
     assert_equal_int(p.server.send(now, server_buf), 1, "one CLOSE datagram")
+    server_buf.clear()
     assert_equal_int(p.server.send(now, server_buf), 0, "then empty")
     print("  test_send_returns_empty_when_idle: PASS")
 
@@ -798,6 +819,7 @@ def test_bundle_predicate_sound() raises:
             assert_equal_int(len(frames), 0, "predicate false but builders produced frames (iter " + String(it) + ")")
         # Consume whatever state the builders left so later iterations vary.
         p.server.spaces[2].probe_pending = False
+        send_buf.clear()
         _ = p.server.send(now, send_buf)
         now += UInt64(1_000)
     assert_true(false_cases > 20, "property must cover idle states; got " + String(false_cases))
@@ -845,6 +867,7 @@ def test_datagram_never_exceeds_budget() raises:
             _ = _deliver(p.client, p.server, now, deliver_buf)
         for _ in range(64):
             now += UInt64(200)
+            dgs.clear()
             _ = p.server.send(now, dgs)
             if len(dgs) == 0:
                 break
@@ -876,6 +899,7 @@ def test_crypto_split_lossless() raises:
     var dgs = List[List[Byte]](capacity=1)
     for _ in range(16):
         now += UInt64(1_000)
+        dgs.clear()
         _ = p.server.send(now, dgs)
         if len(dgs) == 0:
             break
@@ -944,6 +968,7 @@ def test_pto_deadline_single_source() raises:
                 p.client._check_timers(now)
                 assert_true(_fingerprint(p.client) != before, "client: expired deadline must change state at step " + String(step))
                 checks += 1
+            cd.clear()
             _ = p.client.send(now, cd)
             for i in range(len(cd)):
                 if rng.below(4) == 0:
@@ -959,6 +984,7 @@ def test_pto_deadline_single_source() raises:
                 p.server._check_timers(now)
                 assert_true(_fingerprint(p.server) != before_s, "server: expired deadline must change state at step " + String(step))
                 checks += 1
+            sd.clear()
             _ = p.server.send(now, sd)
             for i in range(len(sd)):
                 if rng.below(4) == 0:
@@ -1009,6 +1035,7 @@ def _client_flight_checked(mut p: _Pair, now: UInt64, mut checked: Int, mut ack_
     var dgs = List[List[Byte]](capacity=1)
     for _ in range(64):
         var was_established = p.client.is_established()
+        dgs.clear()
         _ = p.client.send(now, dgs)
         if len(dgs) == 0:
             break
@@ -1043,6 +1070,7 @@ def test_client_pads_all_initial_datagrams() raises:
         _client_flight_checked(p, now, checked, ack_only_seen)
         # Server flight one datagram at a time, the client answering each.
         for _ in range(64):
+            sd.clear()
             _ = p.server.send(now, sd)
             if len(sd) == 0:
                 break
@@ -1084,6 +1112,7 @@ def test_server_pads_initial_datagrams() raises:
         assert_false(_has_kind(_frames_of(p.server, 0, pn), "crypto"), "no CRYPTO consumed")
         assert_equal_int(_last_sent_pn(p.server, 1), -1, "no Handshake packet built while the ServerHello is deferred")
     assert_true(p.server.crypto_streams[0].has_unsent(), "ServerHello still unsent")
+    dgs.clear()
     assert_equal_int(p.server.send(now, dgs), 0, "nothing more while short of allowance")
 
     p.server.bytes_received = real_received
@@ -1098,6 +1127,7 @@ def test_server_pads_initial_datagrams() raises:
     all_dgs.append(first[0].copy())
     var more = List[List[Byte]](capacity=1)
     for _ in range(8):
+        more.clear()
         _ = p.server.send(now, more)
         if len(more) == 0:
             break
@@ -1150,11 +1180,13 @@ def test_ack_scheduling_suspended_in_closing() raises:
         var d = _bytes(100)
         p.server.send_stream_data(ssid, Span(d), False)
         now += p.client._pto_interval() + UInt64(1)
+        sd.clear()
         _ = p.server.send(now, sd)
         p.client.recv(Span(sd[0]), now)
         assert_true(p.client.idle_timer == idle_before, "idle timer not refreshed while closing")
         assert_false(p.client.spaces[2].ack_needed or Bool(p.client.spaces[2].ack_deadline), "no ACK scheduled while closing")
         assert_true(p.client.spaces[2].largest_recv_pn == largest_before, "PN window frozen while closing")
+        out.clear()
         _ = p.client.send(now, out)
         assert_equal_int(len(out), 1, "one CLOSE per trigger")
         var close_pn = _last_sent_pn(p.client, 2)

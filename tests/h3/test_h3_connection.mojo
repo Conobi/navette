@@ -78,13 +78,15 @@ def _pump_h3(
     """Exchange datagrams between a and b for `rounds` iterations."""
     for _ in range(rounds):
         now += UInt64(10_000)
-        var a_dgs = a.drain_datagrams(now)
+        var a_dgs = List[List[Byte]]()
+        a.drain_datagrams(now, a_dgs)
         for i in range(len(a_dgs)):
             try:
                 b.feed_datagram(Span(a_dgs[i]), now)
             except:
                 pass
-        var b_dgs = b.drain_datagrams(now)
+        var b_dgs = List[List[Byte]]()
+        b.drain_datagrams(now, b_dgs)
         for i in range(len(b_dgs)):
             try:
                 a.feed_datagram(Span(b_dgs[i]), now)

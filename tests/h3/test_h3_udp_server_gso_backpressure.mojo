@@ -11,7 +11,7 @@ from std.collections import Span
 
 from bouclette import Message
 
-from navette.h3.h3_udp_server import EgressPacket, _set_msg_peer_raw
+from navette.h3.h3_udp_server import EgressPacket, _set_msg_peer
 from navette.http.handler import (
     StreamHandler,
     Request,
@@ -20,6 +20,7 @@ from navette.http.handler import (
     Capabilities,
     StreamError,
 )
+from navette.quic.path import PathKey
 from navette.quic.trans_param import TransportParams, default_transport_params
 
 from tests._test_util import assert_true, assert_equal_int
@@ -94,7 +95,7 @@ def test_full_sink_keeps_gso_and_backlog() raises:
     var filled = 0
     while filled < 4096:
         var msg = Message(_payload(0xEE, 32), control_capacity=24)
-        _set_msg_peer_raw(msg, addr)
+        _set_msg_peer(msg, addr)
         try:
             h.srv[]._send_sink.value().push_msg(msg^)
         except:
@@ -105,10 +106,10 @@ def test_full_sink_keeps_gso_and_backlog() raises:
     # A 3-packet GSO run (same size, same peer) plus one odd-sized tail.
     for k in range(3):
         h.srv[]._egress_backlog.append(
-            EgressPacket(_payload(k, 100), List[Byte](copy=addr), 0, UInt8(0))
+            EgressPacket(_payload(k, 100), PathKey(copy=addr), 0, UInt8(0))
         )
     h.srv[]._egress_backlog.append(
-        EgressPacket(_payload(3, 60), List[Byte](copy=addr), 0, UInt8(0))
+        EgressPacket(_payload(3, 60), PathKey(copy=addr), 0, UInt8(0))
     )
 
     h.srv[]._submit_egress()
@@ -125,8 +126,8 @@ def test_full_sink_keeps_gso_and_backlog() raises:
             Int(h.srv[]._egress_backlog[k].data[0]), k,
             "backlog order preserved at " + String(k),
         )
-        assert_equal_int(
-            len(h.srv[]._egress_backlog[k].addr), len(addr),
+        assert_true(
+            h.srv[]._egress_backlog[k].dest == addr,
             "peer address retained at " + String(k),
         )
     assert_equal_int(len(h.srv[]._egress_backlog[0].data), 100, "payload intact")

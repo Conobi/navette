@@ -515,10 +515,8 @@ struct H3StreamingServer(Movable):
         self._ctx_pool.release(ctx_ptr)
 
     def _flush_outbound(mut self, now: UInt64) raises:
-        """Move pending outbound QUIC datagrams from H3Connection into buffer."""
-        var pending = self._h3.drain_datagrams(now)
-        for ref pkt in pending:
-            self._outbuf.append(pkt.copy())
+        """Append pending outbound QUIC datagrams to the outbound buffer."""
+        self._h3.drain_datagrams(now, self._outbuf)
 
     def _cleanup_stream(mut self, stream_id: Int) raises:
         """Unconditionally free stream context and remove from dict."""

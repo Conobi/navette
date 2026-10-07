@@ -103,7 +103,8 @@ def _pump_streaming_client(
                 client.feed_datagram(Span(s_dgs[i]), now)
             except:
                 pass
-        var c_dgs = client.drain_datagrams(now)
+        var c_dgs = List[List[Byte]]()
+        client.drain_datagrams(now, c_dgs)
         for i in range(len(c_dgs)):
             try:
                 server.feed_datagram(Span(c_dgs[i]), now)
