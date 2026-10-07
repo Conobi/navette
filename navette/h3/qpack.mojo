@@ -437,34 +437,6 @@ struct QpackDecoder(Movable):
             self._tables.unsafe_deinit_pointee()
             self._tables.unsafe_free()
 
-    def _decode_string(mut self, ref data: List[Byte], offset: Int) raises -> _StrDecodeResult:
-        """Decode a QPACK string literal, reusing scratch decode buffer."""
-        if offset >= len(data):
-            raise "QPACK: truncated string at offset " + String(offset)
-        var h_bit = (data[offset] & 0x80) != 0
-        var ir = qpack_decode_int(data, offset, 7)
-        var length = Int(ir.value)
-        var pos = ir.new_offset
-        if pos + length > len(data):
-            raise "QPACK: string data truncated"
-        var end = pos + length
-        if h_bit:
-            var raw = List[Byte](capacity=length)
-            for i in range(pos, end):
-                raw.append(data[i])
-            pos = end
-            return _StrDecodeResult(
-                _codec_huffman_decode_with_tables(raw, self._tables[].huff_trie, self._tables[].huff_fast),
-                pos,
-            )
-        else:
-            var raw = List[Byte](capacity=length)
-            for i in range(pos, end):
-                raw.append(data[i])
-            pos = end
-            var s = bytes_to_string(raw^)
-            return _StrDecodeResult(s, pos)
-
     def decode(
         mut self, data: List[Byte], max_size: Int = Int.MAX
     ) raises -> List[QpackHeaderField]:
