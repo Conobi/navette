@@ -4,10 +4,9 @@
 #
 # Extracted from connection.mojo for module cohesion. QuicEvent is
 # the flat-tag event emitted by QuicConnection; the payload is a
-# 7-element Variant indexed by type_id.
+# 6-element Variant indexed by type_id.
 
 from std.utils import Variant
-from navette.quic.trans_param import TransportParams
 
 
 # ── QuicEvent payload structs ────────────────────────────────────────
@@ -45,7 +44,6 @@ struct StreamStoppedPayload(Copyable, Movable):
 comptime QuicEventPayload = Variant[
     NoneType,                  # HANDSHAKE_COMPLETE
     ConnectionClosedPayload,   # CONNECTION_CLOSED
-    TransportParams,           # PEER_TRANSPORT_PARAMS
     UInt64,                    # STREAM_READABLE, STREAM_WRITABLE, STREAM_OPENED (stream_id)
     StreamResetPayload,        # STREAM_RESET
     StreamStoppedPayload,      # STREAM_STOPPED
@@ -60,12 +58,11 @@ struct QuicEvent(Copyable, Movable):
     """Event emitted by QuicConnection for the application layer.
 
     `type_id` identifies the event kind; `payload` holds the
-    event-specific data via a 7-element Variant.
+    event-specific data via a 6-element Variant.
     """
 
     comptime HANDSHAKE_COMPLETE: UInt8 = 1
     comptime CONNECTION_CLOSED: UInt8 = 2
-    comptime PEER_TRANSPORT_PARAMS: UInt8 = 3
     comptime STREAM_READABLE: UInt8 = 5
     comptime STREAM_WRITABLE: UInt8 = 6
     comptime STREAM_RESET: UInt8 = 7
@@ -90,13 +87,6 @@ struct QuicEvent(Copyable, Movable):
         return QuicEvent(
             QuicEvent.CONNECTION_CLOSED,
             QuicEventPayload(ConnectionClosedPayload(error_code, reason^)),
-        )
-
-    @staticmethod
-    def peer_transport_params(params: TransportParams) -> QuicEvent:
-        return QuicEvent(
-            QuicEvent.PEER_TRANSPORT_PARAMS,
-            QuicEventPayload(TransportParams(copy=params)),
         )
 
     @staticmethod

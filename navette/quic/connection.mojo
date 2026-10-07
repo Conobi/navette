@@ -576,7 +576,7 @@ struct QuicConnection(Movable):
         self._early_1rtt = List[List[Byte]]()
         self.bytes_received = UInt64(0)
         self.bytes_sent = UInt64(0)
-        self.events = List[QuicEvent]()
+        self.events = List[QuicEvent](capacity=8)
         self._events_head = 0
         self.close = CloseState(
             pending=None,
@@ -2711,7 +2711,6 @@ struct QuicConnection(Movable):
             self.close_transport(UInt64(0x08), scid_why, now)
             return
         self.peer_params = TransportParams(copy=peer_tp)
-        self.events.append(QuicEvent.peer_transport_params(peer_tp))
         var peer = self.peer_params.value().copy()
         self.stream_map.set_peer_limits(
             max_streams_bidi=peer.initial_max_streams_bidi,

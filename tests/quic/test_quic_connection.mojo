@@ -262,31 +262,39 @@ def test_loopback_handshake() raises:
 
     # Drain events and verify.
     var client_got_hs = False
-    var client_got_tp = False
     while True:
         var ev = client.poll()
         if not ev:
             break
         if ev.value().type_id == QuicEvent.HANDSHAKE_COMPLETE:
             client_got_hs = True
-        if ev.value().type_id == QuicEvent.PEER_TRANSPORT_PARAMS:
-            client_got_tp = True
 
     var server_got_hs = False
-    var server_got_tp = False
     while True:
         var ev = server.poll()
         if not ev:
             break
         if ev.value().type_id == QuicEvent.HANDSHAKE_COMPLETE:
             server_got_hs = True
-        if ev.value().type_id == QuicEvent.PEER_TRANSPORT_PARAMS:
-            server_got_tp = True
 
     assert_true(client_got_hs, "client: missing HANDSHAKE_COMPLETE event")
-    assert_true(client_got_tp, "client: missing PEER_TRANSPORT_PARAMS event")
     assert_true(server_got_hs, "server: missing HANDSHAKE_COMPLETE event")
-    assert_true(server_got_tp, "server: missing PEER_TRANSPORT_PARAMS event")
+
+    # Each side holds the transport parameters the other advertised.
+    assert_true(Bool(client.peer_params), "client: peer_params unset after handshake")
+    assert_true(Bool(server.peer_params), "server: peer_params unset after handshake")
+    assert_equal_int(
+        Int(client.peer_params.value().initial_max_data),
+        Int(server.local_params.initial_max_data),
+        "client: peer initial_max_data differs from server's",
+    )
+    assert_equal_int(
+        Int(server.peer_params.value().initial_max_data),
+        Int(client.local_params.initial_max_data),
+        "server: peer initial_max_data differs from client's",
+    )
+    assert_true(Bool(client.peer_params.value().initial_scid), "client: peer initial_scid missing")
+    assert_true(Bool(server.peer_params.value().initial_scid), "server: peer initial_scid missing")
 
     _ = tls^
     print("  test_loopback_handshake: PASS")
