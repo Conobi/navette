@@ -311,7 +311,7 @@ def huffman_encoded_len(s: String, ref table: List[HuffmanEntry]) raises -> Int:
 
 
 def huffman_decode_with_tables(
-    ref data: List[Byte],
+    data: Span[Byte, _],
     ref trie: List[HuffTrieNode],
     ref fast: List[HuffFastEntry],
 ) raises -> String:

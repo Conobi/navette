@@ -162,15 +162,6 @@ def huffman_decode(data: List[Byte]) raises -> String:
 # ---------------------------------------------------------------------------
 
 
-struct _IntDecodeResult(Copyable, Movable):
-    var value: UInt64
-    var new_offset: Int
-
-    def __init__(out self, value: UInt64, new_offset: Int):
-        self.value = value
-        self.new_offset = new_offset
-
-
 # RFC 9204 Section 4.1.1: decoders must handle integers up to 62 bits and
 # treat larger values as a decoding error. 2^62-1 also keeps any
 # `pos + Int(value)` sum far from Int overflow in callers.
@@ -183,19 +174,22 @@ comptime _QPACK_INT_MAX_SHIFT: UInt64 = 63
 comptime QPACK_FIELD_SECTION_TOO_LARGE = "QPACK: field section exceeds max size"
 
 
-def qpack_decode_int(data: List[Byte], offset: Int, prefix_bits: UInt8) raises -> _IntDecodeResult:
+def qpack_decode_int(
+    data: Span[Byte, _], offset: Int, prefix_bits: UInt8
+) raises -> Tuple[UInt64, Int]:
     """Decode a prefix integer per RFC 7541 Section 5.1, bounded to 62 bits.
 
-    Raises on `offset` outside `data`, truncation, more than 10
-    continuation bytes, or a value above QPACK_INT_MAX, so callers may
-    convert the result to Int and add it to an in-bounds offset.
+    Returns (value, offset past the integer). Raises on `offset` outside
+    `data`, truncation, more than 10 continuation bytes, or a value above
+    QPACK_INT_MAX, so callers may convert the value to Int and add it to an
+    in-bounds offset.
     """
     if offset < 0 or offset >= len(data):
         raise "QPACK: truncated integer encoding"
     var max_first = UInt64((1 << Int(prefix_bits)) - 1)
     var first = UInt64(data[offset]) & max_first
     if first < max_first:
-        return _IntDecodeResult(first, offset + 1)
+        return (first, offset + 1)
     var value = max_first
     var shift = UInt64(0)
     var pos = offset + 1
@@ -215,7 +209,7 @@ def qpack_decode_int(data: List[Byte], offset: Int, prefix_bits: UInt8) raises -
                 raise "QPACK: integer exceeds 62 bits"
         shift += 7
         if not more:
-            return _IntDecodeResult(value, pos)
+            return (value, pos)
     raise "QPACK: truncated integer encoding"
 
 
@@ -225,44 +219,27 @@ def _field_size(f: QpackHeaderField) -> Int:
     return f.name.byte_length() + f.value.byte_length() + 32
 
 
-struct _StrDecodeResult(Copyable, Movable):
-    var value: String
-    var new_offset: Int
-
-    def __init__(out self, value: String, new_offset: Int):
-        self.value = value
-        self.new_offset = new_offset
-
-
-def _qpack_decode_string_with_tables(
-    data: List[Byte],
+def _qpack_decode_string(
+    data: Span[Byte, _],
     offset: Int,
+    prefix_bits: UInt8,
     trie: List[HuffTrieNode],
     fast: List[HuffFastEntry],
-) raises -> _StrDecodeResult:
-    """Decode a QPACK string literal, reusing pre-built Huffman tables."""
+) raises -> Tuple[String, Int]:
+    """Decode a string literal whose H flag sits just above its `prefix_bits`-bit length.
+
+    Reads straight from `data`: no staging copy. Returns (string, offset past it).
+    """
     if offset >= len(data):
         raise "QPACK: truncated string at offset " + String(offset)
-    var h_bit = (data[offset] & 0x80) != 0
-    var ir = qpack_decode_int(data, offset, 7)
-    var length = Int(ir.value)
-    var pos = ir.new_offset
-    if pos + length > len(data):
+    var huffman = (data[offset] & (UInt8(1) << prefix_bits)) != 0
+    var length, pos = qpack_decode_int(data, offset, prefix_bits)
+    var end = pos + Int(length)
+    if end > len(data):
         raise "QPACK: string data truncated"
-    var end = pos + length
-    if h_bit:
-        var slice = List[Byte](capacity=length)
-        for i in range(pos, end):
-            slice.append(data[i])
-        pos = end
-        return _StrDecodeResult(_codec_huffman_decode_with_tables(slice, trie, fast), pos)
-    else:
-        var raw = List[Byte](capacity=length)
-        for i in range(pos, end):
-            raw.append(data[i])
-        pos = end
-        var s = bytes_to_string(raw^)
-        return _StrDecodeResult(s, pos)
+    if huffman:
+        return (_codec_huffman_decode_with_tables(data[pos:end], trie, fast), end)
+    return (bytes_to_string(data[pos:end]), end)
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +403,7 @@ struct QpackDecoder(Movable):
             self._tables.unsafe_free()
 
     def decode(
-        mut self, data: List[Byte], max_size: Int = Int.MAX
+        mut self, data: Span[Byte, _], max_size: Int = Int.MAX
     ) raises -> List[QpackHeaderField]:
         """Decode a field section; raises QPACK_FIELD_SECTION_TOO_LARGE past `max_size`."""
         var fields = self.decode_bounded(data, max_size)
@@ -435,14 +412,15 @@ struct QpackDecoder(Movable):
         return fields.unsafe_take()
 
     def decode_bounded(
-        mut self, data: List[Byte], max_size: Int
+        mut self, data: Span[Byte, _], max_size: Int
     ) raises -> Optional[List[QpackHeaderField]]:
         """Decode a QPACK field section block, or None once it outgrows `max_size`.
 
         Skips the 2-byte prefix (Required Insert Count + Delta Base),
         then decodes each field instruction until data is exhausted.
 
-        Reuses the cached Huffman decode tables stored on the decoder.
+        Strings are decoded straight from `data`; only the decoded Strings
+        allocate. Reuses the cached Huffman decode tables.
 
         Args:
             data: The encoded field section.
@@ -460,23 +438,22 @@ struct QpackDecoder(Movable):
             raise "QPACK: field section too short"
         # RFC 9204 §4.5.1: Required Insert Count encoded with 8-bit prefix.
         # Static-only decoders only support RIC = 0.
-        var ric_result = qpack_decode_int(data, 0, 8)
-        if ric_result.value != 0:
+        var ric, ric_end = qpack_decode_int(data, 0, 8)
+        if ric != 0:
             raise "QPACK: non-zero Required Insert Count not supported (dynamic table not implemented)"
         var result = List[QpackHeaderField](capacity=16)
         # RFC 9204 §4.5.1: Parse Delta Base byte — S bit (bit 7) + 7-bit Delta Base value.
         # Static-only decoders only support S=0 and Delta Base=0.
-        var base_byte_raw = UInt64(data[ric_result.new_offset])
-        if (base_byte_raw & 0x80) != 0:
+        if (data[ric_end] & 0x80) != 0:
             raise "QPACK: S=1 (negative delta base) not supported; dynamic table required"
-        var base_result = qpack_decode_int(data, ric_result.new_offset, 7)
-        if base_result.value != 0:
+        var base, pos = qpack_decode_int(data, ric_end, 7)
+        if base != 0:
             raise "QPACK: non-zero Delta Base not supported; dynamic table required"
-        var pos = base_result.new_offset
         var size = 0
 
         ref trie = self._tables[].huff_trie
         ref fast = self._tables[].huff_fast
+        ref table = self._tables[].static_table
 
         while pos < len(data):
             # Account for the field the previous iteration appended (the
@@ -490,57 +467,33 @@ struct QpackDecoder(Movable):
             if (b & 0x80) != 0:
                 # §4.5.2: Indexed Field Line
                 # 1xxxxxxx — bit 6 is T (T=1 = static)
-                var t_bit = (b & 0x40) != 0
-                var ir = qpack_decode_int(data, pos, 6)
-                var idx = Int(ir.value)
-                pos = ir.new_offset
-                if t_bit:
-                    # Static table reference
-                    if idx < 0 or idx >= len(self._tables[].static_table):
-                        raise "QPACK: invalid static table index"
-                    result.append(QpackHeaderField(self._tables[].static_table[idx].name, self._tables[].static_table[idx].value))
-                else:
+                var idx, end = qpack_decode_int(data, pos, 6)
+                pos = end
+                if (b & 0x40) == 0:
                     raise "QPACK: dynamic table not supported (indexed)"
+                if idx >= UInt64(len(table)):
+                    raise "QPACK: invalid static table index"
+                result.append(QpackHeaderField(table[Int(idx)].name, table[Int(idx)].value))
 
             elif (b & 0xC0) == 0x40:
                 # §4.5.4: Literal Field Line With Name Reference
                 # 0 1 N T xxxx — bit 5 is N (never-indexed), bit 4 is T (T=1 = static)
-                var t_bit = (b & 0x10) != 0
-                var ir = qpack_decode_int(data, pos, 4)
-                var idx = Int(ir.value)
-                pos = ir.new_offset
-                var sr = _qpack_decode_string_with_tables(data, pos, trie, fast)
-                var value = sr.value
-                pos = sr.new_offset
-                if t_bit:
-                    if idx < 0 or idx >= len(self._tables[].static_table):
-                        raise "QPACK: invalid static table index"
-                    result.append(QpackHeaderField(self._tables[].static_table[idx].name, value))
-                else:
+                var idx, name_end = qpack_decode_int(data, pos, 4)
+                var value, end = _qpack_decode_string(data, name_end, 7, trie, fast)
+                pos = end
+                if (b & 0x10) == 0:
                     raise "QPACK: dynamic table not supported (literal name ref)"
+                if idx >= UInt64(len(table)):
+                    raise "QPACK: invalid static table index"
+                result.append(QpackHeaderField(table[Int(idx)].name, value^))
 
             elif (b & 0xE0) == 0x20:
                 # §4.5.6: Literal Field Line Without Name Reference
                 # 0 0 1 N H nnn — bit 3 = H (Huffman for name), bits 2:0 = 3-bit name length prefix
-                var name_huffman = (b & 0x08) != 0
-                var name_len_r = qpack_decode_int(data, pos, 3)
-                pos = name_len_r.new_offset
-                var name_len = Int(name_len_r.value)
-                if pos + name_len > len(data):
-                    raise "QPACK: §4.5.6 name data truncated"
-                var name_raw = List[Byte](capacity=name_len)
-                for j in range(name_len):
-                    name_raw.append(data[pos + j])
-                pos += name_len
-                var field_name: String
-                if name_huffman:
-                    field_name = _codec_huffman_decode_with_tables(name_raw, trie, fast)
-                else:
-                    field_name = bytes_to_string(name_raw^)
-                var vr = _qpack_decode_string_with_tables(data, pos, trie, fast)
-                var value = vr.value
-                pos = vr.new_offset
-                result.append(QpackHeaderField(field_name, value))
+                var name, name_end = _qpack_decode_string(data, pos, 3, trie, fast)
+                var value, end = _qpack_decode_string(data, name_end, 7, trie, fast)
+                pos = end
+                result.append(QpackHeaderField(name^, value^))
 
             else:
                 raise "QPACK: unknown field instruction byte: " + String(Int(b))

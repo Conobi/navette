@@ -120,6 +120,47 @@ def test_set_replaces() raises:
     assert_equal_str(h.get("accept"), "text/plain", "set value")
 
 
+def test_lowercase_variants() raises:
+    """Lowercase, mixed and uppercase names all store lowercase."""
+    var h = Headers()
+    h.add("x-lower", "1")
+    h.add("X-Mixed-Case", "2")
+    h.add("X-UPPER", "3")
+    assert_equal_str(h.name_at(0), "x-lower", "lowercase kept")
+    assert_equal_str(h.name_at(1), "x-mixed-case", "mixed lowered")
+    assert_equal_str(h.name_at(2), "x-upper", "uppercase lowered")
+
+
+def test_set_replaces_every_duplicate() raises:
+    """Set() drops every duplicate, keeps the others in order, appends the new value."""
+    var h = Headers()
+    h.add("Vary", "a")
+    h.add("Host", "example.com")
+    h.add("vary", "b")
+    h.add("Accept", "*/*")
+    h.add("VARY", "c")
+    h.set("Vary", "d")
+    assert_equal_int(len(h), 3, "two kept + one set")
+    assert_equal_str(h.name_at(0), "host", "first kept")
+    assert_equal_str(h.name_at(1), "accept", "second kept")
+    assert_equal_str(h.value_at(1), "*/*", "kept value follows its name")
+    assert_equal_str(h.name_at(2), "vary", "set appended")
+    assert_equal_str(h.value_at(2), "d", "set value")
+
+
+def test_remove_absent() raises:
+    """Removing an absent name leaves everything in place."""
+    var h = Headers()
+    h.add("Host", "example.com")
+    h.add("Accept", "*/*")
+    h.remove("x-missing")
+    assert_equal_int(len(h), 2, "nothing removed")
+    assert_equal_str(h.value_at(1), "*/*", "order intact")
+    var e = Headers()
+    e.remove("host")
+    assert_equal_int(len(e), 0, "remove on empty")
+
+
 def test_copy() raises:
     """Headers is copyable."""
     var h = Headers()
@@ -147,4 +188,7 @@ def main() raises:
     test_insertion_order()
     test_set_replaces()
     test_copy()
-    print("test_headers: all 12 tests passed")
+    test_lowercase_variants()
+    test_set_replaces_every_duplicate()
+    test_remove_absent()
+    print("test_headers: all 15 tests passed")

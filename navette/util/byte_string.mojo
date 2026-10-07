@@ -29,26 +29,30 @@ from std.collections import Span
 
 
 def bytes_to_string(var data: List[Byte]) -> String:
-    """Adopt `data` as a String, transcoding any high bytes as Latin-1.
+    """Adopt `data` as a String without copying when it is all ASCII.
 
-    Args:
-        data: The raw octets, consumed.
-
-    Returns:
-        A String that is always valid UTF-8. For all-ASCII input the bytes are
-        adopted directly; otherwise each byte >= 0x80 becomes the two-byte
-        UTF-8 encoding of the code point with that value.
+    A byte >= 0x80 falls back to the transcoding `Span` overload.
     """
     for ref byte in data:
         if byte >= UInt8(0x80):
-            # Non-ASCII present: transcode. Building per byte is slower than a
-            # bulk adopt, which is why the all-ASCII path above is checked
-            # first -- it is the overwhelmingly common case.
+            return bytes_to_string(Span(data))
+    return String(unsafe_from_utf8=data^)
+
+
+def bytes_to_string(data: Span[Byte, _]) -> String:
+    """Copy `data` into a String, transcoding any byte >= 0x80 as Latin-1.
+
+    All-ASCII input is copied in bulk (inline, no allocation, up to 23 bytes);
+    otherwise each byte >= 0x80 becomes the two-byte UTF-8 encoding of the
+    code point with that value, so the result is always valid UTF-8.
+    """
+    for ref byte in data:
+        if byte >= UInt8(0x80):
             var out = String()
             for ref b in data:
                 out += chr(Int(b))
             return out^
-    return String(unsafe_from_utf8=data^)
+    return String(unsafe_from_utf8=data)
 
 
 def string_to_bytes(s: String) -> List[Byte]:

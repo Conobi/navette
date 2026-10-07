@@ -427,6 +427,59 @@ def test_decode_static_index_out_of_range_raises() raises:
     print("  test_decode_static_index_out_of_range_raises: PASS")
 
 
+def _decode_one(data: List[Byte]) raises -> QpackHeaderField:
+    var dec = QpackDecoder()
+    var headers = dec.decode(data)
+    assert_equal_int(len(headers), 1, "exactly one field")
+    return headers[0].copy()
+
+
+def test_decode_span_strings() raises:
+    # Section 4.5.6 raw name + raw value, both zero length.
+    var empty = _decode_one([0x00, 0x00, 0x20, 0x00])
+    assert_true(empty.name == "" and empty.value == "", "zero-length name and value")
+    # Section 4.5.6 Huffman name + Huffman value round-trip, then raw/raw.
+    for huff in range(2):
+        var enc = QpackEncoder(huff == 1)
+        var fields = List[QpackHeaderField]()
+        fields.append(QpackHeaderField("x-span-name", "some longer value past 23 bytes"))
+        var encoded = List[Byte]()
+        enc.encode(encoded, fields)
+        var f = _decode_one(encoded)
+        assert_true(f.name == "x-span-name", "name round-trips")
+        assert_true(f.value == "some longer value past 23 bytes", "value round-trips")
+    # Section 4.5.4 static name ref with a raw value byte >= 0x80: Latin-1 transcode.
+    var latin = _decode_one([0x00, 0x00, 0x5F, 0x00, 0x02, 0x41, 0xE9])
+    assert_true(latin.value == "A" + chr(0xE9), "0xE9 decodes as U+00E9")
+    print("  test_decode_span_strings: PASS")
+
+
+def test_decode_string_past_block_raises() raises:
+    # Value length 5 with only 4 bytes left; then a name length past the end.
+    var cases: List[List[Byte]] = [
+        [0x00, 0x00, 0x5F, 0x00, 0x05, 0x41, 0x42, 0x43, 0x44],
+        [0x00, 0x00, 0x23, 0x61, 0x62],
+    ]
+    for ref data in cases:
+        var raised = False
+        try:
+            var dec = QpackDecoder()
+            _ = dec.decode(data)
+        except:
+            raised = True
+        assert_true(raised, "string running past the block must raise")
+    print("  test_decode_string_past_block_raises: PASS")
+
+
+def test_decode_size_cap_boundary() raises:
+    # Two indexed fields: ":path /" (5+1+32=38) and ":method GET" (7+3+32=42) = 80.
+    var data: List[Byte] = [0x00, 0x00, 0xC1, 0xD1]
+    var dec = QpackDecoder()
+    assert_true(Bool(dec.decode_bounded(data, 80)), "exactly the cap decodes")
+    assert_false(Bool(dec.decode_bounded(data, 79)), "cap+1 returns None")
+    print("  test_decode_size_cap_boundary: PASS")
+
+
 def test_encode_field_all_three_paths() raises:
     """Exercises exact-match, name-only, and literal paths through the index."""
     var enc = QpackEncoder(use_huffman=False)
@@ -574,4 +627,7 @@ def main() raises:
     test_decode_static_index_out_of_range_raises()
     test_decode_s_bit_raises()
     test_encode_field_all_three_paths()
+    test_decode_span_strings()
+    test_decode_string_past_block_raises()
+    test_decode_size_cap_boundary()
     print("All tests passed.")

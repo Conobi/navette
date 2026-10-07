@@ -72,8 +72,8 @@ def test_wrapping_value_raises() raises:
 def test_62_bit_boundary() raises:
     var ok = _encode_int(0, 8, _MAX62)
     var r = qpack_decode_int(ok, 0, 8)
-    assert_true(r.value == _MAX62, "2^62-1 decodes")
-    assert_equal_int(r.new_offset, len(ok), "offset past the integer")
+    assert_true(r[0] == _MAX62, "2^62-1 decodes")
+    assert_equal_int(r[1], len(ok), "offset past the integer")
     var over = _encode_int(0, 8, _MAX62 + 1)
     assert_true(_int_raises(over, 0, 8), "2^62 must raise")
     var over7 = _encode_int(0, 7, UInt64(1) << 63)

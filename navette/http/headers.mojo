@@ -6,22 +6,15 @@
 
 
 def _to_lower(s: String) -> String:
-    """Convert ASCII uppercase to lowercase in a string.
-
-    ASCII-only contract preserved (matches the previous chr-based
-    implementation). Bulk-build into a sized List[Byte] then convert
-    once to String, avoiding per-byte += chr(Int(b)) allocator churn.
-    """
+    """ASCII-lowercase `s`; returns `s` itself (no allocation) when it has no A-Z byte."""
     var bytes = s.as_bytes()
-    var n = len(bytes)
-    var out = List[Byte](capacity=n)
-    for i in range(n):
-        var b = bytes[i]
+    for b in bytes:
         if b >= UInt8(65) and b <= UInt8(90):
-            out.append(b + UInt8(32))
-        else:
-            out.append(b)
-    return String(unsafe_from_utf8=out)
+            var out = List[Byte](capacity=len(bytes))
+            for c in bytes:
+                out.append(c + UInt8(32) if c >= UInt8(65) and c <= UInt8(90) else c)
+            return String(unsafe_from_utf8=out^)
+    return s
 
 
 struct Headers(Copyable, Movable, Sized):
@@ -73,22 +66,20 @@ struct Headers(Copyable, Movable, Sized):
 
     def set(mut self, name: String, value: String):
         """Set a header, replacing all existing values for this name."""
-        var lower_name = _to_lower(name)
-        self.remove(lower_name)
-        self._names.append(lower_name)
-        self._values.append(value)
+        self.remove(name)
+        self.add(name, value)
 
     def remove(mut self, name: String):
-        """Remove all headers with the given name (case-insensitive)."""
+        """Remove all headers with the given name (case-insensitive), compacting in place."""
         var lower_name = _to_lower(name)
-        var new_names = List[String]()
-        var new_values = List[String]()
+        var kept = 0
         for i in range(len(self._names)):
             if self._names[i] != lower_name:
-                new_names.append(self._names[i])
-                new_values.append(self._values[i])
-        self._names = new_names^
-        self._values = new_values^
+                self._names[kept] = self._names[i]
+                self._values[kept] = self._values[i]
+                kept += 1
+        self._names.shrink(kept)
+        self._values.shrink(kept)
 
     # --- Retrieval ---
 
