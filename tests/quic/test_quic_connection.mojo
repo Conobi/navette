@@ -4254,7 +4254,7 @@ def _seed_spare_remote_cid(mut conn: QuicConnection, seq: UInt64) raises:
     for i in range(16):
         tok.append(UInt8(0xD0 + i))
     _ = conn.cid_mgr.on_new_connection_id(
-        seq, UInt64(0), cid^, tok^
+        seq, UInt64(0), Span(cid), Span(tok)
     )
 
 

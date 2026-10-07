@@ -122,7 +122,7 @@ from navette.protect.config import ProtectionConfig, ProtectionStats
 from navette.protect.governor import Governor
 from navette.h3.connection import ConnTally
 from navette.h3.qpack import QpackCodecTables
-from navette.quic.cid import demux_key
+from navette.quic.cid import demux_key, ResetKey
 from navette.quic.cid_buf import CidBuf
 from navette.quic.connection import QuicConnection
 from navette.quic.packet import extract_dcid
@@ -131,6 +131,7 @@ from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
 from navette.quic.trans_param import TransportParams
 from navette.util.null_ptr import null_ptr
 from navette.util.siphash import SipKey
+from navette.util.secure_random import fill_random
 
 
 # ── Wire constants ────────────────────────────────────────────────────────────
@@ -622,6 +623,10 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     # drawn from getrandom(2) in start(), before any DCID is keyed with
     # it, and never exposed.
     var _demux_sip: SipKey
+    # Stateless-reset token key shared by every connection (RFC 9000
+    # Section 10.3); drawn in start() with `_demux_sip`, and distinct from
+    # the ingress guard's Retry-token secret: one key, one MAC.
+    var _reset_key: ResetKey
 
     # Per-pass cap on queued recv-stream deliveries (see `ingest_more`).
     var ingest_budget: Int
@@ -715,6 +720,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self._test_fail_start_after_recv = False
         self._started = False
         self._demux_sip = SipKey(k0=UInt64(0), k1=UInt64(0))
+        self._reset_key = ResetKey(fill=UInt8(0))
         self.ingest_budget = INGEST_BUDGET_DATAGRAMS
         self._dirty_conns = List[Int]()
         self._ingress_pass = UInt64(0)
@@ -809,10 +815,12 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
                 SERVER_DEFAULT_IDLE_TIMEOUT_MS
             )
 
-        # Before ingress arms: every demux key of a long DCID depends on
-        # it, so it never changes once the receive stream exists.
+        # Before ingress arms: every demux key of a long DCID and every
+        # reset token depends on these, so they never change once the
+        # receive stream exists.
         if not self._recv_stream:
             self._demux_sip = SipKey.random()
+            fill_random(Span(self._reset_key))
 
         # Probe transport capabilities (ECN, GRO, GSO) on the socket.
         # UdpSocketState enables ECN internally, so no separate
@@ -1548,6 +1556,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             # untracked, so the hand-off is explicit rather than implied.
             Pointer(to=self.profile).unsafe_origin_cast[MutUntrackedOrigin](),
             retry_scid=retry_scid.copy(), stream_window=self.governor.decision.share,
+            reset_key=self._reset_key.copy(),
         )
 
         # Per-conn StreamHandler — produced by the user-supplied factory.
@@ -1853,7 +1862,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             )
         var gen = self.conn_slots[conn_idx].generation
         for ref e in self.conn_slots[conn_idx].h3[].quic().cid_mgr.local_cids:
-            var key = demux_key(Span(e.cid), self._demux_sip)
+            var key = demux_key(e.cid.as_span(), self._demux_sip)
             if self._find_conn_by_dcid(key) < 0:
                 self.conn_dcid_map[key] = _DcidEntry(idx=conn_idx, generation=gen)
                 self.conn_slots[conn_idx].dcids.append(key)

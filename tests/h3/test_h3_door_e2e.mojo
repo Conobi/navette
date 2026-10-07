@@ -300,7 +300,7 @@ def _remote_cid(mut c: HarnessClient, seq: UInt64) raises -> List[Byte]:
     """The server-issued CID the client holds under `seq`."""
     for ref e in c.h3._quic.cid_mgr.remote_cids:
         if e.sequence == seq:
-            return e.cid.copy()
+            return List[Byte](e.cid.as_span())
     raise Error("client holds no remote CID with seq " + String(seq))
 
 

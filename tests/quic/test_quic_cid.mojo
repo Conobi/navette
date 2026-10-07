@@ -12,8 +12,11 @@ from navette.quic.cid import (
     CidEntry,
     CidManager,
     CID_ACTIVE,
+    random_cid,
+    _hmac_sha256_truncate16,
 )
 from navette.quic.error import CONNECTION_ID_LIMIT_ERROR
+from std.collections import Set
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -74,13 +77,13 @@ def test_cid_generation(lib: SharedLibrary) raises:
     var mgr = _make_manager(lib)
 
     # Each generated CID is 8 bytes
-    var cid0 = mgr.generate_cid()
+    var cid0 = random_cid()
     assert_equal_int(len(cid0), 8, "CID should be 8 bytes")
 
     # Generate 10 CIDs and verify uniqueness
     var cids = List[List[Byte]]()
     for _ in range(10):
-        cids.append(mgr.generate_cid())
+        cids.append(List[Byte](random_cid().as_span()))
 
     var unique = True
     for i in range(len(cids)):
@@ -360,7 +363,7 @@ def test_clear_advertised(lib: SharedLibrary) raises:
     """Clear_advertised allows a CID to be re-advertised on loss."""
     var local = _make_cid(UInt8(0x01))
     var remote = _make_cid(UInt8(0x03))
-    var mgr = CidManager(lib, local^, remote^, UInt64(2), UInt64(2))
+    var mgr = CidManager(lib, local, remote, UInt64(2), UInt64(2))
     var entry = mgr.issue_new_cid()
     assert_true(entry.__bool__(), "issued seq=1")
     mgr.mark_advertised(UInt64(1))
@@ -370,6 +373,61 @@ def test_clear_advertised(lib: SharedLibrary) raises:
     var pending_after = mgr.pending_new_cid_entries()
     assert_true(len(pending_after) == 1, "pending after clear_advertised")
     print("  test_clear_advertised: PASS")
+
+
+# ── 14. reset-token derivation ────────────────────────────────────────────────
+
+
+def test_hmac_rfc4231_case2(lib: SharedLibrary) raises:
+    """RFC 4231 test case 2 (HMAC-SHA256, key "Jefe"), truncated to 16 bytes."""
+    var key = "Jefe".as_bytes()
+    var msg = "what do ya want for nothing?".as_bytes()
+    var tok = _hmac_sha256_truncate16(lib, key, msg)
+    var expected: List[Byte] = [
+        0x5B, 0xDC, 0xC1, 0x46, 0xBF, 0x60, 0x75, 0x4E,
+        0x6A, 0x04, 0x24, 0x26, 0x08, 0x95, 0x75, 0xC7,
+    ]
+    assert_true(tok.as_span() == Span(expected), "RFC 4231 case 2 vector")
+    print("  test_hmac_rfc4231_case2: PASS")
+
+
+def _token_u64(tok: Span[Byte, _]) -> UInt64:
+    var v = UInt64(0)
+    for i in range(8):
+        v = (v << 8) | UInt64(tok[i])
+    return v
+
+
+def test_reset_tokens_distinct_over_10k_cids(lib: SharedLibrary) raises:
+    """Distinct CIDs map to distinct tokens; the same CID always to the same one."""
+    var mgr = _make_manager(lib)
+    var cids = Set[UInt64]()
+    var tokens = Set[UInt64]()
+    for _ in range(10_000):
+        var cid = random_cid()
+        var tok = mgr.generate_reset_token(cid.as_span())
+        assert_true(
+            tok.as_span() == mgr.generate_reset_token(cid.as_span()).as_span(),
+            "same CID, same token",
+        )
+        cids.add(_token_u64(cid.as_span()))
+        tokens.add(_token_u64(tok.as_span()))
+    assert_equal_int(len(tokens), len(cids), "one distinct token per distinct CID")
+    print("  test_reset_tokens_distinct_over_10k_cids: PASS")
+
+
+def test_given_reset_key_is_used(lib: SharedLibrary) raises:
+    """Managers built with one key agree on every token; a different key disagrees."""
+    var key = InlineArray[UInt8, 32](fill=UInt8(0x5A))
+    var a = CidManager(lib, _make_cid(0xAA), _make_cid(0xBB), UInt64(4), UInt64(4), key.copy())
+    var b = CidManager(lib, _make_cid(0xCC), _make_cid(0xDD), UInt64(4), UInt64(4), key.copy())
+    var c = _make_manager(lib)
+    var cid = _make_cid(0x42)
+    var expected = _hmac_sha256_truncate16(lib, Span(key), Span(cid))
+    assert_true(a.generate_reset_token(Span(cid)).as_span() == expected.as_span(), "a uses the key")
+    assert_true(b.generate_reset_token(Span(cid)).as_span() == expected.as_span(), "b uses the key")
+    assert_true(c.generate_reset_token(Span(cid)).as_span() != expected.as_span(), "a fresh key differs")
+    print("  test_given_reset_key_is_used: PASS")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -395,5 +453,8 @@ def main() raises:
     test_retire_triggers_replacement(shared)
     test_pending_new_cid_entries(shared)
     test_clear_advertised(shared)
+    test_hmac_rfc4231_case2(shared)
+    test_reset_tokens_distinct_over_10k_cids(shared)
+    test_given_reset_key_is_used(shared)
 
     print("All test_quic_cid tests passed.")

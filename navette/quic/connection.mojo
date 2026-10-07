@@ -13,7 +13,6 @@
 #   var ev = conn.poll()                 # HANDSHAKE_COMPLETE, etc.
 
 from std.collections import Dict, Optional
-from std.ffi import external_call
 from std.memory import Pointer, UnsafePointer
 from std.collections import Span
 from std.utils import Variant
@@ -140,7 +139,7 @@ from navette.quic.guard_tags import (
     GUARD_TAG_ACK_IN_ZERO_RTT,
     GUARD_TAG_STREAM_LOCAL_NOT_CREATED,
 )
-from navette.quic.cid import CidManager, CidEntry, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED, clamp_local_active_limit
+from navette.quic.cid import CidManager, ResetKey, random_cid, CID_ACTIVE, CID_PENDING_RETIRE, CID_RETIRED, clamp_local_active_limit
 from navette.quic.path import PathValidator, PathKey, PathState, MAX_PENDING_CHALLENGES
 from navette.quic.stream import (
     Stream, SendBuf, RecvBuf,
@@ -545,6 +544,7 @@ struct QuicConnection(Movable):
         peer_cid: CidBuf,
         initial_dcid: CidBuf,
         now: UInt64,
+        reset_key: Optional[ResetKey],
     ) raises:
         self.is_server = is_server
         self.state = CONN_HANDSHAKING
@@ -644,10 +644,11 @@ struct QuicConnection(Movable):
         )
         self.cid_mgr = CidManager(
             lib=self._lib,
-            initial_local_cid=List[Byte](local_cid.as_span()),
-            initial_remote_cid=List[Byte](peer_cid.as_span()),
+            initial_local_cid=local_cid.as_span(),
+            initial_remote_cid=peer_cid.as_span(),
             local_active_limit=local_params.active_connection_id_limit,
             peer_active_limit=UInt64(2),
+            reset_key=reset_key,
         )
         self.path = PathState()
         self.pending_outbound_datagrams = List[List[Byte]]()
@@ -697,11 +698,11 @@ struct QuicConnection(Movable):
     ) raises -> QuicConnection:
         """Create a QUIC client connection."""
         var config_handle = config.handle()
-        var dcid = _generate_random_cid()
-        var local_cid = _generate_random_cid()
+        var dcid = random_cid()
+        var local_cid = random_cid()
         var tp_writer = ByteWriter()
         var params_copy = TransportParams(copy=local_params)
-        params_copy.initial_scid = List[Byte](copy=local_cid)
+        params_copy.initial_scid = List[Byte](local_cid.as_span())
         _apply_m3c_defaults(params_copy)
         serialize_transport_params(params_copy, tp_writer)
         var conn_handle = _create_client_tls_conn(
@@ -709,11 +710,10 @@ struct QuicConnection(Movable):
         )
         var conn = QuicConnection(
             is_server=False, lib=lib, conn_handle=conn_handle,
-            local_params=params_copy, local_cid=CidBuf.from_span(Span(local_cid)),
-            peer_cid=CidBuf.from_span(Span(dcid)),
-            initial_dcid=CidBuf.from_span(Span(dcid)), now=now,
+            local_params=params_copy, local_cid=local_cid^, peer_cid=dcid.copy(),
+            initial_dcid=dcid.copy(), now=now, reset_key=None,
         )
-        conn.protect.derive_initial_keys(Span(dcid), is_client=True)
+        conn.protect.derive_initial_keys(dcid.as_span(), is_client=True)
         conn._drive_handshake(now)
         return conn^
 
@@ -728,6 +728,7 @@ struct QuicConnection(Movable):
         profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
         retry_scid: List[Byte] = List[Byte](),
         stream_window: UInt64 = UInt64.MAX,
+        reset_key: Optional[ResetKey] = None,
     ) raises -> QuicConnection:
         """Create a QUIC server connection.
 
@@ -741,6 +742,11 @@ struct QuicConnection(Movable):
         Retry used (normally equal to `client_dcid`); the client rejects
         the handshake unless both come back as transport parameters (RFC
         9000 Section 7.3). Leave `retry_scid` empty when no Retry was sent.
+
+        `reset_key` is the server's stateless-reset key, shared by all its
+        connections so a CID's token can be recomputed after the
+        connection is gone (RFC 9000 Section 10.3); None draws a key for
+        this connection alone.
         """
         # RFC 9000 caps CIDs at 20 bytes. `CidBuf.from_span` aborts the
         # whole process on an over-length span, so an unvalidated caller
@@ -755,10 +761,10 @@ struct QuicConnection(Movable):
             raise "QuicConnection.server: retry_scid exceeds 20 bytes"
         var config_handle = config.handle()
         var profile_arrival_us = monotonic_us()
-        var local_cid = _generate_random_cid()
+        var local_cid = random_cid()
         var tp_writer = ByteWriter()
         var params_copy = TransportParams(copy=local_params)
-        params_copy.initial_scid = List[Byte](copy=local_cid)
+        params_copy.initial_scid = List[Byte](local_cid.as_span())
         _apply_m3c_defaults(params_copy)
         var cap = params_copy.initial_max_streams_bidi
         var narrow = stream_window < cap
@@ -775,9 +781,9 @@ struct QuicConnection(Movable):
         )
         var conn = QuicConnection(
             is_server=True, lib=lib, conn_handle=conn_handle,
-            local_params=params_copy, local_cid=CidBuf.from_span(Span(local_cid)),
+            local_params=params_copy, local_cid=local_cid^,
             peer_cid=CidBuf.from_span(orig_dcid),
-            initial_dcid=CidBuf.from_span(client_dcid), now=now,
+            initial_dcid=CidBuf.from_span(client_dcid), now=now, reset_key=reset_key,
         )
         conn.prof.ptr = profile_ptr
         conn.prof.first_initial_us = profile_arrival_us
@@ -994,7 +1000,7 @@ struct QuicConnection(Movable):
         self.peer_cid = CidBuf(copy=header.scid)
         for ref e in self.cid_mgr.remote_cids:
             if e.sequence == UInt64(0):
-                e.cid = List[Byte](header.scid.as_span())
+                e.cid = header.scid.copy()
                 break
         for ref pkt in self.spaces[0].reset_for_retry():
             self.recovery.on_packet_lost(pkt.size, pkt.in_flight)
@@ -1039,7 +1045,7 @@ struct QuicConnection(Movable):
         self.peer_cid = CidBuf(copy=scid)
         for ref e in self.cid_mgr.remote_cids:
             if e.sequence == UInt64(0):
-                e.cid = List[Byte](scid.as_span())
+                e.cid = scid.copy()
                 break
 
     def _classify_recv_packet(
@@ -1621,7 +1627,7 @@ struct QuicConnection(Movable):
         var seq = self.cid_mgr.remote_active_cid_seq
         for ref e in self.cid_mgr.remote_cids:
             if e.sequence == seq:
-                self.peer_cid = CidBuf.from_span(Span(e.cid))
+                self.peer_cid = e.cid.copy()
                 return
 
     # ── Path validation TX (emission) ────────────────────────────────
@@ -1925,8 +1931,8 @@ struct QuicConnection(Movable):
         var _v_cid = self.cid_mgr.on_new_connection_id(
             nc.sequence,
             nc.retire_prior_to,
-            List[Byte](nc.cid.as_span()),
-            List[Byte](nc.stateless_reset_token.as_span()),
+            nc.cid.as_span(),
+            nc.stateless_reset_token.as_span(),
         )
         if self.cid_mgr.remote_active_cid_seq != _prev_active:
             self._sync_peer_cid()
@@ -2072,8 +2078,8 @@ struct QuicConnection(Movable):
         var _v_cid = self.cid_mgr.on_new_connection_id(
             sequence,
             retire_prior_to,
-            List[Byte](cid_span),
-            List[Byte](token_span),
+            cid_span,
+            token_span,
         )
         if self.cid_mgr.remote_active_cid_seq != _prev_active:
             self._sync_peer_cid()
@@ -3256,7 +3262,7 @@ struct QuicConnection(Movable):
         """Append the non-ACK frames for one PN space within `budget` bytes.
 
         Runs only when the packet will be emitted: every builder here mutates
-        state (crypto cursor, `needs_*` flags, `mark_advertised`, FC windows).
+        state (crypto cursor, `needs_*` flags, CID `advertised` flags, FC windows).
         `sent_records` receives the Application-space stream-layer frames so
         ACK/loss handlers can re-apply state by packet number.  CRYPTO and
         STREAM frame bytes are written directly into `stream_payload`,
@@ -3388,14 +3394,15 @@ struct QuicConnection(Movable):
         mut used: Int,
     ) raises:
         """Emit NEW_CONNECTION_ID, RETIRE_CONNECTION_ID, MAX_DATA, MAX_STREAMS."""
-        var pending_new = self.cid_mgr.pending_new_cid_entries()
-        for ref pending_entry in pending_new:
-            var entry = CidEntry(copy=pending_entry)
+        var retire_prior_to = self.cid_mgr.local_retire_prior_to
+        for ref entry in self.cid_mgr.local_cids:
+            if entry.state != CID_ACTIVE or entry.advertised:
+                continue
             var ncid = NewConnectionIdFrame()
             ncid.sequence = entry.sequence
-            ncid.retire_prior_to = self.cid_mgr.local_retire_prior_to
-            ncid.cid = CidBuf.from_span(Span(entry.cid))
-            ncid.stateless_reset_token.extend(Span(entry.reset_token))
+            ncid.retire_prior_to = retire_prior_to
+            ncid.cid = entry.cid.copy()
+            ncid.stateless_reset_token = entry.reset_token.copy()
             var f = Frame.new_connection_id(ncid)
             var wl = f.wire_len()
             if used + wl > budget:
@@ -3406,7 +3413,7 @@ struct QuicConnection(Movable):
             rec.kind = SSF_NEW_CID
             rec.cid_seq = entry.sequence
             sent_records.append(rec^)
-            self.cid_mgr.mark_advertised(entry.sequence)
+            entry.advertised = True
         var pending_retire = self.cid_mgr.pending_retire_frames()
         for ref seq in pending_retire:
             var wl = 1 + varint_len(seq)
@@ -3884,7 +3891,7 @@ struct QuicConnection(Movable):
         if dcid == self.initial_dcid.as_span():
             return True
         for ref e in self.cid_mgr.local_cids:
-            if dcid == Span(e.cid):
+            if dcid == e.cid.as_span():
                 return True
         return False
 
@@ -4195,21 +4202,6 @@ struct QuicConnection(Movable):
 
 
 # ── Module-level helpers ─────────────────────────────────────────────
-
-
-def _generate_random_cid() raises -> List[Byte]:
-    """Generate a random 8-byte connection ID via getrandom(2)."""
-    var buf_owned = Owned[UInt8](8)
-    var buf = buf_owned.ptr()
-    var rc = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
-    if rc != 8:
-        raise "getrandom failed"
-    var cid = List[Byte](capacity=8)
-    for i in range(8):
-        cid.append(buf[unsafe_offset=i])
-    # Keep buf_owned alive across the post-FFI `buf[i]` copy loop above.
-    _ = buf_owned
-    return cid^
 
 
 def _has_ack_eliciting(ref frames: List[Frame]) -> Bool:

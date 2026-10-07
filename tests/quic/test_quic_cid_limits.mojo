@@ -179,11 +179,11 @@ def test_retire_cid_of_carrying_packet(lib: SharedLibrary) raises:
     var mgr = _mgr(lib, UInt64(2))
     _ = mgr.issue_new_cid()  # seq 1
     var cid1 = mgr.local_cids[1].cid.copy()
-    var v = mgr.on_retire_connection_id(UInt64(1), Span(cid1))
+    var v = mgr.on_retire_connection_id(UInt64(1), cid1.as_span())
     assert_true(Bool(v), "retiring the packet's own DCID refused")
     assert_equal_int(Int(v.value().error_code), Int(PROTOCOL_VIOLATION), "PV")
     var cid0 = mgr.local_cids[0].cid.copy()
-    assert_true(not mgr.on_retire_connection_id(UInt64(1), Span(cid0)), "other DCID ok")
+    assert_true(not mgr.on_retire_connection_id(UInt64(1), cid0.as_span()), "other DCID ok")
     print("  test_retire_cid_of_carrying_packet: PASS")
 
 

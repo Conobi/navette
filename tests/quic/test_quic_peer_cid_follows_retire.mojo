@@ -71,7 +71,7 @@ def test_rotation_moves_outgoing_dcid() raises:
     var cid = List[Byte]()
     for ref e in p.cli.cid_mgr.remote_cids:
         if e.sequence == active:
-            cid = e.cid.copy()
+            cid = List[Byte](e.cid.as_span())
     assert_equal_int(len(cid), 8, "active entry present")
     assert_true(_sent_dcid_is(p, cid), "packets go to the rotated-to CID")
     print("  test_rotation_moves_outgoing_dcid: PASS")
@@ -115,7 +115,7 @@ def _seq0_cid(ref q: QuicConnection) -> List[Byte]:
     """The CID recorded for the peer's sequence number 0 (empty if gone)."""
     for ref e in q.cid_mgr.remote_cids:
         if e.sequence == UInt64(0):
-            return e.cid.copy()
+            return List[Byte](e.cid.as_span())
     return List[Byte]()
 
 

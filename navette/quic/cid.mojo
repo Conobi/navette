@@ -6,12 +6,13 @@
 # tracking remote CIDs received via NEW_CONNECTION_ID frames and
 # retirement via RETIRE_CONNECTION_ID, with every per-peer list bounded.
 
-from std.ffi import external_call
 from std.memory import Pointer
 from std.collections import Span
-from std.memory.alloc import unsafe_alloc as _cid_alloc
 
 from navette.tls.lib import SharedLibrary
+from navette.quic.cid_buf import CidBuf
+from navette.util.byte_vec import ByteVec
+from navette.util.secure_random import fill_random
 from navette.util.siphash import SipKey, siphash13
 from navette.quic.error import CONNECTION_ID_LIMIT_ERROR, PROTOCOL_VIOLATION
 from navette.quic.guard_predicates import GuardVerdict
@@ -48,6 +49,10 @@ def clamp_local_active_limit(limit: UInt64) -> UInt64:
     return min(max(limit, UInt64(2)), UInt64(MAX_RETIRE_QUEUE))
 
 
+# Key of the stateless reset tokens: one per server, so every connection of
+# the server derives the same token for a CID (RFC 9000 Section 10.3).
+comptime ResetKey = InlineArray[UInt8, 32]
+
 # Close reasons for CID frame violations.
 comptime CID_REASON_LIMIT = "NEW_CONNECTION_ID exceeds active_connection_id_limit"
 comptime CID_REASON_RETIRE_BACKLOG = "too many unacknowledged RETIRE_CONNECTION_ID"
@@ -59,35 +64,15 @@ comptime CID_REASON_RETIRE_OWN_DCID = "RETIRE_CONNECTION_ID retires the packet's
 # ── CidEntry ──────────────────────────────────────────────────────────────────
 
 
+@fieldwise_init
 struct CidEntry(Copyable, Movable):
-    """A single connection ID entry with associated metadata."""
+    """A connection ID with its stateless reset token; inline bytes, so a copy never allocates."""
 
-    var cid: List[Byte]          # connection ID bytes (8 bytes)
-    var sequence: UInt64          # sequence number
-    var reset_token: List[Byte]  # 16-byte stateless reset token
+    var cid: CidBuf
+    var sequence: UInt64
+    var reset_token: ByteVec[16]
     var state: UInt8              # CID_ACTIVE / CID_PENDING_RETIRE / CID_RETIRED
     var advertised: Bool          # True once a NEW_CONNECTION_ID frame has been sent
-
-    def __init__(
-        out self,
-        cid: List[Byte],
-        sequence: UInt64,
-        reset_token: List[Byte],
-        state: UInt8,
-        advertised: Bool = False,
-    ):
-        self.cid = List[Byte](copy=cid)
-        self.sequence = sequence
-        self.reset_token = List[Byte](copy=reset_token)
-        self.state = state
-        self.advertised = advertised
-
-    def __init__(out self, *, copy: Self):
-        self.cid = List[Byte](copy=copy.cid)
-        self.sequence = copy.sequence
-        self.reset_token = List[Byte](copy=copy.reset_token)
-        self.state = copy.state
-        self.advertised = copy.advertised
 
 
 # ── CidManager ────────────────────────────────────────────────────────────────
@@ -119,16 +104,17 @@ struct CidManager(Movable):
     var retire_queue_cap: Int              # max len(_retire_unacked), from local_active_limit
     var highest_retire_prior_to: UInt64    # highest retire_prior_to from peer
     var _lib: SharedLibrary                # ref-counted RustlsLibrary for HMAC-SHA256
-    var server_secret: List[Byte]         # 32-byte key for HMAC-SHA256 reset tokens
+    var _reset_key: ResetKey               # HMAC-SHA256 key of the reset tokens; never re-drawn
     var cid_epoch: UInt64                  # bumped whenever `local_cids` gains or loses an entry
 
     def __init__(
         out self,
         lib: SharedLibrary,
-        initial_local_cid: List[Byte],
-        initial_remote_cid: List[Byte],
+        initial_local_cid: Span[Byte, _],
+        initial_remote_cid: Span[Byte, _],
         local_active_limit: UInt64,
         peer_active_limit: UInt64,
+        reset_key: Optional[ResetKey] = None,
     ) raises:
         """Initialise a CidManager.
 
@@ -141,40 +127,32 @@ struct CidManager(Movable):
                 we store and the retire backlog.
             peer_active_limit:  Peer's active_connection_id_limit transport
                 parameter; issuance is clamped to MAX_ISSUED_CIDS.
+            reset_key: The server-wide reset-token key; None draws one for
+                this connection alone, as a client does.
+
+        Raises:
+            If the kernel CSPRNG fails while drawing the key.
         """
         self._lib = SharedLibrary(copy=lib)
+        self._reset_key = ResetKey(fill=UInt8(0))
+        if reset_key:
+            self._reset_key = reset_key.value().copy()
+        else:
+            fill_random(Span(self._reset_key))
 
-        # Generate 32-byte server_secret via getrandom(2).
-        var rbuf = _cid_alloc[UInt8](32)
-        _ = external_call["getrandom", Int](rbuf, UInt64(32), UInt32(0))
-        self.server_secret = List[Byte](capacity=32)
-        self.server_secret.extend(Span(unsafe_ptr=rbuf, length=32))
-        rbuf.unsafe_free()
-
-        # Build initial local CID entry (seq=0, Active) with a reset token.
-        # Mark as advertised=True: the initial CID is conveyed in the handshake,
-        # not via a NEW_CONNECTION_ID frame, so no advertisement is pending.
-        var local_token = _hmac_sha256_truncate16(
-            self._lib, Span(self.server_secret), Span(initial_local_cid)
-        )
-        var local_entry = CidEntry(
-            initial_local_cid, UInt64(0), local_token, CID_ACTIVE, True
-        )
-
-        self.local_cids = List[CidEntry]()
-        self.local_cids.append(local_entry^)
+        # The initial CID travels in the handshake, not in a
+        # NEW_CONNECTION_ID frame, so it starts out advertised.
+        var local_cid = CidBuf.from_span(initial_local_cid)
+        var token = _hmac_sha256_truncate16(self._lib, Span(self._reset_key), initial_local_cid)
+        self.local_cids = [CidEntry(local_cid^, UInt64(0), token^, CID_ACTIVE, True)]
         self.local_next_seq = UInt64(1)
         self.local_retire_prior_to = UInt64(0)
 
-        # Build initial remote CID entry (seq=0, Active, empty token).
-        var empty_token = List[Byte](capacity=16)
-        empty_token.resize(16, Byte(0))
-        var remote_entry = CidEntry(
-            initial_remote_cid, UInt64(0), empty_token, CID_ACTIVE
-        )
-
-        self.remote_cids = List[CidEntry]()
-        self.remote_cids.append(remote_entry^)
+        # The peer's initial CID: its token, if any, is not tracked.
+        var zero_token = ByteVec[16](_storage=InlineArray[Byte, 16](fill=Byte(0)), _len=16)
+        self.remote_cids = [
+            CidEntry(CidBuf.from_span(initial_remote_cid), UInt64(0), zero_token^, CID_ACTIVE, False)
+        ]
         self.remote_active_cid_seq = UInt64(0)
 
         self.local_active_limit = clamp_local_active_limit(local_active_limit)
@@ -207,20 +185,11 @@ struct CidManager(Movable):
             return Int(self._peer_active_limit)
         return MAX_ISSUED_CIDS
 
-    # ── CID generation ────────────────────────────────────────────────────────
+    # ── Reset tokens ──────────────────────────────────────────────────────────
 
-    def generate_cid(mut self) raises -> List[Byte]:
-        """Generate an 8-byte random connection ID via getrandom(2)."""
-        var buf = _cid_alloc[UInt8](8)
-        _ = external_call["getrandom", Int](buf, UInt64(8), UInt32(0))
-        var cid = List[Byte](capacity=8)
-        cid.extend(Span(unsafe_ptr=buf, length=8))
-        buf.unsafe_free()
-        return cid^
-
-    def generate_reset_token(self, cid: Span[Byte, _]) raises -> List[Byte]:
-        """Compute HMAC-SHA256(server_secret, cid)[:16] as the reset token."""
-        return _hmac_sha256_truncate16(self._lib, Span(self.server_secret), cid)
+    def generate_reset_token(self, cid: Span[Byte, _]) raises -> ByteVec[16]:
+        """HMAC-SHA256(reset key, cid)[:16]: the same CID always maps to the same token."""
+        return _hmac_sha256_truncate16(self._lib, Span(self._reset_key), cid)
 
     # ── Local CID issuance ────────────────────────────────────────────────────
 
@@ -233,12 +202,11 @@ struct CidManager(Movable):
         if self.active_local_count() >= self.issue_limit():
             return None
 
-        var new_cid = self.generate_cid()
-        var token = _hmac_sha256_truncate16(self._lib, Span(self.server_secret), Span(new_cid))
-        var entry = CidEntry(new_cid, self.local_next_seq, token, CID_ACTIVE)
+        var new_cid = random_cid()
+        var token = self.generate_reset_token(new_cid.as_span())
+        var entry = CidEntry(new_cid^, self.local_next_seq, token^, CID_ACTIVE, False)
         self.local_next_seq += UInt64(1)
-        var entry_copy = CidEntry(copy=entry)
-        self.local_cids.append(entry_copy^)
+        self.local_cids.append(entry.copy())
         self.cid_epoch += UInt64(1)
         return entry^
 
@@ -248,13 +216,13 @@ struct CidManager(Movable):
         mut self,
         seq: UInt64,
         retire_prior_to: UInt64,
-        cid: List[Byte],
-        reset_token: List[Byte],
+        cid: Span[mut=False, Byte, _],
+        reset_token: Span[mut=False, Byte, _],
     ) -> Optional[GuardVerdict]:
         """Process a NEW_CONNECTION_ID frame (RFC 9000 Sections 5.1.1, 19.15).
 
-        The caller has already checked `retire_prior_to <= seq` and the CID
-        length. Outcomes:
+        The caller has already checked `retire_prior_to <= seq`, the CID
+        length (at most 20) and the token length (16). Outcomes:
         - exact repeat of a stored (seq, CID, token): ignored;
         - seq or CID matching a stored entry otherwise: PROTOCOL_VIOLATION,
           checked first, as quiche does, so a stale seq cannot smuggle in
@@ -271,11 +239,9 @@ struct CidManager(Movable):
         """
         for ref e in self.remote_cids:
             var same_seq = e.sequence == seq
-            var same_cid = _bytes_eq(Span(e.cid), Span(cid))
+            var same_cid = e.cid.as_span() == cid
             if same_seq or same_cid:
-                if same_seq and same_cid and _bytes_eq(
-                    Span(e.reset_token), Span(reset_token)
-                ):
+                if same_seq and same_cid and e.reset_token.as_span() == reset_token:
                     return None
                 return _verdict(PROTOCOL_VIOLATION, CID_REASON_CONFLICT)
 
@@ -299,9 +265,9 @@ struct CidManager(Movable):
         if UInt64(len(self.remote_cids)) >= self.local_active_limit:
             return _verdict(CONNECTION_ID_LIMIT_ERROR, CID_REASON_LIMIT)
 
-        self.remote_cids.append(
-            CidEntry(List[Byte](copy=cid), seq, List[Byte](copy=reset_token), CID_ACTIVE)
-        )
+        var token = ByteVec[16]()
+        _ = token.extend_truncated(reset_token)
+        self.remote_cids.append(CidEntry(CidBuf.from_span(cid), seq, token^, CID_ACTIVE, False))
         if self.remote_active_cid_seq < self.highest_retire_prior_to:
             var lowest = seq
             for ref e in self.remote_cids:
@@ -388,9 +354,7 @@ struct CidManager(Movable):
             return _verdict(PROTOCOL_VIOLATION, CID_REASON_RETIRE_UNISSUED)
         for i in range(len(self.local_cids)):
             if self.local_cids[i].sequence == sequence:
-                if len(packet_dcid) > 0 and _bytes_eq(
-                    Span(self.local_cids[i].cid), packet_dcid
-                ):
+                if len(packet_dcid) > 0 and self.local_cids[i].cid.as_span() == packet_dcid:
                     return _verdict(PROTOCOL_VIOLATION, CID_REASON_RETIRE_OWN_DCID)
                 _ = self.local_cids.pop(i)
                 self.cid_epoch += UInt64(1)
@@ -453,15 +417,11 @@ struct CidManager(Movable):
         return len(self.retire_queue) > 0
 
     def pending_new_cid_entries(self) -> List[CidEntry]:
-        """Return Active local CIDs that have not yet been advertised.
-
-        The connection send path calls this to discover which CIDs need a
-        NEW_CONNECTION_ID frame, then calls mark_advertised() after sending.
-        """
+        """Copies of the Active local CIDs still owing a NEW_CONNECTION_ID frame."""
         var result = List[CidEntry]()
         for ref entry in self.local_cids:
             if entry.state == CID_ACTIVE and not entry.advertised:
-                result.append(CidEntry(copy=entry))
+                result.append(entry.copy())
         return result^
 
     def mark_advertised(mut self, sequence: UInt64):
@@ -484,14 +444,11 @@ def _verdict(code: UInt64, reason: StaticString) -> Optional[GuardVerdict]:
     return Optional[GuardVerdict](GuardVerdict(error_code=code, tag=String(reason)))
 
 
-def _bytes_eq(a: Span[Byte, _], b: Span[Byte, _]) -> Bool:
-    """Byte equality, lengths included; not constant-time, so not for secrets."""
-    if len(a) != len(b):
-        return False
-    for i in range(len(a)):
-        if a[i] != b[i]:
-            return False
-    return True
+def random_cid() raises -> CidBuf:
+    """A fresh 8-byte CID from the kernel CSPRNG; the server demux packs 8-byte DCIDs raw (`dcid_to_u64`)."""
+    var cid = CidBuf(data=InlineArray[UInt8, 20](fill=UInt8(0)), len=UInt8(8))
+    fill_random(Span(cid.data)[:8])
+    return cid^
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
@@ -499,43 +456,28 @@ def _bytes_eq(a: Span[Byte, _], b: Span[Byte, _]) -> Bool:
 
 def _hmac_sha256_truncate16(
     lib: SharedLibrary, key: Span[Byte, _], msg: Span[Byte, _]
-) raises -> List[Byte]:
-    """Derive a 16-byte reset token via HMAC-SHA256(key, msg)[:16].
+) raises -> ByteVec[16]:
+    """HMAC-SHA256(key, msg)[:16] via aws-lc-rs; `key` and `msg` (a CID) at most 32 bytes each.
 
-    Uses the Rust FFI bridge (aws-lc-rs) for a proper cryptographic MAC.
+    Both are staged on the stack: the binding takes mutable pointers.
     """
-    var rlib = lib.inner_ptr()
-
-    var key_ptr = _cid_alloc[UInt8](len(key))
+    if len(key) > 32 or len(msg) > 32:
+        raise "HMAC-SHA256: key or message too long"
+    var k = InlineArray[UInt8, 32](fill=UInt8(0))
+    var m = InlineArray[UInt8, 32](fill=UInt8(0))
+    var mac = InlineArray[UInt8, 32](fill=UInt8(0))
     for i in range(len(key)):
-        key_ptr[unsafe_offset=i] = key[i]
-
-    var msg_ptr = _cid_alloc[UInt8](max(len(msg), 1))
+        k[i] = key[i]
     for i in range(len(msg)):
-        msg_ptr[unsafe_offset=i] = msg[i]
-
-    var out_ptr = _cid_alloc[UInt8](32)
-
+        m[i] = msg[i]
+    var rlib = lib.inner_ptr()
     var rc = rlib[].hmac_sha256(
-        key_ptr, Int32(len(key)),
-        msg_ptr, Int32(len(msg)),
-        out_ptr,
+        Pointer(to=k[0]), Int32(len(key)), Pointer(to=m[0]), Int32(len(msg)), Pointer(to=mac[0])
     )
-
     if rc != 0:
-        var err = rlib[].last_error()
-        key_ptr.unsafe_free()
-        msg_ptr.unsafe_free()
-        out_ptr.unsafe_free()
-        raise "HMAC-SHA256 failed: " + err
-
-    # Truncate to first 16 bytes for the reset token.
-    var token = List[Byte](capacity=16)
-    token.extend(Span(unsafe_ptr=out_ptr, length=16))
-
-    key_ptr.unsafe_free()
-    msg_ptr.unsafe_free()
-    out_ptr.unsafe_free()
+        raise "HMAC-SHA256 failed: " + rlib[].last_error()
+    var token = ByteVec[16]()
+    token.extend(Span(mac)[:16])
     return token^
 
 
