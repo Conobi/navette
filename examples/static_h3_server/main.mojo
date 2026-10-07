@@ -40,7 +40,7 @@ from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.runtime.socket_helpers import udp_listener
 from navette.quic.trans_param import default_transport_params
-from navette.quic.profile import monotonic_us
+from navette.util.clock import monotonic_us
 from navette.protect.config import ProtectionConfig, DEFAULT_MAX_QUEUE_DELAY_US
 from navette.tls import TlsBackend
 from navette.tls.config import QuicServerConfig

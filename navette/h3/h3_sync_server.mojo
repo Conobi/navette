@@ -35,7 +35,6 @@ from navette.http.method import Method
 from navette.http.request import Request
 from navette.http.status import StatusCode
 from navette.http.version import Version
-from navette.quic.profile import AcceptProfile
 from navette.tls.early_data_filter import (
     EarlyDataPredicateFn,
     IdempotentOnlyFilter,
@@ -391,15 +390,10 @@ struct H3CoroServer(Movable):
         # On reject (0-RTT request whose method is non-idempotent OR
         # fail-closed misconfig), synthesise a 425 Too Early and skip the
         # handler. On accept, the helper has already injected
-        # `Early-Data: 1` into req_headers. The sync adapter has no
-        # profile_ptr field (counter routing is owned by H3HandlerServer),
-        # so the helper is called with `profile_ptr=None`.
+        # `Early-Data: 1` into req_headers.
         var stream_is_zr = False
         if self._h3._quic.zrtt.enabled:
             stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
-            var _no_profile = Optional[
-                Pointer[AcceptProfile, MutUntrackedOrigin]
-            ](None)
             var outcome = apply_early_data_filter(
                 method_str,
                 path_str,
@@ -407,7 +401,6 @@ struct H3CoroServer(Movable):
                 self._early_data_filter_ptr,
                 self._early_data_predicate_fn,
                 req_headers,
-                _no_profile,
             )
             if outcome.should_send_425():
                 send_425_response(ev.stream_id, self._h3)

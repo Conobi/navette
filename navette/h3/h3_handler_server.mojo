@@ -12,7 +12,6 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.quic.connection import QuicConnection
 from navette.quic.cid import dcid_to_u64
 from navette.quic.path import PathKey
-from navette.quic.profile import AcceptProfile, monotonic_us, rdtsc, CallId, PROFILE_ACCEPT
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.early_data_filter_dispatch import (
     apply_early_data_filter, send_425_response, stream_is_zero_rtt,
@@ -118,7 +117,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     var _h3:      H3Connection
     var handler:  Self.H
     var _streams: Dict[Int, PtrBox[_H3StreamCtx]]
-    var profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
     # the `QuicServerConfig` that birthed this connection. Populated
     # only when 0-RTT is enabled via the IdempotentOnly / Tuned
@@ -127,7 +125,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     # `_early_data_predicate_fn`: at most one is Some when 0-RTT is on,
     # and both are None when 0-RTT is off. When BOTH are None on a
     # 0-RTT-arrived request, the dispatch helper takes the fail-closed
-    # branch (a config-invariant violation; misconfig_fail_closed bumps).
+    # branch (a config-invariant violation).
     var _early_data_filter_ptr: Optional[
         Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
     ]
@@ -150,7 +148,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var quic: QuicConnection,
         var handler: Self.H,
         codec_tables: Optional[Pointer[QpackCodecTables, MutUntrackedOrigin]] = None,
-        profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
         early_data_filter_ptr: Optional[
             Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
         ] = None,
@@ -159,11 +156,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         self._h3 = H3Connection.server(quic^, codec_tables)
         self.handler = handler^
         self._streams = Dict[Int, PtrBox[_H3StreamCtx]]()
-        self.profile_ptr = profile_ptr
-        # Shape B threading: H3Connection.server/.client have ~15 call sites
-        # in src/h3/ and tests/; we set profile_ptr post-construction here
-        # rather than threading it through 15 call sites.
-        self._h3.profile_ptr = profile_ptr
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
         self._raise_on_next_drain = False
@@ -197,29 +189,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     ) raises:
         """Feed one inbound QUIC datagram from a mutable buffer (zero-copy)."""
         self._h3.feed_datagram_from_buffer(buf, buf_len, now, ecn_mark)
-
-        # Bracket _dispatch_h3_events
-        comptime if PROFILE_ACCEPT:
-            var t_dispatch_start: UInt64 = 0
-            if self.profile_ptr is not None:
-                t_dispatch_start = monotonic_us()
-            self._dispatch_h3_events(now)
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_h3_dispatch(monotonic_us() - t_dispatch_start)
-        else:
-            self._dispatch_h3_events(now)
-
-        # Bracket _drain_responses (only when established)
+        self._dispatch_h3_events(now)
         if self._h3.is_established():
-            comptime if PROFILE_ACCEPT:
-                var t_drain_resp_start: UInt64 = 0
-                if self.profile_ptr is not None:
-                    t_drain_resp_start = monotonic_us()
-                self._drain_responses(now)
-                if self.profile_ptr is not None:
-                    self.profile_ptr.value()[].record_h3_drain_resp(monotonic_us() - t_drain_resp_start)
-            else:
-                self._drain_responses(now)
+            self._drain_responses(now)
 
     def drain_datagrams(mut self, now: UInt64, mut out: List[List[Byte]], hold: Bool = False) raises:
         """Send-until-empty drain appended to `out`, capped, or held; see `H3Connection.drain_datagrams`.
@@ -295,9 +267,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         """Parse pseudo-headers from QPACK fields, build Request, invoke handler (unless the connection sheds it)."""
         if self._h3.shed_if_over_share(ev.stream_id):
             return
-        var _ct_start = UInt64(0)
-        comptime if PROFILE_ACCEPT:
-            _ct_start = rdtsc()
         var method_str = String("GET")
         var path_str = String("/")
         var authority_str = String("")
@@ -351,13 +320,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 self._early_data_filter_ptr,
                 self._early_data_predicate_fn,
                 req_headers,
-                self.profile_ptr,
             )
             if outcome.should_send_425():
                 send_425_response(ev.stream_id, self._h3)
-                comptime if PROFILE_ACCEPT:
-                    if self.profile_ptr is not None:
-                        self.profile_ptr.value()[].call_tracker.record(CallId.ON_REQUEST, rdtsc() - _ct_start)
                 return
 
         var req = Request(
@@ -406,9 +371,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         ctx.detached = detached
         ctx_ptr.unsafe_write(ctx^)
         self._streams[Int(ev.stream_id)] = PtrBox[_H3StreamCtx](ctx_ptr)
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].call_tracker.record(CallId.ON_REQUEST, rdtsc() - _ct_start)
 
     def _on_data(mut self, ev: H3Event) raises:
         var sid = Int(ev.stream_id)
@@ -464,9 +426,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     def _drain_responses(mut self, now: UInt64) raises:
         """For each open stream: send response headers then body frames."""
-        var _ct_start = UInt64(0)
-        comptime if PROFILE_ACCEPT:
-            _ct_start = rdtsc()
         var sids = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             sids.append(key)
@@ -534,9 +493,6 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                     break
             ctx_ptr.unsafe_write(ctx^)
             self._maybe_cleanup(sid)
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].call_tracker.record(CallId.DRAIN_RESPONSES, rdtsc() - _ct_start)
 
     def _maybe_cleanup(mut self, sid: Int) raises:
         """Free stream context if both sides are done."""

@@ -19,7 +19,6 @@ from navette.quic.event import (
 )
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
 from navette.quic.path import PathKey
-from navette.quic.profile import AcceptProfile, monotonic_us, PROFILE_ACCEPT, rdtsc, CallId
 from navette.h3.frame import (
     H3RawFrame,
     DataFrame,
@@ -273,7 +272,6 @@ struct H3Connection(Movable):
     # SETTINGS frame is received with H3_DATAGRAM=1.
     var _local_h3_datagram_enabled:  Bool
     var _peer_h3_datagram_enabled:   Bool
-    var profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
     # Read cursor into `_h3_events`; entries below it are consumed. Reset
     # to 0 (with the list cleared) once every event has been popped.
     var _h3_events_head:             Int
@@ -324,7 +322,6 @@ struct H3Connection(Movable):
         self._request_headers_seen = Dict[Int, Bool]()
         self._local_h3_datagram_enabled = False
         self._peer_h3_datagram_enabled = False
-        self.profile_ptr = None
         self._wire_scratch = List[Byte](capacity=256)
         self.shed_above, self.retry_after_s, self.long_lived, self._gov_opened, self._gov_done, self.refused_503 = UInt64.MAX, 1, 0, 0, 0, 0
 
@@ -465,26 +462,10 @@ struct H3Connection(Movable):
         """Feed one inbound QUIC datagram from a mutable buffer pointer.
         Zero-copy variant — buffer is modified in-place."""
         self._quic.recv_from_buffer(buf, buf_len, now, ecn_mark)
-
-        # Bracket the post-recv tail (timeout + poll-loop including _drain_stream).
-        # record_pkt at connection.mojo:890 fires INSIDE recv_from_buffer's
-        # coalesced-packet for-loop and is bounded by it; this bracket covers
-        # the disjoint H3-application-event-drain phase.
-        comptime if PROFILE_ACCEPT:
-            var t_start: UInt64 = 0
-            if self.profile_ptr is not None:
-                t_start = monotonic_us()
-            self._poll_quic_events(now)
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_quic_post_recv(monotonic_us() - t_start)
-        else:
-            self._poll_quic_events(now)
+        self._poll_quic_events(now)
 
     def _poll_quic_events(mut self, now: UInt64) raises:
         """Process pending QUIC timeout and drain application events."""
-        var _ct_start = UInt64(0)
-        comptime if PROFILE_ACCEPT:
-            _ct_start = rdtsc()
         while True:
             var ev_opt = self._quic.poll()
             if not ev_opt:
@@ -528,9 +509,6 @@ struct H3Connection(Movable):
                 self._h3_events.append(h3ev^)
             elif ev.type_id == QuicEvent.DATAGRAM_RECEIVED:
                 self._dispatch_quic_datagram(ev.payload.unsafe_get[List[Byte]]())
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].call_tracker.record(CallId.POLL_QUIC_EVENTS, rdtsc() - _ct_start)
 
     def drain_datagrams(mut self, now: UInt64, mut out: List[List[Byte]], hold: Bool = False) raises:
         """Append UDP payloads to `out` until `send()` runs dry or the drain cap hits.
@@ -766,29 +744,21 @@ struct H3Connection(Movable):
         var existing: Optional[UInt64],
         label: String,
         now: UInt64,
-        t_start_buf: UInt64,
-        t_start_drain: UInt64,
     ) -> Bool:
         """Return True (and queue a CONNECTION_CLOSE_APP) if `existing` is set.
 
         Used to detect a second peer-initiated unidirectional control /
         QPACK encoder / QPACK decoder stream per RFC 9114 §6.2.1 and
-        RFC 9204 §4.2. Centralises the existence-check + close + profile
-        bookkeeping common to all three well-known unidirectional types so
-        a future fourth type doesn't re-introduce the same copy-paste.
+        RFC 9204 Section 4.2, for all three well-known unidirectional
+        types, so a future fourth type doesn't re-introduce the same
+        copy-paste.
 
         `label` is interpolated as `"duplicate " + label + " stream"` into
-        the CONNECTION_CLOSE reason field. `t_start_buf` and `t_start_drain`
-        are the monotonic-µs stamps captured at the top of `_drain_stream`
-        used by the PROFILE_ACCEPT comptime sidecar.
+        the CONNECTION_CLOSE reason field.
         """
         if not existing:
             return False
         self._quic.close_app(H3_STREAM_CREATION_ERROR, "duplicate " + label + " stream", now)
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
-                self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
         return True
 
     def _drain_stream(mut self, stream_id: UInt64, now: UInt64) raises:
@@ -807,26 +777,6 @@ struct H3Connection(Movable):
         if key not in self._stream_bufs:
             return  # locally-initiated stream or unknown — ignore
 
-        # Hoisted clock-read state for B1 (parent), B2 (recv_ffi), B3a (buf_accumulate).
-        # Single-pair pattern per Q1 lessons (sub-leg pass T4 — Mojo lexical scope):
-        # `comptime if` introduces its own scope, so we hoist these to function scope.
-        # The `comptime if not PROFILE_ACCEPT` discards below silence the "init never
-        # used" warning on default builds (the comptime profile branches vanish).
-        var t_start_drain: UInt64 = 0
-        var t_start_ffi: UInt64 = 0
-        var t_start_buf: UInt64 = 0
-        comptime if not PROFILE_ACCEPT:
-            _ = t_start_drain
-            _ = t_start_ffi
-            _ = t_start_buf
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                t_start_drain = monotonic_us()
-
-        # B2 entry — wrap the FFI recv_stream_data call.
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                t_start_ffi = monotonic_us()
         var recv_result: Tuple[List[Byte], Bool]
         try:
             recv_result = self._quic.recv_stream_data(stream_id)
@@ -835,14 +785,6 @@ struct H3Connection(Movable):
             # released the H3 state too: a delivered STREAM_RESET, or a
             # drain that read through FIN once our side had finished.
             return
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_drain_recv_ffi(monotonic_us() - t_start_ffi)
-
-        # B3a entry — wrap from recv_result.copy() through the bidi-check exit.
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                t_start_buf = monotonic_us()
 
         var new_bytes = List[Byte]()
         swap(new_bytes, recv_result[0])
@@ -854,10 +796,6 @@ struct H3Connection(Movable):
         if self._stream_bufs[key].discard:
             if fin:
                 self._release_stream(stream_id, now)
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
-                    self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
             return
 
         # Parse straight out of the received bytes; only a leftover partial
@@ -876,11 +814,6 @@ struct H3Connection(Movable):
                 if len(buf) == 0:
                     if fin:
                         self._release_stream(stream_id, now)
-                    # B3a + B1 exit (return path 1 — UNI empty buf).
-                    comptime if PROFILE_ACCEPT:
-                        if self.profile_ptr is not None:
-                            self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
-                            self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
                     return
                 var type_byte = buf[0]
                 pos = 1
@@ -888,20 +821,20 @@ struct H3Connection(Movable):
                 if type_byte == UInt8(0x00):
                     # RFC 9114 §6.2.1: at most one control stream per peer.
                     var existing_ctrl = self._peer_ctrl_sid.copy()
-                    if self._close_duplicate_uni_stream(existing_ctrl^, "control", now, t_start_buf, t_start_drain):
+                    if self._close_duplicate_uni_stream(existing_ctrl^, "control", now):
                         return
                     self._peer_ctrl_sid = Optional[UInt64](stream_id)
                 elif type_byte == UInt8(0x02):
                     # RFC 9204 §4.2: at most one QPACK encoder stream per peer.
                     var existing_qenc = self._peer_qenc_sid.copy()
-                    if self._close_duplicate_uni_stream(existing_qenc^, "qpack encoder", now, t_start_buf, t_start_drain):
+                    if self._close_duplicate_uni_stream(existing_qenc^, "qpack encoder", now):
                         return
                     self._peer_qenc_sid = Optional[UInt64](stream_id)
                     self._stream_bufs[key].discard = True
                 elif type_byte == UInt8(0x03):
                     # RFC 9204 §4.2: at most one QPACK decoder stream per peer.
                     var existing_qdec = self._peer_qdec_sid.copy()
-                    if self._close_duplicate_uni_stream(existing_qdec^, "qpack decoder", now, t_start_buf, t_start_drain):
+                    if self._close_duplicate_uni_stream(existing_qdec^, "qpack decoder", now):
                         return
                     self._peer_qdec_sid = Optional[UInt64](stream_id)
                     self._stream_bufs[key].discard = True
@@ -910,21 +843,11 @@ struct H3Connection(Movable):
                 if self._stream_bufs[key].discard:
                     if fin:
                         self._release_stream(stream_id, now)
-                    # B3a + B1 exit (return path 2 — discarded UNI type).
-                    comptime if PROFILE_ACCEPT:
-                        if self.profile_ptr is not None:
-                            self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
-                            self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
                     return
 
         # Reject server-initiated bidi from peer (RFC 9114 §6.1)
         if not self._stream_bufs[key].is_uni and self._is_peer_initiated(stream_id) and not self._is_server:
             self._quic.close_app(H3_STREAM_CREATION_ERROR, "server-initiated bidi not supported", now)
-            # B3a + B1 exit (return path 3 — bidi rejection).
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
-                    self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
             return
 
         # Determine if this is the peer control stream
@@ -932,11 +855,6 @@ struct H3Connection(Movable):
         if self._peer_ctrl_sid:
             if self._peer_ctrl_sid.value() == stream_id:
                 is_ctrl = True
-
-        # B3a exit — buf_accumulate phase ends BEFORE parse-loop entry.
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_drain_buf_accumulate(monotonic_us() - t_start_buf)
 
         var remaining = self._stream_bufs[key].payload_remaining
         var skipping = self._stream_bufs[key].skipping
@@ -967,11 +885,6 @@ struct H3Connection(Movable):
                 h3ev.stream_id = stream_id
                 self._h3_events.append(h3ev^)
             self._release_stream(stream_id, now)
-
-        # B1 exit (fall-through path 4).
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].record_drain_stream(monotonic_us() - t_start_drain)
 
     def _release_stream(mut self, stream_id: UInt64, now: UInt64):
         """Forget a stream's receive state once the peer finished or reset it.
@@ -1014,13 +927,6 @@ struct H3Connection(Movable):
         drains. When one DATA chunk spans all of `buf`, its storage moves
         into the event and `buf` is left empty (position 0).
         """
-        var _ct_start = UInt64(0)
-        comptime if PROFILE_ACCEPT:
-            _ct_start = rdtsc()
-        # Hoisted per-iter clock-read state (Q1 lesson: hoist to function scope, reassign per iter).
-        var t_start_parse: UInt64 = 0
-        comptime if not PROFILE_ACCEPT:
-            _ = t_start_parse
         var pos = start
         while True:
             if (self._quic.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
@@ -1046,10 +952,6 @@ struct H3Connection(Movable):
                 self._handle_request_frame(stream_id, H3RawFrame(H3_FRAME_DATA, chunk^), now)
                 continue
 
-            # B4 entry — wrap the frame-header parse.
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    t_start_parse = monotonic_us()
             var frame_type = UInt64(0)
             var length = UInt64(0)
             var hdr_len = 0
@@ -1061,9 +963,6 @@ struct H3Connection(Movable):
                 hdr_len = r.pos
             except:
                 ok = False
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    self.profile_ptr.value()[].record_drain_frame_parse(monotonic_us() - t_start_parse)
             if not ok:
                 break  # header incomplete
 
@@ -1089,9 +988,6 @@ struct H3Connection(Movable):
                 # Skipped frames still reach the handler (type-only checks
                 # such as "first control frame must be SETTINGS").
                 self._dispatch_frame(stream_id, is_ctrl, H3RawFrame(frame_type, List[Byte]()), now)
-        comptime if PROFILE_ACCEPT:
-            if self.profile_ptr is not None:
-                self.profile_ptr.value()[].call_tracker.record(CallId.PARSE_FRAMES, rdtsc() - _ct_start)
         return pos
 
     def _payload_action(
@@ -1288,14 +1184,7 @@ struct H3Connection(Movable):
             self._quic.close_app(v.error_code, v.tag, now)
             return
 
-        var t_start_qpack: UInt64 = 0
-        comptime if not PROFILE_ACCEPT:
-            _ = t_start_qpack
         if frame.frame_type == H3_FRAME_HEADERS:
-            # B5 — wrap QPACK decode only.
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    t_start_qpack = monotonic_us()
             var decoded: Optional[List[QpackHeaderField]]
             try:
                 decoded = self._dec.decode_bounded(frame.payload, H3_MAX_FIELD_SECTION_SIZE)
@@ -1309,9 +1198,6 @@ struct H3Connection(Movable):
                 self._quic.close_app(H3_EXCESSIVE_LOAD, "field section too large", now)
                 return
             var fields = decoded.unsafe_take()
-            comptime if PROFILE_ACCEPT:
-                if self.profile_ptr is not None:
-                    self.profile_ptr.value()[].record_drain_qpack_decode(monotonic_us() - t_start_qpack)
             self._request_headers_seen[Int(stream_id)] = True
             var h3ev = H3Event(H3Event.HEADERS_RECEIVED)
             h3ev.stream_id = stream_id

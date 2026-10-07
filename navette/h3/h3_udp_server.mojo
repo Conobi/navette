@@ -127,7 +127,7 @@ from navette.quic.cid_buf import CidBuf
 from navette.quic.connection import QuicConnection
 from navette.quic.packet import extract_dcid
 from navette.quic.path import PathKey
-from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us
+from navette.util.clock import monotonic_us
 from navette.quic.trans_param import TransportParams
 from navette.util.null_ptr import null_ptr
 from navette.util.siphash import SipKey
@@ -598,10 +598,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
     # across all connections — eliminates per-connection rebuild cost.
     var _codec_tables: QpackCodecTables
 
-    # PROFILE_ACCEPT counters (always present; dead-stripped when
-    # PROFILE_ACCEPT=False at compile time).
-    var profile: AcceptProfile
-
     # Largest datagram payload a receive buffer holds untruncated; set in
     # start() and never below `MIN_RECV_WINDOW`.
     var recv_window: Int
@@ -714,7 +710,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         self._clock_override_us = Optional[UInt64](None)
 
         self._codec_tables = QpackCodecTables()
-        self.profile = AcceptProfile()
         self.recv_window = 0
         self._test_disable_gro = False
         self._test_fail_start_after_recv = False
@@ -1493,34 +1488,11 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         """Build a fresh per-connection `H3HandlerServer[H]` on the heap.
 
         Extracted from `_flush_impl`'s new-connection branch so tests can
-        exercise the real wiring without standing up an io_uring loop. The
-        body mirrors the inline construction exactly, with one difference:
-        the accept-profile pointer is threaded into BOTH the QUIC layer and
-        the H3 adapter so every counter family stays live in the library
-        server (the inline code never did this, leaving them dead).
+        exercise the real wiring without standing up an io_uring loop.
 
-        # Both pointers wired unconditionally
-
-        `UnsafePointer(to=self.profile)` is passed to `QuicConnection.server`
-        and `H3HandlerServer`'s `profile_ptr` kwarg with no compile-time or
-        runtime guard. This is cheap by construction:
-
-          * The QUIC-side record sites are `comptime if PROFILE_ACCEPT`
-            gated, so a default (`PROFILE_ACCEPT=False`) build dead-strips
-            every `record_*` call and pays only for one stored pointer.
-          * The `zero_rtt_http_filter_*` record sites are runtime-gated by
-            design (they only fire on a 0-RTT-arrived request when the
-            policy is on), so wiring the pointer is the only thing that
-            lets those counters reach `self.profile` at all.
-
-        # Pointer stability
-
-        `UnsafePointer(to=self.profile)` is only valid while `self` stays
-        put. The server must be heap-allocated with `wire_context()` called
-        BEFORE any connection exists, so the profile's address is fixed by
-        the time the first handler is built; `H3UdpServer` must not be moved
-        while handlers hold this pointer. This mirrors the existing
-        `_early_data_store` / `_early_data_filter` pointer discipline.
+        The handler holds pointers to `self._codec_tables` and the
+        early-data filter in `server_config`, so `H3UdpServer` must not be
+        moved while handlers exist.
 
         Args:
             dcid: The DCID of the Initial that opens the connection
@@ -1551,10 +1523,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             Span(orig),
             dcid,
             now,
-            # The connection stores this alias for its whole lifetime, which
-            # outlives what the checker can see of `self.profile`; the field is
-            # untracked, so the hand-off is explicit rather than implied.
-            Pointer(to=self.profile).unsafe_origin_cast[MutUntrackedOrigin](),
             retry_scid=retry_scid.copy(), stream_window=self.governor.decision.share,
             reset_key=self._reset_key.copy(),
         )
@@ -1584,9 +1552,6 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
             quic=quic^,
             handler=handler^,
             codec_tables=Optional(Pointer(to=self._codec_tables).unsafe_origin_cast[MutUntrackedOrigin]()),
-            profile_ptr=Pointer(to=self.profile).unsafe_origin_cast[
-                MutUntrackedOrigin
-            ](),
             early_data_filter_ptr=early_data_filter_ptr_opt,
             predicate_fn=predicate_fn_opt,
         )

@@ -30,7 +30,6 @@ from navette.http.headers import Headers
 from navette.quic.connection import QuicConnection
 from navette.quic.frame import StreamFrame
 from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
-from navette.quic.profile import AcceptProfile, CounterId
 from navette.quic.stream import Stream
 from navette.quic.trans_param import default_transport_params
 from navette.tls.config import QuicServerConfig, FilterStrategy
@@ -66,17 +65,6 @@ def _make_filter_ptr_some(
     keep `filter` alive past the helper call."""
     return Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]](
         Pointer(to=filter).unsafe_origin_cast[
-            MutUntrackedOrigin
-        ]()
-    )
-
-
-def _make_profile_ptr_some(
-    mut prof: AcceptProfile,
-) -> Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]:
-    """Return Some(ptr) wrapping a stack-rooted AcceptProfile."""
-    return Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
-        Pointer(to=prof).unsafe_origin_cast[
             MutUntrackedOrigin
         ]()
     )
@@ -133,88 +121,6 @@ def test_capabilities_for_h1_h2_default_is_early_data_false() raises:
     H1/H2 are out of scope."""
     assert_false(Capabilities.for_h1().is_early_data, String("for_h1 defaults False"))
     assert_false(Capabilities.for_h2().is_early_data, String("for_h2 defaults False"))
-
-
-def test_zero_rtt_http_filter_counters_default_zero() raises:
-    """AC counter-exact-bucket-routing (default state). A fresh
-    AcceptProfile starts all 4 HTTP-filter counters at 0."""
-    var prof = AcceptProfile()
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0,
-        String("accept defaults 0"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0,
-        String("reject_425 defaults 0"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0,
-        String("misconfig_fail_closed defaults 0"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0,
-        String("1rtt_bypassed defaults 0"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_USER_RAISED)), 0,
-        String("user_raised defaults 0"),
-    )
-
-
-def test_zero_rtt_http_filter_recorders_bump_correct_bucket() raises:
-    """AC counter-exact-bucket-routing (per-recorder mutual exclusion).
-    Each recorder increments exactly its own counter."""
-    var prof = AcceptProfile()
-
-    prof.record_zero_rtt_http_filter_accept()
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1, String("accept +=1"))
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0, String("reject untouched"))
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0, String("misconfig untouched"))
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0, String("1rtt untouched"))
-
-    prof.record_zero_rtt_http_filter_reject_425()
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1, String("accept unchanged"))
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 1, String("reject +=1"))
-
-    prof.record_zero_rtt_http_filter_misconfig_fail_closed()
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 1, String("misconfig +=1"))
-
-    prof.record_zero_rtt_http_filter_1rtt_bypassed()
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 1, String("1rtt +=1"))
-
-    prof.record_zero_rtt_http_filter_user_raised()
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_USER_RAISED)), 1, String("user_raised +=1"))
-
-
-def test_zero_rtt_http_filter_text_reporter_emits_block() raises:
-    """AC counters-emit-text-block. The text reporter outputs a
-    `zero_rtt_http_filter:` block with four `_fmt_count`-aligned lines."""
-    var prof = AcceptProfile()
-    prof.record_zero_rtt_http_filter_accept()
-    prof.record_zero_rtt_http_filter_accept()
-    prof.record_zero_rtt_http_filter_reject_425()
-    var txt = prof.report_text()
-    assert_true("zero_rtt_http_filter:" in txt, String("block header present"))
-    assert_true("  accept:" in txt, String("accept line present"))
-    assert_true("  reject_425:" in txt, String("reject_425 line present"))
-    assert_true("  misconfig_fail_closed:" in txt, String("misconfig line present"))
-    assert_true("  1rtt_bypassed:" in txt, String("1rtt_bypassed line present"))
-    assert_true("  user_raised:" in txt, String("user_raised line present"))
-
-
-def test_zero_rtt_http_filter_json_reporter_emits_object() raises:
-    """AC counters-emit-json-object. JSON reporter outputs a
-    `"zero_rtt_http_filter"` object with 4 keys; final field has no
-    trailing comma (JSON validity)."""
-    var prof = AcceptProfile()
-    prof.record_zero_rtt_http_filter_1rtt_bypassed()
-    var j = prof.report_json()
-    assert_true('"zero_rtt_http_filter"' in j, String("object key present"))
-    assert_true('"accept"' in j, String("accept key present"))
-    assert_true('"reject_425"' in j, String("reject_425 key present"))
-    assert_true('"misconfig_fail_closed"' in j, String("misconfig key present"))
-    assert_true('"1rtt_bypassed"' in j, String("1rtt_bypassed key present"))
-    assert_true('"user_raised"' in j, String("user_raised key present"))
 
 
 def test_filter_field_populated_when_zero_rtt_enabled() raises:
@@ -456,53 +362,32 @@ def test_stream_is_zero_rtt_monotonic_after_handshake_complete() raises:
 def test_filter_helper_1rtt_proceeds_no_injection() raises:
     """AC filter-helper-1rtt-proceeds-no-injection."""
     var filter = IdempotentOnlyFilter()
-    var prof = AcceptProfile()
     var fp = _make_filter_ptr_some(filter)
-    var pp = _make_profile_ptr_some(prof)
     var headers = Headers()
 
     var outcome = apply_early_data_filter(
         String("POST"), String("/"), False, fp,
         Optional[EarlyDataPredicateFn](None),
-        headers, pp,
+        headers,
     )
     assert_true(outcome.should_proceed(), String("1-RTT must proceed"))
     assert_false(
         headers.has(String("early-data")),
         String("no Early-Data injection on 1-RTT"),
     )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 1,
-        String("1rtt_bypassed += 1"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0,
-        String("accept untouched"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0,
-        String("reject untouched"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0,
-        String("misconfig untouched"),
-    )
     _ = filter
-    _ = prof
 
 
 def test_filter_helper_0rtt_get_injects_and_proceeds() raises:
     """AC filter-helper-0rtt-get-injects-and-proceeds."""
     var filter = IdempotentOnlyFilter()
-    var prof = AcceptProfile()
     var fp = _make_filter_ptr_some(filter)
-    var pp = _make_profile_ptr_some(prof)
     var headers = Headers()
 
     var outcome = apply_early_data_filter(
         String("GET"), String("/"), True, fp,
         Optional[EarlyDataPredicateFn](None),
-        headers, pp,
+        headers,
     )
     assert_true(outcome.should_proceed(), String("0-RTT GET must proceed"))
     assert_true(
@@ -514,38 +399,19 @@ def test_filter_helper_0rtt_get_injects_and_proceeds() raises:
         got == String("1"),
         String("Early-Data value is '1'"),
     )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1,
-        String("accept += 1"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0,
-        String("1rtt untouched"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0,
-        String("reject untouched"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0,
-        String("misconfig untouched"),
-    )
     _ = filter
-    _ = prof
 
 
 def test_filter_helper_0rtt_post_emits_425() raises:
     """AC filter-helper-0rtt-post-emits-425."""
     var filter = IdempotentOnlyFilter()
-    var prof = AcceptProfile()
     var fp = _make_filter_ptr_some(filter)
-    var pp = _make_profile_ptr_some(prof)
     var headers = Headers()
 
     var outcome = apply_early_data_filter(
         String("POST"), String("/"), True, fp,
         Optional[EarlyDataPredicateFn](None),
-        headers, pp,
+        headers,
     )
     assert_true(
         outcome.should_send_425(), String("0-RTT POST must reject"),
@@ -554,32 +420,13 @@ def test_filter_helper_0rtt_post_emits_425() raises:
         headers.has(String("early-data")),
         String("no header on reject"),
     )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 1,
-        String("reject_425 += 1"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0,
-        String("accept untouched"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0,
-        String("1rtt untouched"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0,
-        String("misconfig untouched"),
-    )
     _ = filter
-    _ = prof
 
 
 def test_filter_helper_0rtt_filter_none_fails_closed() raises:
     """AC filter-helper-0rtt-filter-none-fails-closed.
 
     Even GET fails-closed when filter_ptr is None on a 0-RTT request."""
-    var prof = AcceptProfile()
-    var pp = _make_profile_ptr_some(prof)
     var headers = Headers()
     var none_ptr: Optional[
         Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
@@ -588,7 +435,7 @@ def test_filter_helper_0rtt_filter_none_fails_closed() raises:
     var outcome = apply_early_data_filter(
         String("GET"), String("/"), True, none_ptr,
         Optional[EarlyDataPredicateFn](None),
-        headers, pp,
+        headers,
     )
     assert_true(
         outcome.should_send_425(),
@@ -598,37 +445,15 @@ def test_filter_helper_0rtt_filter_none_fails_closed() raises:
         headers.has(String("early-data")),
         String("no header on fail-closed"),
     )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 1,
-        String("misconfig_fail_closed += 1"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0,
-        String("accept untouched"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0,
-        String("reject untouched"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0,
-        String("1rtt untouched"),
-    )
-    _ = prof
 
 
-def test_filter_helper_counter_mutual_exclusion() raises:
-    """AC filter-helper-counter-mutual-exclusion.
-
-    Across 100 deterministic random triples, each call bumps exactly
-    ONE counter; sum of deltas == call count."""
+def test_filter_helper_random_outcomes() raises:
+    """Across 100 deterministic random triples, each call's outcome and
+    Early-Data injection match the dispatch truth-table."""
     var filter = IdempotentOnlyFilter()
-    var prof = AcceptProfile()
     var fp = _make_filter_ptr_some(filter)
-    var pp = _make_profile_ptr_some(prof)
     var state = UInt64(0xCAFEBABEC0DEFEED)
-    var calls = 100
-    for _ in range(calls):
+    for _ in range(100):
         var headers = Headers()
         var r = _splitmix64(state)
         var is_zr = (r % UInt64(2)) == UInt64(1)
@@ -642,34 +467,38 @@ def test_filter_helper_counter_mutual_exclusion() raises:
             method = String("OPTIONS")
         else:
             method = String("PATCH")
+        var idempotent = method_pick == 0 or method_pick == 2
         var none_or_some = _splitmix64(state) % UInt64(10)
+        var outcome: FilterDispatchOutcome
+        var expect_proceed: Bool
+        var expect_header: Bool
         if none_or_some == UInt64(0) and is_zr:
             # Mostly Some; rare None for fail-closed coverage when 0-RTT.
             var none_ptr: Optional[
                 Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
             ] = None
-            _ = apply_early_data_filter(
+            outcome = apply_early_data_filter(
                 method, String("/"), is_zr, none_ptr,
-                Optional[EarlyDataPredicateFn](None), headers, pp,
+                Optional[EarlyDataPredicateFn](None), headers,
             )
+            expect_proceed = False
+            expect_header = False
         else:
-            _ = apply_early_data_filter(
+            outcome = apply_early_data_filter(
                 method, String("/"), is_zr, fp,
-                Optional[EarlyDataPredicateFn](None), headers, pp,
+                Optional[EarlyDataPredicateFn](None), headers,
             )
-
-    var total = (
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT))
-        + Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425))
-        + Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED))
-        + Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED))
-    )
-    assert_equal_int(
-        total, calls,
-        String("sum of bucket deltas equals call count"),
-    )
+            expect_proceed = not is_zr or idempotent
+            expect_header = is_zr and idempotent
+        assert_true(
+            outcome.should_proceed() == expect_proceed,
+            String("outcome matches truth-table for ") + method,
+        )
+        assert_true(
+            headers.has(String("early-data")) == expect_header,
+            String("Early-Data injection matches truth-table for ") + method,
+        )
     _ = filter
-    _ = prof
 
 
 def test_send_425_emits_status_only_fin() raises:
@@ -749,10 +578,6 @@ def main() raises:
     test_capabilities_is_early_data_defaults_false()
     test_capabilities_for_h3_accepts_is_early_data_kwarg()
     test_capabilities_for_h1_h2_default_is_early_data_false()
-    test_zero_rtt_http_filter_counters_default_zero()
-    test_zero_rtt_http_filter_recorders_bump_correct_bucket()
-    test_zero_rtt_http_filter_text_reporter_emits_block()
-    test_zero_rtt_http_filter_json_reporter_emits_object()
     test_filter_field_populated_when_zero_rtt_enabled()
     test_no_filter_field_when_zero_rtt_disabled()
     test_store_and_filter_synchronized_when_enabled()
@@ -766,7 +591,7 @@ def main() raises:
     test_filter_helper_0rtt_get_injects_and_proceeds()
     test_filter_helper_0rtt_post_emits_425()
     test_filter_helper_0rtt_filter_none_fails_closed()
-    test_filter_helper_counter_mutual_exclusion()
+    test_filter_helper_random_outcomes()
     test_send_425_emits_status_only_fin()
     test_filter_dispatch_outcome_equality_and_helpers()
     print("test_quic_zero_rtt_http_filter: all tests passed")

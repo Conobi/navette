@@ -34,7 +34,7 @@ from navette.quic.error import (
     QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR,
     FINAL_SIZE_ERROR, FLOW_CONTROL_ERROR,
 )
-from navette.quic.profile import AcceptProfile, CounterId, PROFILE_ACCEPT, monotonic_us, ProfileState, rdtsc, CallId
+from navette.util.clock import monotonic_us
 from navette.quic.zero_rtt import (
     ZeroRttState, ZERO_RTT_BUFFER_MAX_PKTS, ZERO_RTT_BUFFER_MAX_BYTES,
     invoke_replay_authenticator_ffi, drive_replay_check_for_test,
@@ -239,7 +239,6 @@ def _create_server_tls_conn(
     lib: SharedLibrary,
     config_handle: Int32,
     var tp_bytes: List[Byte],
-    profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]],
 ) raises -> Int32:
     """Create a QUIC server TLS connection via FFI, return conn handle.
 
@@ -251,16 +250,10 @@ def _create_server_tls_conn(
         tp_bytes.append(0)
     var out_handle = Int32(-1)
     var rlib = lib.inner_ptr()
-    var t_tls_start: UInt64 = 0
-    comptime if PROFILE_ACCEPT:
-        t_tls_start = monotonic_us()
     var rc = rlib[].quic_server_conn_new(
         config_handle, Int32(1), Pointer(to=tp_bytes[0]), Int32(tp_len), Pointer(to=out_handle),
     )
     _ = tp_bytes
-    comptime if PROFILE_ACCEPT:
-        if profile_ptr is not None:
-            profile_ptr.value()[].record_alloc_tls_handle_us(monotonic_us() - t_tls_start)
     if rc < 0:
         var err = rlib[].last_error()
         raise "quic_server_conn_new failed: " + err
@@ -503,8 +496,6 @@ struct QuicConnection(Movable):
     var pkt_buf: List[Byte]
     var ecn: EcnProbe
 
-    var prof: ProfileState
-
     var zrtt: ZeroRttState
 
     # Transient: the dispatch-loop space_idx of the packet currently
@@ -593,21 +584,6 @@ struct QuicConnection(Movable):
             pkts_needed=10,
             pkts_sent=0,
             first_pn=UInt64(0),
-        )
-        self.prof = ProfileState(
-            ptr=None,
-            first_initial_us=UInt64(0),
-            rustls_us_accum=UInt64(0),
-            first_iter_done=False,
-            fresh_conn_ffi_us_total=UInt64(0),
-            read_hs_call_count=UInt64(0),
-            read_hs_input_marshalling_us_total=UInt64(0),
-            read_hs_state_machine_us_total=UInt64(0),
-            read_hs_output_alloc_us_total=UInt64(0),
-            read_hs_output_marshalling_us_total=UInt64(0),
-            accept_us=UInt64(0),
-            hs_cpu_us_total=UInt64(0),
-            hs_wait_us_total=UInt64(0),
         )
         self.zrtt = ZeroRttState(
             enabled=False,
@@ -725,7 +701,6 @@ struct QuicConnection(Movable):
         orig_dcid: Span[Byte, _],
         client_dcid: Span[Byte, _],
         now: UInt64,
-        profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
         retry_scid: List[Byte] = List[Byte](),
         stream_window: UInt64 = UInt64.MAX,
         reset_key: Optional[ResetKey] = None,
@@ -760,7 +735,6 @@ struct QuicConnection(Movable):
         if len(retry_scid) > 20:
             raise "QuicConnection.server: retry_scid exceeds 20 bytes"
         var config_handle = config.handle()
-        var profile_arrival_us = monotonic_us()
         var local_cid = random_cid()
         var tp_writer = ByteWriter()
         var params_copy = TransportParams(copy=local_params)
@@ -777,7 +751,7 @@ struct QuicConnection(Movable):
             params_copy.retry_scid = retry_scid.copy()
         serialize_transport_params(params_copy, tp_writer)
         var conn_handle = _create_server_tls_conn(
-            lib, config_handle, tp_writer.finish(), profile_ptr,
+            lib, config_handle, tp_writer.finish(),
         )
         var conn = QuicConnection(
             is_server=True, lib=lib, conn_handle=conn_handle,
@@ -785,9 +759,6 @@ struct QuicConnection(Movable):
             peer_cid=CidBuf.from_span(orig_dcid),
             initial_dcid=CidBuf.from_span(client_dcid), now=now, reset_key=reset_key,
         )
-        conn.prof.ptr = profile_ptr
-        conn.prof.first_initial_us = profile_arrival_us
-        conn.prof.accept_us = profile_arrival_us
         conn.stream_map.initial_max_streams_bidi = cap
         if narrow and lib.inner_ptr()[].quic_server_conn_reject_early_data(conn.conn_handle) != 0:
             raise "QuicConnection.server: could not decline 0-RTT"
@@ -798,7 +769,6 @@ struct QuicConnection(Movable):
             conn.zrtt.early_data_store_ptr = Optional[
                 Pointer[InMemoryEarlyDataStore, MutUntrackedOrigin]
             ](store_ptr)
-        conn.prof.record_handshake_arrival()
         conn.protect.derive_initial_keys(client_dcid, is_client=False)
         return conn^
 
@@ -824,22 +794,10 @@ struct QuicConnection(Movable):
         ecn_mark: UInt8 = UInt8(0),
     ) raises:
         """Process an incoming UDP datagram from a mutable buffer."""
-        var _ct_start = UInt64(0)
-        comptime if PROFILE_ACCEPT:
-            _ct_start = rdtsc()
-        var t_iter = UInt64(0)
-        var ph_hdr = UInt64(0)
-        var ph_hp = UInt64(0)
-        var ph_ae = UInt64(0)
-        var ph_fp = UInt64(0)
-        var ph_sm = UInt64(0)
         self.bytes_received += UInt64(buf_len)
         self.last_datagram_authenticated = False
         self.last_datagram_may_migrate = False
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
-            comptime if PROFILE_ACCEPT:
-                if self.prof.ptr is not None:
-                    self.prof.ptr.value()[].call_tracker.record(CallId.RECV_FROM_BUFFER, rdtsc() - _ct_start)
             return
         var closing = (self.state & CONN_CLOSING) != 0
         if closing:
@@ -857,19 +815,16 @@ struct QuicConnection(Movable):
         while offset < buf_len:
             if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
                 break
-            t_iter = self.prof.begin_iter()
             if buf[unsafe_offset=offset] == 0:
                 break
             var remaining_len = buf_len - offset
             var remaining_ptr = buf.unsafe_offset(offset)
-            ph_hdr = self.prof.stamp()
             var hr = parse_packet_header(
                 Span(unsafe_ptr=remaining_ptr, length=remaining_len),
                 len(self.local_cid),
             )
             var header = PacketHeader()
             swap(header, hr[0])
-            ph_hdr = self.prof.elapsed(ph_hdr)
             if have_first_dcid:
                 if header.dcid != first_dcid:
                     break
@@ -897,26 +852,20 @@ struct QuicConnection(Movable):
                 continue
             var decrypt_ok = True
             try:
-                var result = self._decrypt_and_dispatch_packet(
+                var recv_space = self._decrypt_and_dispatch_packet(
                     header, remaining_ptr, pkt_len, space_idx,
                     key_slot, closing, now, ecn_mark,
                 )
-                ph_hp = result[1]
-                ph_ae = result[2]
-                ph_fp = result[3]
-                if result[0] < 0:
+                if recv_space < 0:
                     # Already processed (RFC 9000 Section 12.3): dropped
                     # unread, so it neither authenticates the datagram
                     # nor owes an ACK.
                     offset += pkt_len
                     continue
-                if not closing and result[0] < lowest_recv_space:
-                    lowest_recv_space = result[0]
+                if not closing and recv_space < lowest_recv_space:
+                    lowest_recv_space = recv_space
             except:
                 if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
-                    comptime if PROFILE_ACCEPT:
-                        if self.prof.ptr is not None:
-                            self.prof.ptr.value()[].call_tracker.record(CallId.RECV_FROM_BUFFER, rdtsc() - _ct_start)
                     return
                 decrypt_ok = False
             if not decrypt_ok:
@@ -929,18 +878,12 @@ struct QuicConnection(Movable):
             ):
                 self._adopt_initial_peer_scid(header.scid)
             if not closing:
-                ph_sm = self.prof.stamp()
                 self._drive_handshake(now)
                 self._drain_zero_rtt_buffer(now, ecn_mark)
                 if self._early_1rtt and (self.state & CONN_HANDSHAKING) == 0:
                     self._replay_early_1rtt(now, ecn_mark)
-                ph_sm = self.prof.elapsed(ph_sm)
-            self.prof.end_iter(t_iter, ph_hp, ph_ae, ph_hdr, ph_fp, ph_sm)
             offset += pkt_len
         self._retransmit_crypto_if_needed(lowest_recv_space, closing)
-        comptime if PROFILE_ACCEPT:
-            if self.prof.ptr is not None:
-                self.prof.ptr.value()[].call_tracker.record(CallId.RECV_FROM_BUFFER, rdtsc() - _ct_start)
 
     def _on_retry(mut self, ref header: PacketHeader, packet: Span[Byte, _]) raises:
         """Restart the handshake towards the Retry's SCID, carrying its token (RFC 9000 Section 17.2.5.2).
@@ -1120,11 +1063,9 @@ struct QuicConnection(Movable):
         var rc = self._invoke_replay_authenticator_ffi(auth_buf, auth_len)
         if rc != Int32(0):
             self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
             return
         if self.zrtt.early_data_store_ptr is None:
             self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
             return
         var auth_span = Span(unsafe_ptr=auth_buf.unsafe_ptr(), length=32)
         var now_ms: UInt64
@@ -1139,21 +1080,10 @@ struct QuicConnection(Movable):
             decision = store_ptr[].check_and_record(auth_span, now_ms)
         except:
             raised = True
-        if raised:
-            self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
-        elif decision.is_accept():
+        if not raised and decision.is_accept():
             self.zrtt.replay_decision = UInt8(1)
-            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_ACCEPT)
-        elif decision.is_duplicate():
-            self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)
-        elif decision.is_per_key_quota():
-            self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)
         else:
             self.zrtt.replay_decision = UInt8(2)
-            self.prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)
 
     @always_inline
     def _parse_and_dispatch_frames(
@@ -1228,7 +1158,6 @@ struct QuicConnection(Movable):
                 )
             except:
                 pass
-            self.prof.record_zero_rtt_install(ok)
             if not ok:
                 if not self.zrtt.draining:
                     var pkt_bytes = Span(
@@ -1258,21 +1187,18 @@ struct QuicConnection(Movable):
         closing: Bool,
         now: UInt64,
         ecn_mark: UInt8,
-    ) raises -> Tuple[Int, UInt64, UInt64, UInt64]:
+    ) raises -> Int:
         """Decrypt, parse frames, dispatch, update PN/ECN state.
 
-        Returns (pn_space_idx, hp_us, aead_us, frame_parse_us), with
-        pn_space_idx = -1 for a packet number already processed (RFC 9000
+        Returns the packet-number space index, or -1 for a packet number already processed (RFC 9000
         Section 12.3), which is dropped before the AEAD runs. Raises on
         decrypt failure or after close_transport. Sets
         `last_datagram_may_migrate` for a new 1-RTT packet carrying a
         non-probing frame whose number is the space's highest yet.
         """
-        var ph_hp_us = self.prof.stamp()
         var hp_result = self.protect.unprotect_header_ptr(
             key_slot, pkt_ptr, pkt_len, header.pn_offset
         )
-        ph_hp_us = self.prof.elapsed(ph_hp_us)
         var first_byte = hp_result[0]
         var pn_length = hp_result[1]
 
@@ -1287,15 +1213,13 @@ struct QuicConnection(Movable):
             largest = UInt64(self.spaces[pn_space_idx].largest_recv_pn)
         var full_pn = pn_decode(truncated_pn, pn_length, largest)
         if self.spaces[pn_space_idx].was_received(full_pn):
-            return (-1, ph_hp_us, UInt64(0), UInt64(0))
+            return -1
         var newest = Int(full_pn) > self.spaces[pn_space_idx].largest_recv_pn
 
         var header_len = header.pn_offset + pn_length
-        var ph_aead_us = self.prof.stamp()
         var plaintext_len = self.protect.decrypt_payload_in_place(
             key_slot, full_pn, header_len, pkt_ptr, pkt_len
         )
-        ph_aead_us = self.prof.elapsed(ph_aead_us)
 
         # RFC 9000 Section 17.2 / 17.3.1: reserved bits count only once both
         # protections are removed. Before the AEAD verifies, a forged
@@ -1317,12 +1241,10 @@ struct QuicConnection(Movable):
         if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
             self.state = self.state | CONN_ADDR_VALIDATED
 
-        var ph_frame_parse_us = self.prof.stamp()
         self._current_dcid = header.dcid.copy()
         var ack_eliciting = self._parse_and_dispatch_frames(
             pkt_ptr, header_len, plaintext_len, space_idx, closing, now,
         )
-        ph_frame_parse_us = self.prof.elapsed(ph_frame_parse_us)
 
         if not closing and newest and self._pkt_non_probing and not header.is_long_header:
             self.last_datagram_may_migrate = True
@@ -1339,7 +1261,7 @@ struct QuicConnection(Movable):
                 elif ecn_mark == ECN_ECT1:
                     self.spaces[pn_space_idx].recv_ecn.ect1 += UInt64(1)
 
-        return (pn_space_idx, ph_hp_us, ph_aead_us, ph_frame_parse_us)
+        return pn_space_idx
 
     def _retransmit_crypto_if_needed(mut self, lowest_recv_space: Int, closing: Bool) raises:
         """Re-queue unacked CRYPTO when receiving at a lower encryption level."""
@@ -2493,14 +2415,12 @@ struct QuicConnection(Movable):
                     break
             if not has_crypto:
                 return
-        var t_drive_start = self.prof.begin_drive()
         var lib = self._lib.inner_ptr()
         self._feed_crypto_to_tls(lib, now)
         self._drain_tls_output(lib)
         var hs_state = lib[].quic_conn_is_handshaking(self.conn_handle)
         if hs_state == Int32(0):
             self._on_handshake_complete(now)
-        self.prof.end_drive(t_drive_start)
 
     def _feed_crypto_to_tls(
         mut self,
@@ -2517,29 +2437,10 @@ struct QuicConnection(Movable):
             if len(crypto_data) == 0:
                 continue
             var data_buf = Pointer(to=crypto_data[0])
-            var t_start = self.prof.stamp_ffi()
-            var rc: Int32 = Int32(0)
-            var out_sm_us: UInt64 = UInt64(0)
-            var out_lookup_us: UInt64 = UInt64(0)
-            comptime if PROFILE_ACCEPT:
-                if self.prof.is_active():
-                    rc = lib[].quic_conn_read_hs(
-                        self.conn_handle, data_buf,
-                        Int32(len(crypto_data)),
-                        Pointer(to=out_sm_us), Pointer(to=out_lookup_us),
-                    )
-                else:
-                    rc = lib[].quic_conn_read_hs(
-                        self.conn_handle, data_buf, Int32(len(crypto_data)),
-                    )
-            else:
-                rc = lib[].quic_conn_read_hs(
-                    self.conn_handle, data_buf, Int32(len(crypto_data)),
-                )
-            _ = crypto_data
-            self.prof.record_ffi_read_hs_end(
-                t_start, UInt64(0), out_sm_us, out_lookup_us,
+            var rc = lib[].quic_conn_read_hs(
+                self.conn_handle, data_buf, Int32(len(crypto_data)),
             )
+            _ = crypto_data
             if rc < 0:
                 var alert_code = lib[].quic_conn_alert(self.conn_handle)
                 var crypto_error = UInt64(0x0100) | UInt64(alert_code)
@@ -2559,12 +2460,10 @@ struct QuicConnection(Movable):
         while True:
             var written = Int32(0)
             var kc = UInt8(0)
-            var t_start = self.prof.stamp_ffi()
             var rc = lib[].quic_conn_write_hs(
                 self.conn_handle, Pointer(to=out_buf[0]),
                 Int32(_WRITE_HS_BUF_SIZE), Pointer(to=written), Pointer(to=kc),
             )
-            self.prof.record_ffi_write_hs_end(t_start)
             if rc < 0:
                 var err = lib[].last_error()
                 raise "quic_conn_write_hs failed: " + err
@@ -2582,11 +2481,9 @@ struct QuicConnection(Movable):
     ) raises:
         """Take keys from TLS and install at the appropriate level."""
         var new_keys = Int32(-1)
-        var t_start = self.prof.stamp_ffi()
         var take_rc = lib[].quic_conn_take_keys(
             self.conn_handle, Pointer(to=new_keys)
         )
-        self.prof.record_ffi_take_keys_end(t_start)
         if take_rc < 0:
             var err = lib[].last_error()
             raise "quic_conn_take_keys failed: " + err
@@ -2608,9 +2505,6 @@ struct QuicConnection(Movable):
         """
         if (self.state & (CONN_ESTABLISHED | CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
             return
-        if self.is_server:
-            self.prof.record_hs_complete(now)
-        self._record_handshake_profile_stats()
         self.state = self.state & ~CONN_HANDSHAKING
         self._apply_peer_transport_params(now)
         if (self.state & (CONN_CLOSING | CONN_DRAINING | CONN_CLOSED)) != 0:
@@ -2628,33 +2522,6 @@ struct QuicConnection(Movable):
         self.spaces[2].pn_skip_rng  = pn_skip_seed
         self.spaces[2].pn_skip_next = 200 + (pn_skip_seed % 300)
         self._promote_to_established()
-
-    def _record_handshake_profile_stats(mut self) raises:
-        """Record handshake kind, FFI totals, and CPU/wait breakdown."""
-        if not self.is_server or self.prof.ptr is None:
-            return
-        var hs_kind = self._lib.inner_ptr()[].quic_conn_handshake_kind(self.conn_handle)
-        if hs_kind == Int32(1) or hs_kind == Int32(3):
-            self.prof.ptr.value()[].record_handshake_full()
-        elif hs_kind == Int32(2):
-            self.prof.ptr.value()[].record_handshake_resumed()
-        elif hs_kind == Int32(0):
-            raise (
-                "_on_handshake_complete: handshake_kind=0 with "
-                + "is_handshaking==false (rustls state-machine "
-                + "invariant broken)"
-            )
-        self.prof.ptr.value()[].record_fresh_conn_ffi_us(self.prof.fresh_conn_ffi_us_total)
-        self.prof.ptr.value()[].record_read_hs_per_handshake_count(Int(self.prof.read_hs_call_count))
-        if self.prof.accept_us > UInt64(0):
-            var now_hs = monotonic_us()
-            var wall_us = now_hs - self.prof.accept_us
-            if wall_us >= self.prof.hs_cpu_us_total:
-                self.prof.hs_wait_us_total = wall_us - self.prof.hs_cpu_us_total
-            else:
-                self.prof.hs_wait_us_total = UInt64(0)
-            self.prof.ptr.value()[].record_hs_cpu_us_per_handshake(self.prof.hs_cpu_us_total)
-            self.prof.ptr.value()[].record_hs_wait_us_per_handshake(self.prof.hs_wait_us_total)
 
     def _apply_peer_transport_params(mut self, now: UInt64) raises:
         """Read, parse, validate, and apply peer transport parameters."""
@@ -2852,8 +2719,8 @@ struct QuicConnection(Movable):
                     # raises are folded at their Path B call site
                     # inside recv_from_buffer and no longer reach
                     # this except. A raise mid-drain is scoped to
-                    # one buffered packet — drop it, count it, and
-                    # keep draining the rest.
+                    # one buffered packet — drop it and keep draining
+                    # the rest.
                     # Drop-and-continue over close_transport: the
                     # failure scope is one buffered packet, and
                     # connection-fatal protocol errors on this path
@@ -2862,13 +2729,10 @@ struct QuicConnection(Movable):
                     # This is the sans-I/O QUIC core: the protocol
                     # layer carries no I/O imports, so there is no
                     # stderr print here (unlike the I/O-layer
-                    # _flush_impl catch). Observability is provided
-                    # by the `comptime`-gated `zero_rtt_drain_dropped`
-                    # counter (live in PROFILE_ACCEPT builds); human-
-                    # facing traces are the responsibility of the
-                    # I/O-layer caller that drives recv_from_buffer.
+                    # _flush_impl catch); human-facing traces are the
+                    # responsibility of the I/O-layer caller that
+                    # drives recv_from_buffer.
                     _ = e
-                    self.prof.record_counter(CounterId.ZERO_RTT_DRAIN_DROPPED)
                 # Keep `buf_ptr_owned` alive to the end of the iteration (its
                 # `.ptr()` borrow feeds recv_from_buffer above), and ensure the
                 # inner try/except is NOT the for-body's final statement: Mojo
@@ -2896,7 +2760,7 @@ struct QuicConnection(Movable):
     ) raises:
         """Test-only delegate to zero_rtt.drive_replay_check_for_test."""
         drive_replay_check_for_test(
-            self.zrtt, self.prof,
+            self.zrtt,
             simulated_rc, simulated_decision_kind, simulated_raises,
         )
 
@@ -2908,20 +2772,11 @@ struct QuicConnection(Movable):
         Never clears `out`: a drain loop collects a whole flight into one
         caller-owned list, and a caller reusing `out` clears it itself.
         """
-        var _ct_start = UInt64(0)
-        comptime if PROFILE_ACCEPT:
-            _ct_start = rdtsc()
         self._check_timers(now)
         if (self.state & (CONN_DRAINING | CONN_CLOSED)) != 0:
-            comptime if PROFILE_ACCEPT:
-                if self.prof.ptr is not None:
-                    self.prof.ptr.value()[].call_tracker.record(CallId.SEND, rdtsc() - _ct_start)
             return 0
         var closing = (self.state & CONN_CLOSING) != 0
         if closing and not self.close.owed:
-            comptime if PROFILE_ACCEPT:
-                if self.prof.ptr is not None:
-                    self.prof.ptr.value()[].call_tracker.record(CallId.SEND, rdtsc() - _ct_start)
             return 0
         var budget = self._datagram_budget()
         if self.is_server and not self._addr_validated():
@@ -2976,9 +2831,6 @@ struct QuicConnection(Movable):
             if r[1]:
                 end_assembly = True
         if len(plans) == 0:
-            comptime if PROFILE_ACCEPT:
-                if self.prof.ptr is not None:
-                    self.prof.ptr.value()[].call_tracker.record(CallId.SEND, rdtsc() - _ct_start)
             return 0
         var dg = self._commit_plans_to_datagram(
             plans, budget, closing, all_close_committed, now,
@@ -2987,9 +2839,6 @@ struct QuicConnection(Movable):
         if self.path.has_pending():
             self.path.record_dest_send(len(dg))
         out.append(dg^)
-        comptime if PROFILE_ACCEPT:
-            if self.prof.ptr is not None:
-                self.prof.ptr.value()[].call_tracker.record(CallId.SEND, rdtsc() - _ct_start)
         return 1
 
     def _plan_space_packet(

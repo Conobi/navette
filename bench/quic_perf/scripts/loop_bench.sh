@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /loop iter perf bench — n=5, 30s pauses, PROFILE_ACCEPT=False.
+# /loop iter perf bench — n=5, 30s pauses.
 # Loadavg gate waits up to 3min for host to settle (post-build).
 set -euo pipefail
 TAG="${1:?missing TAG}"

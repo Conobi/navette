@@ -5,7 +5,6 @@
 # Properties proven here (one test function each):
 #   - decrypt-0rtt-stream (scoped to direct-dispatch)
 #   - decrypt-0rtt-crypto-violates-f30
-#   - lazy-install-on-first-detect (scoped to direct-counter-manipulation)
 #   - buffer-respects-pkt-cap
 #   - buffer-respects-byte-cap
 #   - buffer-drains-on-keys-available (scoped to direct drain call)
@@ -37,7 +36,6 @@ from navette.quic.guard_tags import (
     GUARD_TAG_ACK_IN_ZERO_RTT,
 )
 from navette.quic.packet_protect import PacketProtect
-from navette.quic.profile import AcceptProfile, CounterId
 from navette.quic.trans_param import default_transport_params
 from tests._test_util import (
     assert_true, assert_false, assert_equal_int, load_test_cert,
@@ -365,48 +363,6 @@ def test_decrypt_zero_rtt_ack_trips_guard_not_oob() raises:
     print("  test_decrypt_zero_rtt_ack_trips_guard_not_oob: PASS")
 
 
-def test_lazy_install_success_counter_increments_once_per_install() raises:
-    """`AcceptProfile.record_zero_rtt_install` accumulates SUCCESS into
-    `zero_rtt_install_successes` and FAILURE into `zero_rtt_install_attempts`.
-
-    Scope: PROFILE_ACCEPT is a `comptime` flag that is False at unit-test
-    build time, so the production install site's counter call is
-    dead-stripped. This test exercises the counter mechanism directly
-    via a synthetic AcceptProfile — the lazy-install invariant under
-    test is "exactly one SUCCESS per connection lifecycle".
-    """
-    var prof = AcceptProfile()
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_INSTALL_ATTEMPTS)), 0,
-        "attempts must start at 0",
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_INSTALL_SUCCESSES)), 0,
-        "successes must start at 0",
-    )
-
-    # Simulate two failed lazy-install attempts followed by one success
-    # (the wire-format lifecycle when a 0-RTT packet races the Initial).
-    prof.record_zero_rtt_install(False)
-    prof.record_zero_rtt_install(False)
-    prof.record_zero_rtt_install(True)
-
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_INSTALL_ATTEMPTS)), 2,
-        "exactly two failed attempts recorded",
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_INSTALL_SUCCESSES)), 1,
-        "exactly one success recorded — install is one-shot per conn",
-    )
-
-    # Subsequent SUCCESS calls would also increment, but production wires
-    # `install_zero_rtt_read_keys` behind `has_keys(3) == False`, so the
-    # success branch is taken at most once per connection lifetime. The
-    # counter discipline is the contract proved here.
-    print("  test_lazy_install_success_counter_increments_once_per_install: PASS")
-
-
 def test_zero_rtt_buffer_respects_packet_cap() raises:
     """`_buffer_zero_rtt_or_drop` accepts at most ZERO_RTT_BUFFER_MAX_PKTS
     (16) packets, even when each is small enough to never trip the byte
@@ -599,49 +555,6 @@ def test_zero_rtt_buffer_cleared_at_connection_destroy() raises:
     print("  test_zero_rtt_buffer_cleared_at_connection_destroy: PASS")
 
 
-def test_accept_profile_replay_counters_increment_independently() raises:
-    """5 replay counters initialise to 0 and each record_* method
-    increments only its bucket. Establishes the AcceptProfile contract
-    that QuicConnection._record_replay_* wrappers will consume."""
-    var prof = AcceptProfile()
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_REPLAY_ACCEPT)), 0, "accept starts 0")
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)), 0, "dup starts 0"
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)), 0, "per_key starts 0"
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)), 0, "ceiling starts 0"
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)), 0, "no_auth starts 0"
-    )
-
-    prof.record_zero_rtt_replay_accept()
-    prof.record_zero_rtt_replay_accept()
-    prof.record_zero_rtt_replay_reject_duplicate()
-    prof.record_zero_rtt_replay_reject_per_key_quota()
-    prof.record_zero_rtt_replay_reject_global_ceiling()
-    prof.record_zero_rtt_replay_reject_no_authenticator()
-    prof.record_zero_rtt_replay_reject_no_authenticator()
-
-    assert_equal_int(Int(prof.get(CounterId.ZERO_RTT_REPLAY_ACCEPT)), 2, "accept +2")
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)), 1, "dup +1"
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)), 1, "per_key +1"
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)), 1, "ceiling +1"
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)), 2, "no_auth +2"
-    )
-    print("  test_accept_profile_replay_counters_increment_independently: PASS")
-
-
 def test_drain_survives_mid_packet_raise() raises:
     """AC drain-survives-mid-packet-raise: the drain continues past a
     silently-dropped middle 0-RTT packet — packets one and three still
@@ -650,11 +563,10 @@ def test_drain_survives_mid_packet_raise() raises:
     What this test actually exercises (Fix-2 drain-mode containment):
     the middle 0-RTT packet is dropped at the Path B install-fold
     *inside* recv_from_buffer (drain-mode silent drop), NOT at the
-    drain's own `except e:` / `_record_zero_rtt_drain_dropped()` branch.
+    drain's own `except e:` branch.
     That branch executes zero times in this test. Its purpose is
     defense-in-depth against UNCLASSIFIED raises (internal errors,
-    future bugs); it is exercised in isolation by the recorder/reporter
-    unit test in test_quic_profile.mojo, not by this integration test.
+    future bugs), not exercised by this integration test.
 
     The proof: packets one AND three advance `largest_recv_pn` to 1,
     and `ack_ranges[0].start == 0` proves packet one (pn=0) really
@@ -880,13 +792,11 @@ def main() raises:
     test_decrypt_zero_rtt_crypto_trips_f30_guard()
     test_decrypt_zero_rtt_ack_trips_guard_not_oob()
     test_one_rtt_ack_dispatch_unaffected_by_guard()
-    test_lazy_install_success_counter_increments_once_per_install()
     test_zero_rtt_buffer_respects_packet_cap()
     test_zero_rtt_buffer_respects_byte_cap_boundary()
     test_zero_rtt_buffer_drains_idempotently()
     test_zero_rtt_buffer_clears_on_discard_zero_rtt_keys()
     test_zero_rtt_buffer_cleared_at_connection_destroy()
-    test_accept_profile_replay_counters_increment_independently()
     test_drain_survives_mid_packet_raise()
     test_install_raise_folds_into_failure_path()
     test_coalesced_survivors_still_processed()

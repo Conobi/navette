@@ -12,27 +12,19 @@ header that will reach the handler is the one mutated), but BEFORE
 `handler.on_request(...)`.
 
 Decision tree (§3.5 truth-table, first match wins):
-  1. is_zero_rtt == False                          -> proceed; bump 1rtt_bypassed.
-  2. is_zero_rtt == True, both None                -> send_425; bump misconfig_fail_closed.
+  1. is_zero_rtt == False                          -> proceed.
+  2. is_zero_rtt == True, both None                -> send_425 (fail closed).
   3. is_zero_rtt == True, predicate_fn Some        -> call predicate; route on outcome.
   4. is_zero_rtt == True, filter_ptr Some          -> call filter; route on outcome.
 
-Both call paths catch raises through `zero_rtt_http_filter_user_raised`
-+ send_425, so user-supplied predicate failures fail closed without
-surfacing exceptions to the H3 adapter.
+Both call paths catch raises and send_425, so user-supplied predicate
+failures fail closed without surfacing exceptions to the H3 adapter.
 
 The fail-closed posture on (2) enforces the safe-by-default-when-on
 goal: a connection that opted into 0-RTT must NEVER see non-idempotent
 requests reach handlers without filtering. If wiring is broken, 425
-responses are emitted and the dedicated counter increments for
-operator visibility; the client retries over 1-RTT with zero functional
-loss.
-
-Counter routing is unconditional (gated only on the profile pointer
-being Some); the recorders themselves are no-cost when PROFILE_ACCEPT
-is off because `AcceptProfile` is sans-IO. This matches the
-unconditional pattern used by the existing
-`record_zero_rtt_http_filter_*` call sites in the test suite.
+responses are emitted; the client retries over 1-RTT with zero
+functional loss.
 """
 
 from std.collections import Optional
@@ -43,7 +35,6 @@ from navette.h3.error import H3_REQUEST_CANCELLED
 from navette.h3.qpack import QpackHeaderField
 from navette.http.headers import Headers
 from navette.quic.connection import QuicConnection
-from navette.quic.profile import AcceptProfile
 from navette.tls.early_data_filter import (
     EarlyDataPredicateFn,
     FilterDecision,
@@ -129,7 +120,6 @@ def apply_early_data_filter(
     filter_ptr: Optional[Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]],
     predicate_fn: Optional[EarlyDataPredicateFn],
     mut headers: Headers,
-    profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]],
 ) raises -> FilterDispatchOutcome:
     """Consult the early-data filter or predicate for a request that
     may have arrived via 0-RTT.
@@ -138,8 +128,8 @@ def apply_early_data_filter(
 
     | is_zero_rtt | predicate_fn | filter_ptr | action |
     |---|---|---|---|
-    | False       | *            | *          | proceed; bump 1rtt_bypassed |
-    | True        | None         | None       | send_425; bump misconfig_fail_closed |
+    | False       | *            | *          | proceed |
+    | True        | None         | None       | send_425 (fail closed) |
     | True        | Some(pred)   | *          | call pred; route on outcome |
     | True        | None         | Some(ptr)  | call ptr; route on outcome |
 
@@ -161,21 +151,16 @@ def apply_early_data_filter(
           Predicate.
         headers: The post-QPACK-walk Headers. On accept,
           `Early-Data: 1` is injected via `Headers.set`.
-        profile_ptr: Optional pointer to the connection's AcceptProfile.
 
     Returns:
         `FilterDispatchOutcome.proceed` if the handler should be
         invoked, or `FilterDispatchOutcome.send_425` otherwise.
     """
     if not is_zero_rtt:
-        if profile_ptr is not None:
-            profile_ptr.value()[].record_zero_rtt_http_filter_1rtt_bypassed()
         return FilterDispatchOutcome.proceed()
 
     if predicate_fn is None and filter_ptr is None:
         # Both None: defensive fail-closed.
-        if profile_ptr is not None:
-            profile_ptr.value()[].record_zero_rtt_http_filter_misconfig_fail_closed()
         return FilterDispatchOutcome.send_425()
 
     var decision: FilterDecision
@@ -185,8 +170,6 @@ def apply_early_data_filter(
         try:
             decision = predicate_fn.value()(method_str, path_str, headers)
         except:
-            if profile_ptr is not None:
-                profile_ptr.value()[].record_zero_rtt_http_filter_user_raised()
             return FilterDispatchOutcome.send_425()
     else:
         # Filter-ptr path (filter_ptr is Some).
@@ -196,20 +179,13 @@ def apply_early_data_filter(
             )
         except:
             # IdempotentOnlyFilter does not raise today; the defensive
-            # catch routes through user_raised for future user-supplied
-            # filter variants.
-            if profile_ptr is not None:
-                profile_ptr.value()[].record_zero_rtt_http_filter_user_raised()
+            # catch fails closed for future user-supplied filter variants.
             return FilterDispatchOutcome.send_425()
 
     if decision.is_accept():
         headers.set(String("early-data"), String("1"))
-        if profile_ptr is not None:
-            profile_ptr.value()[].record_zero_rtt_http_filter_accept()
         return FilterDispatchOutcome.proceed()
 
-    if profile_ptr is not None:
-        profile_ptr.value()[].record_zero_rtt_http_filter_reject_425()
     return FilterDispatchOutcome.send_425()
 
 

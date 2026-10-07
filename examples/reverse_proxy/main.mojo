@@ -807,7 +807,7 @@ struct ProxyHandler(Movable):
     # Embedded H3/QUIC frontend, driven off the same WatchLoop through
     # its own Completions. Declared LAST and heap-allocated together with
     # this struct before any QUIC connection exists, so the pointer the H3
-    # server's per-conn handlers take to `self.profile` stays stable.
+    # server's per-conn handlers take to its codec tables stays stable.
     var _h3: H3UdpServer[ForwardingHandler]
 
     def __init__(

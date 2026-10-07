@@ -30,7 +30,7 @@ from navette.http.handler import (
     StreamError,
 )
 from navette.net.resolver import resolve_host
-from navette.quic.profile import monotonic_us
+from navette.util.clock import monotonic_us
 from navette.runtime.socket_helpers import tcp_connect, tcp_listener
 from navette.tls import TlsBackend, TlsClientConfig, TlsConnection, TlsServerConfig
 from navette.util.owned_alloc import Owned

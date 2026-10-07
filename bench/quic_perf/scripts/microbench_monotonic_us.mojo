@@ -4,7 +4,7 @@
 # Required: <= 30 ns/call (Plan A's stack-buffer target).
 # If this fails, do not proceed with Plan B insertion work.
 
-from navette.quic.profile import monotonic_us
+from navette.util.clock import monotonic_us
 
 
 def main() raises:

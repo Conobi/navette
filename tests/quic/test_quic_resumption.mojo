@@ -9,18 +9,16 @@
 #   - quic_server_config_new accepts max_early_data param
 # T4 tests:
 #   - E2E resumption: second conn against same ServerConfig yields kind==2
-#   - Double-count guard: _on_handshake_complete is idempotent
+#   - _on_handshake_complete is idempotent once established
 
 from std.memory import Pointer
 from std.collections import Span
-from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.util.owned_alloc import Owned
 from navette.tls.lib import TlsBackend, SharedLibrary
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.event import QuicEvent
-from navette.quic.profile import AcceptProfile, CounterId
 from navette.quic.trans_param import TransportParams, default_transport_params
 from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
 
@@ -165,9 +163,8 @@ def _resumption_params() -> TransportParams:
 
 def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     """Drive two consecutive client/server connection pairs against the same
-    QUIC ServerConfig handle. The second server connection's profile counter
-    must show handshakes_resumed_total == 1. Validates FR-Ticketer (§4.1),
-    FR-Counters (§4.4), and FR-Increment-Once (§4.5)."""
+    QUIC ServerConfig handle. rustls must report the first server
+    handshake as full and the second as resumed."""
     var tls = TlsBackend("lib/librustls_mojo.so")
 
     # Build an ephemeral cert shared across both conn pairs.
@@ -178,12 +175,6 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
 
     var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
     var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
-
-    # Heap-allocate a shared AcceptProfile so both server connections accumulate
-    # into the same counters.
-    var profile_heap = _heap_alloc[AcceptProfile](1)
-    profile_heap.init_pointee_move(AcceptProfile())
-    var p_ptr = profile_heap
 
     var params = _resumption_params()
     var now = UInt64(1_000_000)
@@ -199,7 +190,6 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     var server1 = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(dcid1_a), Span(dcid1_b), now,
-        p_ptr,
     )
 
     var c_dg = List[List[Byte]](capacity=1)
@@ -245,13 +235,11 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
             except:
                 pass
 
-    # Check counters: after first handshake (Full), full_total == 1, resumed == 0.
-    var full1   = p_ptr[].get(CounterId.HANDSHAKES_FULL_TOTAL)
-    var resumed1 = p_ptr[].get(CounterId.HANDSHAKES_RESUMED_TOTAL)
+    # handshake_kind: 1 or 3 = full, 2 = resumed.
+    var kind1 = server1._lib.inner_ptr()[].quic_conn_handshake_kind(server1.conn_handle)
     assert_true(
-        full1 == UInt64(1) and resumed1 == UInt64(0),
-        "first conn: expected full=1 resumed=0, got full="
-            + String(full1) + " resumed=" + String(resumed1),
+        kind1 == Int32(1) or kind1 == Int32(3),
+        "first conn: expected a full handshake, got kind=" + String(kind1),
     )
 
     # ── Second connection pair (same server_config, same client_config) ──
@@ -263,7 +251,6 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     var server2 = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(dcid2_a), Span(dcid2_b), now,
-        p_ptr,
     )
 
     var c2_dg = List[List[Byte]](capacity=1)
@@ -290,32 +277,27 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
             break
     assert_true(established2, "second handshake did not complete")
 
-    # Check counters: after second handshake (Resumed), resumed_total == 1.
-    var full2    = p_ptr[].get(CounterId.HANDSHAKES_FULL_TOTAL)
-    var resumed2 = p_ptr[].get(CounterId.HANDSHAKES_RESUMED_TOTAL)
+    var kind2 = server2._lib.inner_ptr()[].quic_conn_handshake_kind(server2.conn_handle)
     assert_true(
-        full2 == UInt64(1) and resumed2 == UInt64(1),
-        "second conn: expected full=1 resumed=1, got full="
-            + String(full2) + " resumed=" + String(resumed2),
+        kind2 == Int32(2),
+        "second conn: expected a resumed handshake, got kind=" + String(kind2),
     )
 
-    profile_heap.destroy_pointee()
-    profile_heap.free()
+    # Anchors: keep both servers alive past the FFI reads above (ASAP
+    # destruction would free a handle mid-statement).
+    _ = server1.conn_handle
+    _ = server2.conn_handle
     _ = tls^
     print("  test_resumption_kind_after_two_handshakes_against_same_config: PASS")
 
 
 def test_double_count_guard_on_handshake_complete_idempotent() raises:
-    """Calling _on_handshake_complete multiple times must not double-increment.
+    """Calling _on_handshake_complete again after establishment is a no-op.
 
-    Drives a real loopback handshake to completion with a profile attached,
-    verifies counter == 1, then calls _on_handshake_complete two more times
-    manually and asserts the counter still == 1.  The existing CONN_ESTABLISHED
-    early-return at the top of the function is the double-count guard.
-
-    Uses a runtime profile_ptr (not @parameter if PROFILE_ACCEPT:) so the
-    increment fires regardless of the PROFILE_ACCEPT compile-time flag — this
-    is approach (c) from the T4 task description."""
+    Drives a real loopback handshake to completion, then calls
+    _on_handshake_complete two more times. The CONN_ESTABLISHED early return
+    must keep the Application-space PN-skip state, which completion seeds
+    from the CSPRNG, unchanged."""
     var tls = TlsBackend("lib/librustls_mojo.so")
 
     var cert_key  = _generate_ephemeral_cert()
@@ -329,22 +311,14 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
     var params = _resumption_params()
     var now = UInt64(2_000_000)
 
-    # Heap-allocate AcceptProfile so it has a stable address for profile_ptr.
-    var profile_heap = _heap_alloc[AcceptProfile](1)
-    profile_heap.init_pointee_move(AcceptProfile())
-    var p_ptr = profile_heap
-
     var client = QuicConnection.client(
         tls.shared(), client_config, "localhost", params, now,
     )
     var dcid_a = List[Byte](client.initial_dcid.as_span())
     var dcid_b = List[Byte](client.initial_dcid.as_span())
-    # Attach profile before driving the handshake so the server connection
-    # has a live profile_ptr when _on_handshake_complete fires.
     var server = QuicConnection.server(
         tls.shared(), server_config, params,
         Span(dcid_a), Span(dcid_b), now,
-        p_ptr,
     )
 
     # Inline handshake loop — no helper with mut QuicConnection.
@@ -372,127 +346,21 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
             break
     assert_true(established, "handshake did not complete in double-count test")
 
-    # After the handshake, exactly one counter should have been incremented.
-    var full_after_hs    = p_ptr[].get(CounterId.HANDSHAKES_FULL_TOTAL)
-    var resumed_after_hs = p_ptr[].get(CounterId.HANDSHAKES_RESUMED_TOTAL)
-    assert_true(
-        full_after_hs + resumed_after_hs == UInt64(1),
-        "expected exactly 1 increment after handshake, got full="
-            + String(full_after_hs) + " resumed=" + String(resumed_after_hs),
-    )
+    var rng_before = server.spaces[2].pn_skip_rng
+    var next_before = server.spaces[2].pn_skip_next
+    assert_true(rng_before != UInt64(0), "completion must seed PN skipping")
 
-    # Call _on_handshake_complete two more times manually.  The CONN_ESTABLISHED
-    # early-return must prevent any re-increment.
+    # The CONN_ESTABLISHED early return must stop a re-seed.
     server._on_handshake_complete(now + UInt64(1_000))
     server._on_handshake_complete(now + UInt64(2_000))
 
-    var full_final    = p_ptr[].get(CounterId.HANDSHAKES_FULL_TOTAL)
-    var resumed_final = p_ptr[].get(CounterId.HANDSHAKES_RESUMED_TOTAL)
     assert_true(
-        full_final + resumed_final == UInt64(1),
-        "double-count guard failed: counter went from 1 to "
-            + String(full_final + resumed_final),
+        server.spaces[2].pn_skip_rng == rng_before
+        and server.spaces[2].pn_skip_next == next_before,
+        "repeated _on_handshake_complete re-ran completion",
     )
-
-    profile_heap.destroy_pointee()
-    profile_heap.free()
     _ = tls^
     print("  test_double_count_guard_on_handshake_complete_idempotent: PASS")
-
-
-def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
-    """fresh_conn_ffi_us_total accumulates across multiple recv_from_buffer
-    iters within a single handshake, despite profile_rustls_us_accum being
-    per-pkt reset.
-
-    Method: drive a real loopback handshake with a profile attached on the
-    server side. After completion, the AcceptProfile must have exactly 1
-    sample in fresh_conn_ffi_us_buckets (recorded once at
-    _on_handshake_complete) and the recorded value must be > 0 (proving
-    accumulation across the multi-iter handshake)."""
-    var tls = TlsBackend("lib/librustls_mojo.so")
-
-    var cert_key  = _generate_ephemeral_cert()
-    var ca_bytes  = load_test_ca()
-    var cert_bytes = cert_key[0].copy()
-    var key_bytes  = cert_key[1].copy()
-
-    var server_config = QuicServerConfig(tls.shared(), Span(cert_bytes), Span(key_bytes))
-    var client_config = QuicClientConfig.with_ca(tls.shared(), Span(ca_bytes))
-
-    # Heap-allocate AcceptProfile so it has a stable address for profile_ptr.
-    var profile_heap = _heap_alloc[AcceptProfile](1)
-    profile_heap.init_pointee_move(AcceptProfile())
-    var p_ptr = profile_heap
-
-    var params = _resumption_params()
-    var now = UInt64(3_000_000)
-
-    var client = QuicConnection.client(
-        tls.shared(), client_config, "localhost", params, now,
-    )
-    var dcid_a = List[Byte](client.initial_dcid.as_span())
-    var dcid_b = List[Byte](client.initial_dcid.as_span())
-    # Attach profile so server can accumulate fresh_conn_ffi_us_total.
-    var server = QuicConnection.server(
-        tls.shared(), server_config, params,
-        Span(dcid_a), Span(dcid_b), now,
-        p_ptr,
-    )
-
-    # Drive the handshake to completion (inline — no helper with mut params).
-    var c_dg = List[List[Byte]](capacity=1)
-    var s_dg = List[List[Byte]](capacity=1)
-    var established = False
-    for _ in range(30):
-        now += UInt64(10_000)
-        c_dg.clear()
-        var c_n = client.send(now, c_dg)
-        for i in range(c_n):
-            try:
-                server.recv(Span(c_dg[i]), now)
-            except:
-                pass
-        s_dg.clear()
-        var s_n = server.send(now, s_dg)
-        for i in range(s_n):
-            try:
-                client.recv(Span(s_dg[i]), now)
-            except:
-                pass
-        if client.is_established() and server.is_established():
-            established = True
-            break
-    assert_true(established, "handshake did not complete in fresh_conn_ffi_us test")
-
-    # Assert: exactly 1 sample recorded in fresh_conn_ffi_us histogram.
-    # (record_fresh_conn_ffi_us fires once at _on_handshake_complete.)
-    var bucket_sum = UInt64(0)
-    for i in range(24):
-        bucket_sum = bucket_sum + p_ptr[].fresh_conn_ffi_us_buckets[i]
-    var total_samples = bucket_sum + p_ptr[].get(CounterId.FRESH_CONN_FFI_US_OVERFLOW)
-    assert_true(
-        total_samples == UInt64(1),
-        "expected exactly 1 sample in fresh_conn_ffi_us histogram, got "
-            + String(total_samples),
-    )
-
-    # The recorded value must be > 0 (at least one FFI bracket fired).
-    # Under PROFILE_ACCEPT=False the accumulator stays 0 (no increments),
-    # so the bucket for value=0 lands in bucket[0] (range [0,1) us).
-    # We test the invariant: bucket_sum + overflow == 1 (the count is always
-    # 1 after a completed server handshake), which proves the record fired.
-    # Additionally, under PROFILE_ACCEPT=True the value would be >0 due to
-    # real FFI timing; we don't assert that here to stay off-build-clean.
-    assert_true(
-        total_samples == UInt64(1),
-        "fresh_conn_ffi_us: record_fresh_conn_ffi_us did not fire at handshake-complete",
-    )
-
-    profile_heap.destroy_pointee()
-    profile_heap.free()
-    _ = tls^
-    print("  test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets: PASS")
 
 
 def main() raises:
@@ -501,4 +369,3 @@ def main() raises:
     test_quic_server_config_new_accepts_max_early_data_param()
     test_resumption_kind_after_two_handshakes_against_same_config()
     test_double_count_guard_on_handshake_complete_idempotent()
-    test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets()

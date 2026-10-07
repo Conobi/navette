@@ -66,7 +66,7 @@ from navette.h1.handler_server import H1HandlerServer
 from navette.h1.config import ParseConfig
 from navette.http.config import DEADLINE_SWEEP_MS, DEFAULT_KEEP_ALIVE_TIMEOUT_SECS, DEFAULT_MAX_CONNECTIONS, DEFAULT_REQUEST_TIMEOUT_SECS
 from navette.net.peer_addr import peer_addr_from_fd
-from navette.quic.profile import monotonic_us
+from navette.util.clock import monotonic_us
 from navette.util.null_ptr import null_ptr
 
 

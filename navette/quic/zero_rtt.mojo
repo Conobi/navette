@@ -6,7 +6,6 @@ from std.collections import Optional, Span
 from std.memory import Pointer
 from navette.tls.lib import SharedLibrary
 from navette.tls.early_data_store import InMemoryEarlyDataStore
-from navette.quic.profile import ProfileState, CounterId, PROFILE_ACCEPT
 
 comptime ZERO_RTT_BUFFER_MAX_PKTS: Int = 16
 comptime ZERO_RTT_BUFFER_MAX_BYTES: Int = 32 * 1024  # 32 KiB
@@ -80,15 +79,14 @@ def invoke_replay_authenticator_ffi(
 
 def drive_replay_check_for_test(
     mut zrtt: ZeroRttState,
-    mut prof: ProfileState,
     simulated_rc: Int32,
     simulated_decision_kind: UInt8,
     simulated_raises: Bool,
 ) raises:
     """Test-only entry point mirroring the integration block's transitions.
 
-    Exercises the resulting `zrtt.replay_decision` value + the recorded
-    counter for every reachable branch. The production block has one
+    Exercises the resulting `zrtt.replay_decision` value for every
+    reachable branch. The production block has one
     additional defensive `zrtt.early_data_store_ptr is None` fallback
     that collapses onto the same `no_authenticator` outcome as
     `simulated_rc != 0`. A static check in check_integrations.sh
@@ -106,29 +104,9 @@ def drive_replay_check_for_test(
     if zrtt.replay_decision != UInt8(0):
         return
 
-    if simulated_rc != Int32(0):
-        zrtt.replay_decision = UInt8(2)
-        prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
-        return
-
-    if simulated_raises:
-        zrtt.replay_decision = UInt8(2)
-        prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_NO_AUTHENTICATOR)
-        return
-
-    if simulated_decision_kind == UInt8(0):
-        # accept
-        zrtt.replay_decision = UInt8(1)
-        prof.record_counter(CounterId.ZERO_RTT_REPLAY_ACCEPT)
-    elif simulated_decision_kind == UInt8(1):
-        # duplicate
-        zrtt.replay_decision = UInt8(2)
-        prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_DUPLICATE)
-    elif simulated_decision_kind == UInt8(2):
-        # per_key_quota
-        zrtt.replay_decision = UInt8(2)
-        prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_PER_KEY_QUOTA)
-    else:
-        # global_ceiling (kind == 3)
-        zrtt.replay_decision = UInt8(2)
-        prof.record_counter(CounterId.ZERO_RTT_REPLAY_REJECT_GLOBAL_CEILING)
+    var accepted = (
+        simulated_rc == Int32(0)
+        and not simulated_raises
+        and simulated_decision_kind == UInt8(0)
+    )
+    zrtt.replay_decision = UInt8(1) if accepted else UInt8(2)

@@ -10,14 +10,12 @@
 # where flush() drains the DatagramStream, routes packets through QUIC/H3,
 # services expired deadlines, re-arms the timer and submits egress.
 #
-# This is the benchmark-instrumented variant of the library's
-# H3UdpServer[BenchHandler], carrying AcceptProfile counters, Plan C
-# diagnostics, and JSON sidecar writes. Every operation is driven by
+# This is the benchmark variant of the library's H3UdpServer[BenchHandler],
+# carrying error-count diagnostics. Every operation is driven by
 # WatchLoop — no raw io_uring calls.
 
-from std.ffi import external_call
 from std.memory import Pointer
-from std.collections import Span, Optional, Dict, InlineArray
+from std.collections import Span, Optional, Dict
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.tls.lib import TlsBackend, SharedLibrary
@@ -36,9 +34,8 @@ from bench.lib.handler import (
     _load_static_files,
     _load_dataset,
 )
-from interop.file_io import read_file, getenv_opt, write_file, mkdir_p
+from interop.file_io import read_file, getenv_opt
 from interop.udp import monotonic_us
-from navette.quic.profile import AcceptProfile, PROFILE_ACCEPT, monotonic_us as profile_monotonic_us
 from navette.util.null_ptr import null_ptr
 
 from bouclette import (
@@ -107,93 +104,6 @@ def _sockaddr_matches(
         if addr[j] != name_ptr[unsafe_offset=j]:
             return False
     return True
-
-
-# ── Plan B SIGINT plumbing ────────────────────────────────────────────
-#
-# Mojo 0.26.2 forbids module-level `var`, so we cannot declare a global
-# `Atomic[Int32]` flag. `comptime _heap_alloc(...)` is also unusable
-# because each function captures its own copy of the comptime value
-# (verified empirically — the address differs across `main` and
-# `_profile_signal_handler`).
-#
-# Workaround: mmap a one-page anonymous mapping at a fixed low address.
-# Both `main` and the signal handler agree on the literal `Int` constant
-# `PROFILE_FLAG_ADDR`, so they read/write the same word. This is the
-# simplest async-signal-safe state-sharing scheme available in 0.26.2.
-# The signal handler itself does no allocation, no Mojo runtime calls,
-# and no I/O — it just stores `1` to that word.
-#
-# `signal(2)` FFI signature: signal(int signum, void (*handler)(int))
-# returns void (*)(int). We cast our `thin` fn pointer through Int and
-# pass it as an opaque pointer. Empirically validated against libc.
-comptime PROFILE_FLAG_ADDR: Int = 0x60000000  # 1.5 GiB — well below any heap
-comptime PROFILE_MAP_PRIVATE: Int32 = 2
-comptime PROFILE_MAP_ANON: Int32 = 0x20
-comptime PROFILE_MAP_FIXED: Int32 = 0x110  # MAP_FIXED | MAP_FIXED_NOREPLACE (Linux 4.17+) — fail with ENOMEM instead of clobbering an existing mapping
-comptime PROFILE_PROT_RW: Int32 = 3
-comptime PROFILE_SIGINT: Int32 = 2
-comptime PROFILE_SIGTERM: Int32 = 15
-
-
-def _profile_signal_handler(signo: Int32):
-    # Async-signal-safe: store `1` to the fixed-address flag word. No
-    # allocation, no print, no Mojo runtime.
-    var p = Pointer[Int32, MutUntrackedOrigin](
-        unsafe_from_address=PROFILE_FLAG_ADDR
-    )
-    p[unsafe_offset=0] = Int32(1)
-
-
-def _profile_install_signal_handlers() raises:
-    """Map the flag page and install SIGINT/SIGTERM handlers."""
-    var hint = Pointer[NoneType, MutUntrackedOrigin](
-        unsafe_from_address=PROFILE_FLAG_ADDR
-    )
-    var mapped = external_call["mmap", Pointer[NoneType, MutUntrackedOrigin]](
-        hint,
-        Int(4096),
-        PROFILE_PROT_RW,
-        PROFILE_MAP_PRIVATE | PROFILE_MAP_ANON | PROFILE_MAP_FIXED,
-        Int32(-1),
-        Int(0),
-    )
-    if Int(mapped) != PROFILE_FLAG_ADDR:
-        # MAP_FIXED_NOREPLACE returns MAP_FAILED with errno=EEXIST when the
-        # address is already mapped (instead of silently clobbering), or
-        # ENOMEM under low memory. Either way, we cannot use the flag page.
-        raise "_profile_install_signal_handlers: mmap failed (address already in use or out of memory)"
-    var p = Pointer[Int32, MutUntrackedOrigin](
-        unsafe_from_address=PROFILE_FLAG_ADDR
-    )
-    p[unsafe_offset=0] = Int32(0)
-
-    var fn_ptr: def(Int32) thin -> None = _profile_signal_handler
-    var fp_value = Pointer(to=fn_ptr).unsafe_bitcast[UInt64]()[]
-    var handler_ptr = Pointer[NoneType, MutUntrackedOrigin](
-        unsafe_from_address=Int(fp_value)
-    )
-    _ = external_call["signal", Pointer[NoneType, MutUntrackedOrigin]](
-        PROFILE_SIGINT, handler_ptr
-    )
-    _ = external_call["signal", Pointer[NoneType, MutUntrackedOrigin]](
-        PROFILE_SIGTERM, handler_ptr
-    )
-
-
-@always_inline
-def _profile_dump_pending() -> Bool:
-    var p = Pointer[Int32, MutUntrackedOrigin](
-        unsafe_from_address=PROFILE_FLAG_ADDR
-    )
-    return p[unsafe_offset=0] != Int32(0)
-
-
-def _zpad2_int(n: Int) -> String:
-    """Zero-pad an Int to 2 digits (used for UTC timestamp formatting)."""
-    if n < 10:
-        return String("0") + String(n)
-    return String(n)
 
 
 # ── helpers (kept from original) ───────────────────────────────────────
@@ -289,10 +199,6 @@ struct PendingDatagram(Copyable, Movable):
     var name_len: Int
     var dcid: CidBuf
     var dgram_idx: Int
-    # Arrival-to-processing queueing-tail instrumentation.
-    # Read only when PROFILE_ACCEPT is True; off-build the value is always 0
-    # and any computed `now - arrival_us` delta is meaningless.
-    var arrival_us: UInt64
 
     def __init__(
         out self,
@@ -302,7 +208,6 @@ struct PendingDatagram(Copyable, Movable):
         name_len: Int,
         var dcid: CidBuf,
         dgram_idx: Int,
-        arrival_us: UInt64 = UInt64(0),
     ):
         self.payload_ptr = payload_ptr
         self.payload_len = payload_len
@@ -310,7 +215,6 @@ struct PendingDatagram(Copyable, Movable):
         self.name_len = name_len
         self.dcid = dcid^
         self.dgram_idx = dgram_idx
-        self.arrival_us = arrival_us
 
     def __init__(out self, *, copy: Self):
         self.payload_ptr = copy.payload_ptr
@@ -319,7 +223,6 @@ struct PendingDatagram(Copyable, Movable):
         self.name_len = copy.name_len
         self.dcid = CidBuf(copy=copy.dcid)
         self.dgram_idx = copy.dgram_idx
-        self.arrival_us = copy.arrival_us
 
     def __init__(out self, *, deinit move: Self):
         self.payload_ptr = move.payload_ptr
@@ -328,7 +231,6 @@ struct PendingDatagram(Copyable, Movable):
         self.name_len = move.name_len
         self.dcid = move.dcid^
         self.dgram_idx = move.dgram_idx
-        self.arrival_us = move.arrival_us
 
 
 # ── EgressPacket ─────────────────────────────────────────────────────
@@ -409,9 +311,6 @@ struct H3UdpHandler(Movable):
     # Test-only clock override consulted by `_now()`; None in production.
     var _clock_override_us: Optional[UInt64]
 
-    # Plan B profile (always present; dead in off-build).
-    var profile: AcceptProfile
-    var last_flush_end_us: UInt64
     # Plan C diagnostic — count kernel-level recvmsg drops + multishot terminations.
     var enobufs_count: UInt64
     var multishot_term_count: UInt64
@@ -459,8 +358,6 @@ struct H3UdpHandler(Movable):
         self._timeout_count = 0
         self._clock_override_us = Optional[UInt64](None)
 
-        self.profile = AcceptProfile()
-        self.last_flush_end_us = UInt64(0)
         self.enobufs_count = UInt64(0)
         self.multishot_term_count = UInt64(0)
         self.quic_server_err_count = UInt64(0)
@@ -490,8 +387,6 @@ struct H3UdpHandler(Movable):
         self._reset_count = move._reset_count
         self._timeout_count = move._timeout_count
         self._clock_override_us = move._clock_override_us^
-        self.profile = move.profile^
-        self.last_flush_end_us = move.last_flush_end_us
         self.enobufs_count = move.enobufs_count
         self.multishot_term_count = move.multishot_term_count
         self.quic_server_err_count = move.quic_server_err_count
@@ -559,12 +454,6 @@ struct H3UdpHandler(Movable):
         """Pin `_now()` so tests can cross deadlines without sleeping."""
         self._clock_override_us = Optional[UInt64](now_us)
 
-    def _profile_ptr(mut self) -> Pointer[AcceptProfile, MutUntrackedOrigin]:
-        """Return an untracked pointer to the embedded AcceptProfile."""
-        return Pointer[AcceptProfile, MutUntrackedOrigin](
-            unsafe_from_address=Int(Pointer(to=self.profile))
-        )
-
     # --- DatagramStream drain ---
 
     def _drain_recv_stream(mut self):
@@ -608,15 +497,6 @@ struct H3UdpHandler(Movable):
                 # Bad packet — skip.
                 continue
 
-            # Count datagrams per recvmsg CQE. With multishot recvmsg,
-            # each delivery carries exactly 1 datagram.
-            var stamp_us: UInt64 = UInt64(0)
-            comptime if PROFILE_ACCEPT:
-                stamp_us = profile_monotonic_us()
-                self.profile.record_recv_batch(1)
-                # 8-bucket recvmsg batch histogram.
-                self.profile.record_recvmsg_batch_size(1)
-
             var dgram_idx = len(self._live_datagrams)
             self._dgram_refcounts.append(UInt16(1))
 
@@ -628,7 +508,6 @@ struct H3UdpHandler(Movable):
                     name_len=len(name),
                     dcid=dcid^,
                     dgram_idx=dgram_idx,
-                    arrival_us=stamp_us,
                 )
             )
 
@@ -650,16 +529,10 @@ struct H3UdpHandler(Movable):
 
         # 2. Process buffered ingress (DCID routing, QUIC feed, egress
         #    drain, reap of connections closed by ingress).
-        # Q-IO-1: bracket _flush_impl to histogram per-wake wall-clock duration.
-        var t_flush_start: UInt64 = 0
-        comptime if PROFILE_ACCEPT:
-            t_flush_start = profile_monotonic_us()
         try:
             self._flush_impl()
         except e:
             print("h3-bench: flush error:", e)
-        comptime if PROFILE_ACCEPT:
-            self.profile.record_flush_impl_us(profile_monotonic_us() - t_flush_start)
 
         # 3. Timer pass — by clock: when no timer is live or the earliest
         #    deadline has passed. Drains only expired slots, then reaps.
@@ -779,34 +652,10 @@ struct H3UdpHandler(Movable):
 
     def _flush_impl(mut self) raises:
         """Route every buffered datagram to its connection and drain egress."""
-        var t_busy_start = UInt64(0)
-        var n_pkts_at_start = 0
-        comptime if PROFILE_ACCEPT:
-            t_busy_start = profile_monotonic_us()
-            if self.last_flush_end_us > UInt64(0):
-                self.profile.record_idle(t_busy_start - self.last_flush_end_us)
-            n_pkts_at_start = len(self.pending_rx)
-
         var now = self._now()
-        # Instrumentation clock for the arrival-latency delta: must be the
-        # same source as `arrival_us`, never the test clock.
-        var t_flush_now: UInt64 = 0
-        comptime if PROFILE_ACCEPT:
-            t_flush_now = profile_monotonic_us()
 
         for i in range(len(self.pending_rx)):
             var pd = self.pending_rx[i].copy()
-            var t_pop_dispatch_start: UInt64 = 0
-            comptime if PROFILE_ACCEPT:
-                t_pop_dispatch_start = profile_monotonic_us()
-                self.profile.record_loop_iter()
-            comptime if PROFILE_ACCEPT:
-                # Queueing wait: flush start - arrival_us (recvmsg ingress).
-                # delta is the wall-clock time the packet sat in pending_rx.
-                if pd.arrival_us > UInt64(0) and t_flush_now >= pd.arrival_us:
-                    self.profile.record_arrival_lat(t_flush_now - pd.arrival_us)
-                else:
-                    self.profile.record_arrival_lat(UInt64(0))
             # DCID-keyed lookup. pd.dcid was extracted at _drain_recv_stream
             # (long+short header).
             var dcid_u64 = dcid_to_u64(pd.dcid.as_span())
@@ -820,18 +669,9 @@ struct H3UdpHandler(Movable):
                     unsafe_ptr=pd.payload_ptr, length=pd.payload_len)
                 if not is_long_header_initial(first_byte_span):
                     self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
-                    comptime if PROFILE_ACCEPT:
-                        self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
                 # Fall through to QuicConnection.server(...) construction below.
 
-            comptime if PROFILE_ACCEPT:
-                if conn_idx >= 0:
-                    if not self.conn_h3s[conn_idx][]._h3._quic.is_expected_dcid(pd.dcid.as_span()):
-                        try:
-                            self.profile.record_dcid_mismatch()
-                        except:
-                            pass
 
             if conn_idx < 0:
                 # Create new QUIC connection. DCID was already extracted in
@@ -847,33 +687,20 @@ struct H3UdpHandler(Movable):
                     dcid_copy.append(_dcid_span[_i])
                 var quic: QuicConnection
                 try:
-                    comptime if PROFILE_ACCEPT:
-                        quic = QuicConnection.server(
-                            SharedLibrary(copy=self.tls_lib),
-                            self.server_config,
-                            tp,
-                            pd.dcid.as_span(),
-                            Span(dcid_copy),
-                            now,
-                            self._profile_ptr(),
-                        )
-                    else:
-                        quic = QuicConnection.server(
-                            SharedLibrary(copy=self.tls_lib),
-                            self.server_config,
-                            tp,
-                            pd.dcid.as_span(),
-                            Span(dcid_copy),
-                            now,
-                        )
+                    quic = QuicConnection.server(
+                        SharedLibrary(copy=self.tls_lib),
+                        self.server_config,
+                        tp,
+                        pd.dcid.as_span(),
+                        Span(dcid_copy),
+                        now,
+                    )
                 except e:
                     self.quic_server_err_count += UInt64(1)
                     if not self.quic_server_err_first:
                         self.quic_server_err_first = True
                         print("h3-bench DIAG: first QuicConnection.server error:", e)
                     self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
-                    comptime if PROFILE_ACCEPT:
-                        self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
 
                 # B-permissive dual-DCID extract (BEFORE quic^ is moved into
@@ -889,24 +716,15 @@ struct H3UdpHandler(Movable):
                 var handler = BenchHandler(self.state_ptr)
                 var h3: H3HandlerServer[BenchHandler]
                 try:
-                    comptime if PROFILE_ACCEPT:
-                        h3 = H3HandlerServer[BenchHandler](
-                            quic=quic^,
-                            handler=handler^,
-                            profile_ptr=self._profile_ptr(),
-                        )
-                    else:
-                        h3 = H3HandlerServer[BenchHandler](
-                            quic=quic^,
-                            handler=handler^,
-                        )
+                    h3 = H3HandlerServer[BenchHandler](
+                        quic=quic^,
+                        handler=handler^,
+                    )
                 except e:
                     self.h3_handler_err_count += UInt64(1)
                     if self.h3_handler_err_count == UInt64(1):
                         print("h3-bench DIAG: first H3HandlerServer error:", e)
                     self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
-                    comptime if PROFILE_ACCEPT:
-                        self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
                     continue
 
                 var h3_ptr = _heap_alloc[H3HandlerServer[BenchHandler]](1)
@@ -928,25 +746,14 @@ struct H3UdpHandler(Movable):
                 dcids.append(lcid_u64)
                 self.conn_dcids.append(dcids^)
 
-            comptime if PROFILE_ACCEPT:
-                self.profile.record_loop_pop_dispatch(profile_monotonic_us() - t_pop_dispatch_start)
             # Feed datagram to the connection.
-            # flush_feed_datagram_us bracket.
-            var t_feed_start: UInt64 = 0
-            comptime if PROFILE_ACCEPT:
-                t_feed_start = profile_monotonic_us()
             try:
                 self.conn_h3s[conn_idx][].feed_datagram_from_buffer(pd.payload_ptr, pd.payload_len, now)
             except e:
                 self.feed_datagram_err_count += UInt64(1)
                 if self.feed_datagram_err_count == UInt64(1):
                     print("h3-bench DIAG: first feed_datagram_from_buffer error:", e)
-            comptime if PROFILE_ACCEPT:
-                self.profile.record_flush_feed_datagram_us(profile_monotonic_us() - t_feed_start)
 
-            var t_post_pkt_start: UInt64 = 0
-            comptime if PROFILE_ACCEPT:
-                t_post_pkt_start = profile_monotonic_us()
             # Update peer address from the delivery header name region —
             # only when it changed, and never once the connection is
             # closing (checked after the feed so the datagram that
@@ -960,60 +767,20 @@ struct H3UdpHandler(Movable):
                         addr_update.append(pd.name_ptr[unsafe_offset=j])
                     self.conn_addrs[conn_idx] = addr_update^
 
-            comptime if PROFILE_ACCEPT:
-                self.profile.record_loop_post_pkt(profile_monotonic_us() - t_post_pkt_start)
             # Drain and queue outgoing datagrams.
-            var t_drain_start = UInt64(0)
-            comptime if PROFILE_ACCEPT:
-                t_drain_start = profile_monotonic_us()
             try:
                 self._drain_and_send(conn_idx, now)
             except:
                 pass
-            comptime if PROFILE_ACCEPT:
-                var drain_us = profile_monotonic_us() - t_drain_start
-                self.profile.record_drain(drain_us)
 
             # Release this segment's share of the buffer refcount.
             self._dgram_refcounts[pd.dgram_idx] -= UInt16(1)
 
-        var t_teardown_start: UInt64 = 0
-        comptime if PROFILE_ACCEPT:
-            t_teardown_start = profile_monotonic_us()
         self.pending_rx.clear()
-        comptime if PROFILE_ACCEPT:
-            self.profile.record_loop_teardown(profile_monotonic_us() - t_teardown_start)
 
         # Reap connections the ingress drove to CLOSED, now that no
         # pending_rx entry can resolve to a moved index.
         self._reap_closed()
-
-        comptime if PROFILE_ACCEPT:
-            var t_busy_end = profile_monotonic_us()
-            self.profile.record_flush(n_pkts_at_start, t_busy_end - t_busy_start)
-            self.last_flush_end_us = t_busy_end
-
-        comptime if PROFILE_ACCEPT:
-            if _profile_dump_pending():
-                # Timeout sweep: count surviving non-established conns
-                # (evicted ones already counted above).
-                for i in range(len(self.conn_h3s)):
-                    if not self.conn_h3s[i][]._h3.is_established():
-                        self.profile.record_handshake_timeout(UInt64(1))
-                # Write text report to stderr-equivalent (stdout is fine
-                # for the bench; structured JSON sidecar is a future addition).
-                print(self.profile.report_text(), end="")
-                # Plan C diagnostic: surface kernel-level recvmsg drops + multishot terminations + silent error swallows.
-                print("=== Plan C diagnostic counters ===")
-                print("  recvmsg drops (enobufs):         " + String(self.enobufs_count))
-                print("  multishot terminations:          " + String(self.multishot_term_count))
-                print("  QuicConnection.server errors:    " + String(self.quic_server_err_count))
-                print("  H3HandlerServer ctor errors:     " + String(self.h3_handler_err_count))
-                print("  feed_datagram_from_buffer errs:  " + String(self.feed_datagram_err_count))
-                print("=== end ===")
-                self._write_profile_json_sidecar()
-                # Exit cleanly via libc exit().
-                _ = external_call["exit", NoneType](Int32(0))
 
     def _drain_and_send(mut self, conn_idx: Int, now: UInt64) raises:
         """Drain outgoing datagrams from a connection and queue for sendmsg.
@@ -1031,10 +798,6 @@ struct H3UdpHandler(Movable):
             swap(pkt, datagrams[i])
             if len(pkt) == 0:
                 continue
-
-            # 8-bucket sendmsg batch histogram.
-            comptime if PROFILE_ACCEPT:
-                self.profile.record_sendmsg_batch_size(1)
 
             var addr_copy = List[Byte](copy=self.conn_addrs[conn_idx])
             self._egress_backlog.append(EgressPacket(pkt^, addr_copy^))
@@ -1078,9 +841,6 @@ struct H3UdpHandler(Movable):
 
     def _free_conn(mut self, i: Int) raises:
         """Destroy conn `i`, drop its DCIDs and swap-and-pop the parallel lists."""
-        comptime if PROFILE_ACCEPT:
-            if not self.conn_h3s[i][]._h3.is_established():
-                self.profile.record_handshake_timeout(UInt64(1))
         var ptr = self.conn_h3s[i]
         ptr.unsafe_deinit_pointee()
         ptr.unsafe_free()
@@ -1107,57 +867,6 @@ struct H3UdpHandler(Movable):
         _ = self.conn_h3s.pop()
         _ = self.conn_addrs.pop()
         _ = self.conn_dcids.pop()
-
-    def _write_profile_json_sidecar(self) raises:
-        """Write profile JSON sidecar to bench/quic_perf/results/profile/."""
-        # 1. Compute UTC timestamp via time(2) + gmtime_r(3).
-        var now_t = external_call["time", Int64](
-            Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=Int(0))
-        )
-        var t_buf = InlineArray[Int64, 1](fill=now_t)
-        var tm_buf = InlineArray[UInt8, 56](fill=0)
-        var tm_ptr = Pointer(to=tm_buf).unsafe_bitcast[UInt8]()
-        var t_ptr = Pointer(to=t_buf).unsafe_bitcast[Int64]()
-        _ = external_call[
-            "gmtime_r", Pointer[UInt8, MutUntrackedOrigin]
-        ](t_ptr, tm_ptr)
-        var tm_i32 = Pointer(to=tm_buf).unsafe_bitcast[Int32]()
-        var sec = Int(tm_i32[unsafe_offset=0])
-        var minu = Int(tm_i32[unsafe_offset=1])
-        var hour = Int(tm_i32[unsafe_offset=2])
-        var mday = Int(tm_i32[unsafe_offset=3])
-        var mon = Int(tm_i32[unsafe_offset=4]) + 1
-        var year = Int(tm_i32[unsafe_offset=5]) + 1900
-
-        # 2. Format yyyymmdd-hhmmss with zero-padding.
-        var ts = (
-            String(year)
-            + _zpad2_int(mon)
-            + _zpad2_int(mday)
-            + "-"
-            + _zpad2_int(hour)
-            + _zpad2_int(minu)
-            + _zpad2_int(sec)
-        )
-
-        # 3. mkdir -p the sidecar directory (ignores EEXIST).
-        var dir_path = String("bench/quic_perf/results/profile")
-        try:
-            mkdir_p(dir_path)
-        except e:
-            print("h3-bench: profile sidecar mkdir_p failed:", e)
-            return
-
-        # 4. Write JSON via interop.file_io.write_file (open/pwrite64/close).
-        var path = dir_path + "/INSTRUMENTATION-" + ts + ".json"
-        var json_text = self.profile.report_json()
-        try:
-            write_file(path, json_text.as_bytes())
-        except e:
-            print("h3-bench: profile sidecar write failed:", path, "err=", e)
-            return
-        print("h3-bench: profile sidecar written:", path)
-
 
 # ── main ─────────────────────────────────────────────────────────────
 
@@ -1231,11 +940,6 @@ def main() raises:
                 + " unsupported (WatchLoop manages wait internally); ignoring"
             )
 
-    # Plan B: install SIGINT/SIGTERM handler so that Ctrl-C / kill
-    # triggers a profile dump + clean exit at the next flush boundary.
-    comptime if PROFILE_ACCEPT:
-        _profile_install_signal_handlers()
-
     # Build the WatchLoop and the heap-stable server.
     var loop_ptr = _heap_alloc[WatchLoop](1)
     loop_ptr.unsafe_write(WatchLoop(capacity=_SQ_ENTRIES))
@@ -1255,30 +959,12 @@ def main() raises:
 
     # Event loop.
     while True:
-        # Bracket the canonical io_uring park site (step calls
-        # submit_and_wait internally).
-        var t_park_start: UInt64 = 0
-        comptime if PROFILE_ACCEPT:
-            t_park_start = profile_monotonic_us()
         # Bounded by the timer ceiling: if arming the timer ever fails,
         # only ingress would otherwise wake the loop.
-        var completions = loop_ptr[].step(Int(TIMER_CEILING_MS))
-        comptime if PROFILE_ACCEPT:
-            srv_ptr[].profile.record_iouring_park_us(profile_monotonic_us() - t_park_start)
-            srv_ptr[].profile.record_cqes_per_wake(UInt64(completions))
+        _ = loop_ptr[].step(Int(TIMER_CEILING_MS))
 
         # Process the datagrams this step buffered. flush() runs the full
         # ingress -> egress -> timer pipeline.
         srv_ptr[].flush()
 
-        # Q-IO-1: bracket the submission block (stream rearm + egress submit
-        # are inside flush() now, so this measures only the timer-poll overhead).
-        var t_dsubmit_start: UInt64 = 0
-        comptime if PROFILE_ACCEPT:
-            t_dsubmit_start = profile_monotonic_us()
-            srv_ptr[].profile.record_drain_submits_us(profile_monotonic_us() - t_dsubmit_start)
-
-        # 100ms-cadence gauge sampling (active_drive_count, in-flight HS).
-        comptime if PROFILE_ACCEPT:
-            srv_ptr[].profile.tick_profile_gauges(profile_monotonic_us())
         _ = loop_ptr

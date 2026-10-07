@@ -513,7 +513,7 @@ pub fn drive_to_zero_rtt_with_datagram_capture(
 
         // Termination: after the request has been sent AND we've
         // captured at least one datagram, give the server ~100 ms to
-        // process and bump its counter. Pinning to wall-clock instead
+        // process it. Pinning to wall-clock instead
         // of a packet count avoids racy "send one more, hope it lands"
         // logic.
         if request_sent && !captured.is_empty() {
@@ -569,7 +569,7 @@ pub fn replay_datagrams_verbatim(
         }
     }
 
-    // Tail wait so the server's AcceptProfile commits the counter.
+    // Tail wait so the server finishes processing the request.
     std::thread::sleep(Duration::from_millis(settle_ms));
     Ok(())
 }
@@ -727,8 +727,8 @@ pub fn drive_to_zero_rtt_with_h3_request(
         )
     })?;
 
-    // Tail-wait window so the server can commit any AcceptProfile counters
-    // before the caller asserts on them.
+    // Tail-wait window so the server finishes processing before the
+    // caller asserts on the outcome.
     std::thread::sleep(Duration::from_millis(100));
 
     Ok((

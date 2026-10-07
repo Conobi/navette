@@ -45,7 +45,6 @@ from navette.http.request import Request
 from navette.quic.connection import QuicConnection
 from navette.quic.frame import StreamFrame
 from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
-from navette.quic.profile import AcceptProfile, CounterId
 from navette.quic.trans_param import default_transport_params
 from navette.tls.config import QuicServerConfig
 from navette.tls.early_data_filter import IdempotentOnlyFilter
@@ -154,17 +153,16 @@ def _make_server(
     lib: TlsBackend,
     ref cfg: QuicServerConfig,
     mut filter: IdempotentOnlyFilter,
-    mut prof: AcceptProfile,
 ) raises -> H3HandlerServer[RecordingHandler]:
-    """Build an `H3HandlerServer` with stack-rooted filter + profile pointers.
+    """Build an `H3HandlerServer` with a stack-rooted filter pointer.
 
     The handshake is NOT driven; the test creates the request stream
     manually via `_force_stream_space` so the adapter's QPACK walk
     can read `Stream.is_zero_rtt` from a deterministically-tagged
     stream.
 
-    Caller MUST keep `filter` and `prof` alive past the server's
-    lifetime — they are stack-rooted Pointer references.
+    Caller MUST keep `filter` alive past the server's lifetime — it is
+    a stack-rooted Pointer reference.
     """
     var tp = default_transport_params()
     var dcid_a = List[Byte]()
@@ -176,18 +174,12 @@ def _make_server(
     var quic = QuicConnection.server(
         lib.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), now,
     )
-    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
-        Pointer(to=prof).unsafe_origin_cast[
-            MutUntrackedOrigin
-        ]()
-    )
     var filter_ptr = Optional[
         Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
     ](Pointer(to=filter).unsafe_origin_cast[MutUntrackedOrigin]())
     return H3HandlerServer[RecordingHandler](
         quic=quic^,
         handler=RecordingHandler(),
-        profile_ptr=prof_ptr,
         early_data_filter_ptr=filter_ptr,
     )
 
@@ -228,8 +220,7 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
 
     0-RTT POST -> handler.on_request NEVER called; the adapter
     synthesises a HEADERS frame with `:status=425` on the response
-    stream (which queues a FIN); the `reject_425` profile counter
-    increments by exactly one.
+    stream (which queues a FIN).
     """
     var lib = TlsBackend("lib/librustls_mojo.so")
     var ck = load_test_cert()
@@ -240,8 +231,7 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
         max_early_data=UInt32(0xFFFFFFFF),
     )
     var filter = IdempotentOnlyFilter()
-    var prof = AcceptProfile()
-    var server = _make_server(lib, cfg, filter, prof)
+    var server = _make_server(lib, cfg, filter)
 
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
@@ -251,10 +241,6 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
     assert_equal_int(
         server.handler.calls, 0,
         String("handler must not be invoked when 425 is emitted"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 1,
-        String("reject_425 counter += 1"),
     )
     # FIN queued on the response stream confirms the 425 synthesis.
     var key = Int(stream_id)
@@ -317,8 +303,7 @@ def test_h3_handler_server_filter_reject_emits_stop_sending() raises:
         max_early_data=UInt32(0xFFFFFFFF),
     )
     var filter = IdempotentOnlyFilter()
-    var prof = AcceptProfile()
-    var server = _make_server(lib, cfg, filter, prof)
+    var server = _make_server(lib, cfg, filter)
 
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
@@ -348,8 +333,7 @@ def test_h3_handler_server_filter_accept_injects_early_data_header() raises:
 
     0-RTT GET -> handler.on_request IS called; the request seen by the
     handler has `headers['early-data'] == '1'` AND
-    `caps.is_early_data == True`; the `accept` profile counter
-    increments by exactly one.
+    `caps.is_early_data == True`.
     """
     var lib = TlsBackend("lib/librustls_mojo.so")
     var ck = load_test_cert()
@@ -360,8 +344,7 @@ def test_h3_handler_server_filter_accept_injects_early_data_header() raises:
         max_early_data=UInt32(0xFFFFFFFF),
     )
     var filter = IdempotentOnlyFilter()
-    var prof = AcceptProfile()
-    var server = _make_server(lib, cfg, filter, prof)
+    var server = _make_server(lib, cfg, filter)
 
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
@@ -380,10 +363,6 @@ def test_h3_handler_server_filter_accept_injects_early_data_header() raises:
         server.handler.last_caps_is_early_data,
         String("caps.is_early_data must be True on 0-RTT accept"),
     )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1,
-        String("accept counter += 1"),
-    )
     _ = server._h3._quic.conn_handle
     _ = cfg._handle
 
@@ -391,8 +370,7 @@ def test_h3_handler_server_filter_accept_injects_early_data_header() raises:
 def test_h3_handler_server_filter_accept_query_on_0rtt() raises:
     """0-RTT QUERY -> handler.on_request IS called (QUERY is RFC-safe);
     the request has `headers['early-data'] == '1'` AND
-    `caps.is_early_data == True`; the `accept` profile counter
-    increments by exactly one. Mirrors the GET acceptance test."""
+    `caps.is_early_data == True`. Mirrors the GET acceptance test."""
     var lib = TlsBackend("lib/librustls_mojo.so")
     var ck = load_test_cert()
     var cert_pem = ck[0].copy()
@@ -402,8 +380,7 @@ def test_h3_handler_server_filter_accept_query_on_0rtt() raises:
         max_early_data=UInt32(0xFFFFFFFF),
     )
     var filter = IdempotentOnlyFilter()
-    var prof = AcceptProfile()
-    var server = _make_server(lib, cfg, filter, prof)
+    var server = _make_server(lib, cfg, filter)
 
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
@@ -422,10 +399,6 @@ def test_h3_handler_server_filter_accept_query_on_0rtt() raises:
         server.handler.last_caps_is_early_data,
         String("caps.is_early_data must be True on 0-RTT QUERY accept"),
     )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 1,
-        String("accept counter += 1 (QUERY)"),
-    )
     _ = server._h3._quic.conn_handle
     _ = cfg._handle
 
@@ -435,8 +408,7 @@ def test_h3_handler_server_1rtt_request_bypasses_filter() raises:
 
     1-RTT POST -> handler invoked normally; the request seen by the
     handler has NO `early-data` header (`Headers.get` returns ""); the
-    `caps.is_early_data` flag is False; the `1rtt_bypassed` profile
-    counter increments by exactly one. POST is intentional here — it
+    `caps.is_early_data` flag is False. POST is intentional here — it
     exercises the bypass path on a method the filter WOULD reject if
     is_zero_rtt were True, confirming that the bypass is purely a
     function of the QUIC packet-space tag, not of the request method.
@@ -450,8 +422,7 @@ def test_h3_handler_server_1rtt_request_bypasses_filter() raises:
         max_early_data=UInt32(0xFFFFFFFF),
     )
     var filter = IdempotentOnlyFilter()
-    var prof = AcceptProfile()
-    var server = _make_server(lib, cfg, filter, prof)
+    var server = _make_server(lib, cfg, filter)
 
     # Application-space (1-RTT) tag -> stream's is_zero_rtt stays False.
     var APPLICATION_SPACE_IDX: Int = 2
@@ -472,28 +443,22 @@ def test_h3_handler_server_1rtt_request_bypasses_filter() raises:
         server.handler.last_caps_is_early_data,
         String("caps.is_early_data must be False on 1-RTT"),
     )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 1,
-        String("1rtt_bypassed counter += 1"),
-    )
     _ = server._h3._quic.conn_handle
     _ = cfg._handle
 
 
 def test_h3_handler_server_zero_rtt_disabled_skips_dispatch() raises:
-    """AC zero-rtt-disabled-requests-skip-dispatch (defect-demonstrating,
-    Red-Gated): on a connection with 0-RTT disabled (rejection-mode
-    config -> zrtt.enabled=False), a 1-RTT request proceeds to the
-    handler WITHOUT consulting the early-data dispatch — every
-    zero_rtt_http_filter_* counter stays zero and caps.is_early_data is
-    False. Pre-gate, the 1-RTT row bumps 1rtt_bypassed unconditionally,
-    so the all-zero assertion fails on that code."""
+    """AC zero-rtt-disabled-requests-skip-dispatch: on a connection with
+    0-RTT disabled (rejection-mode config -> zrtt.enabled=False), the
+    early-data dispatch is never consulted. The stream is tagged 0-RTT
+    and no filter is wired, so a consulted dispatch would fail closed
+    with a 425; skipping it lets the POST reach the handler with
+    caps.is_early_data False and no Early-Data header."""
     var lib = TlsBackend("lib/librustls_mojo.so")
     var ck = load_test_cert()
     var cert_pem = ck[0].copy()
     var key_pem = ck[1].copy()
     var cfg = QuicServerConfig(lib.shared(), Span(cert_pem), Span(key_pem))
-    var prof = AcceptProfile()
     var tp = default_transport_params()
     var dcid_a = List[Byte]()
     var dcid_b = List[Byte]()
@@ -503,51 +468,27 @@ def test_h3_handler_server_zero_rtt_disabled_skips_dispatch() raises:
     var quic = QuicConnection.server(
         lib.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), UInt64(1_000_000),
     )
-    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
-        Pointer(to=prof).unsafe_origin_cast[
-            MutUntrackedOrigin
-        ]()
-    )
     var server = H3HandlerServer[RecordingHandler](
         quic=quic^,
         handler=RecordingHandler(),
-        profile_ptr=prof_ptr,
     )
 
-    var APPLICATION_SPACE_IDX: Int = 2
     var stream_id: UInt64 = 0
-    _force_stream_in_space(server, stream_id, APPLICATION_SPACE_IDX)
+    _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), True)
     server._on_request(ev, UInt64(1_000_001))
 
     assert_equal_int(
         server.handler.calls, 1,
-        String("handler must be invoked on 1-RTT POST with 0-RTT disabled"),
+        String("handler must be invoked: dispatch skipped, no 425"),
     )
     assert_false(
         server.handler.last_caps_is_early_data,
         String("caps.is_early_data must be False when the gate skips dispatch"),
     )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_1RTT_BYPASSED)), 0,
-        String("dispatch must be skipped when 0-RTT is disabled"
-               " (no 1rtt_bypassed bump)"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_ACCEPT)), 0,
-        String("accept counter must stay zero"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_REJECT_425)), 0,
-        String("reject_425 counter must stay zero"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 0,
-        String("misconfig_fail_closed counter must stay zero"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_USER_RAISED)), 0,
-        String("user_raised counter must stay zero"),
+    assert_true(
+        server.handler.last_early_data_header == "",
+        String("no Early-Data header when the gate skips dispatch"),
     )
     _ = server._h3._quic.conn_handle
     _ = cfg._handle
@@ -557,7 +498,7 @@ def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
     """AC misconfig-fail-closed-row-preserved (invariant-preservation
     pin — passes pre-gate by design, Red-Gate exempt): a 0-RTT-ENABLED
     connection with BOTH filter pointers None and a 0-RTT-tagged stream
-    still gets 425 + misconfig_fail_closed. The zrtt.enabled gate
+    still gets a 425 and the handler is skipped. The zrtt.enabled gate
     must not bypass the fail-closed row."""
     var lib = TlsBackend("lib/librustls_mojo.so")
     var ck = load_test_cert()
@@ -567,7 +508,6 @@ def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
         lib.shared(), Span(cert_pem), Span(key_pem),
         max_early_data=UInt32(0xFFFFFFFF),
     )
-    var prof = AcceptProfile()
     var tp = default_transport_params()
     var dcid_a = List[Byte]()
     var dcid_b = List[Byte]()
@@ -577,15 +517,9 @@ def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
     var quic = QuicConnection.server(
         lib.shared(), cfg, tp, Span(dcid_a), Span(dcid_b), UInt64(1_000_000),
     )
-    var prof_ptr = Optional[Pointer[AcceptProfile, MutUntrackedOrigin]](
-        Pointer(to=prof).unsafe_origin_cast[
-            MutUntrackedOrigin
-        ]()
-    )
     var server = H3HandlerServer[RecordingHandler](
         quic=quic^,
         handler=RecordingHandler(),
-        profile_ptr=prof_ptr,
     )
 
     var stream_id: UInt64 = 0
@@ -596,10 +530,6 @@ def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
     assert_equal_int(
         server.handler.calls, 0,
         String("misconfigured 0-RTT-enabled conn must fail closed (no handler)"),
-    )
-    assert_equal_int(
-        Int(prof.get(CounterId.ZERO_RTT_HTTP_FILTER_MISCONFIG_FAIL_CLOSED)), 1,
-        String("misconfig_fail_closed counter += 1"),
     )
     _ = server._h3._quic.conn_handle
     _ = cfg._handle
