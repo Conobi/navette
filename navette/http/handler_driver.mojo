@@ -71,14 +71,15 @@ def pump_response[S: ResponseSink](mut sink: S, sid: Int, mut resp: ResponseWrit
             return True
 
 
-def fail_response[S: ResponseSink](mut sink: S, sid: Int, head_sent: Bool, response_ended: Bool, request_open: Bool) -> Bool:
-    """Apply the handler-failure policy to a stream; True when it had to be aborted, so the handler gets `on_reset`.
+def fail_response[S: ResponseSink](mut sink: S, sid: Int, msg: String, head_sent: Bool, response_ended: Bool, request_open: Bool) -> Bool:
+    """Log a failed stream once and apply the failure policy; True when it had to be aborted, so the handler gets `on_reset`.
 
     Before any head is on the wire the exchange completes as a 500 with an
     empty body (the request body, if still open, is refused without
     error). After the head, the response is aborted, never ended cleanly.
     A response that already ended is kept and only the request is refused.
     """
+    print("navette: stream", sid, "failed:", msg)
     if not response_ended:
         if head_sent:
             sink.abort(sid)
@@ -93,6 +94,27 @@ def fail_response[S: ResponseSink](mut sink: S, sid: Int, head_sent: Bool, respo
     if request_open:
         sink.stop_request(sid)
     return False
+
+
+def pump_or_fail[S: ResponseSink](
+    mut sink: S, sid: Int, mut resp: ResponseWriter, mut head_sent: Bool, mut response_ended: Bool,
+    mut failure: Optional[String], request_ended: Bool,
+) -> Bool:
+    """`pump_response`, then `fail_response` if the stream failed (a recorded handler raise or a send error). True once it can be freed.
+
+    For the coroutine servers, which keep their own per-stream record and
+    have no `on_reset` to call. Resolving a failure here, not at the raise,
+    lets an H3 request's FIN arrive first, so no needless STOP_SENDING.
+    """
+    if not failure and not response_ended:
+        try:
+            response_ended = pump_response(sink, sid, resp, head_sent)
+        except e:
+            failure = String(e)
+    if failure:
+        _ = fail_response(sink, sid, failure.value(), head_sent, response_ended, not request_ended)
+        return True
+    return response_ended and request_ended
 
 
 def _mark_ready(mut ready: List[Int], mut st: DriverStream, sid: Int):
@@ -247,7 +269,7 @@ struct HandlerDriver[H: StreamHandler](Movable):
         """Send what the ready streams staged; resolve failures; free streams whose both sides ended.
 
         A failed stream gets `fail_response` and, when aborted,
-        `on_reset(local_abort)`; it is logged once and freed. Other streams
+        `on_reset(local_abort)`; it is freed. Other streams
         on the connection are unaffected.
         """
         for i in range(len(self.ready)):
@@ -264,8 +286,7 @@ struct HandlerDriver[H: StreamHandler](Movable):
             var done = st.request_ended and st.response_ended
             if st.failure:
                 var msg = st.failure.take()
-                print("navette: stream", sid, "failed:", msg)
-                if fail_response(sink, sid, st.head_sent, st.response_ended, not st.request_ended):
+                if fail_response(sink, sid, msg, st.head_sent, st.response_ended, not st.request_ended):
                     self.handler.on_reset(StreamError.local_abort(msg^))
                 done = True
             elif done:

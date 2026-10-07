@@ -67,27 +67,13 @@ from navette.h2.connection import (
     H2_EVT_STREAM_RESET,
     H2_EVT_GOAWAY_RECEIVED,
     H2_EVT_CONNECTION_TERMINATED,
-    H2_CANCEL,
 )
 from navette.h2.config import h2_production_config
-from navette.h2.pseudo_headers import (
-    request_from_h2_headers,
-    response_to_h2_headers,
-    headers_from_h2,
-    headers_to_h2,
-)
-from navette.h2.header import Header
-from navette.http.handler import (
-    Capabilities,
-    RecvBody,
-    ResponseWriter,
-    StreamError,
-)
+from navette.h2.pseudo_headers import request_from_h2_headers, headers_from_h2
+from navette.http.handler import Capabilities, RecvBody, ResponseWriter
 from navette.http.body import BodyFrame
-from navette.http.headers import Headers
+from navette.http.handler_driver import pump_or_fail
 from navette.http.request import Request
-from navette.http.status import StatusCode
-from navette.http.version import Version
 from navette.util.ctx_pool import CtxPool
 from navette.util.ptrbox import PtrBox
 from navette.util.null_ptr import null_ptr
@@ -154,6 +140,8 @@ struct H2StreamingCtx(Movable):
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
+    var failure: Optional[String]
+    """A handler raise, resolved by the next response drain."""
     var body_frame_ring: List[BodyFrame]
     var cancelled: Bool
     var coro_addr: PtrBox[H2StreamingCoro]
@@ -174,6 +162,7 @@ struct H2StreamingCtx(Movable):
         self.request_ended = False
         self.response_ended = False
         self.headers_sent = False
+        self.failure = None
         self.body_frame_ring = List[BodyFrame]()
         self.cancelled = False
         self.coro_addr = PtrBox[H2StreamingCoro].null()
@@ -502,8 +491,8 @@ struct H2StreamingServer(Movable):
         `drain()` call.
 
         Safe to call when the stream does not exist or its coro is already
-        DONE — both are no-ops. Errors raised by the coro are converted to
-        RST_STREAM in `_resume_stream`, so this method only propagates
+        DONE — both are no-ops. A raise from the coro fails only its stream
+        (resolved by `_drain_responses`), so this method only propagates
         accounting errors from `_drain_responses` / `_flush_outbound`.
         """
         if not self._has_stream(sid):
@@ -563,7 +552,7 @@ struct H2StreamingServer(Movable):
             self._free_streaming_stream(ctx_ptr)
 
     def _resume_stream(mut self, sid: Int) raises:
-        """Resume the coroutine for stream sid. On error, set cancelled + free.
+        """Resume the coroutine for stream sid; a raise is recorded for `_drain_responses`.
 
         When the coro finishes normally (DONE after finish() returns), the
         stream is NOT freed here. Instead, _drain_responses will drain the
@@ -582,19 +571,9 @@ struct H2StreamingServer(Movable):
         try:
             coro_p[].resume()
         except e:
-            # Handler raised an error — send RST_STREAM, clean up
-            try:
-                self._conn.send_rst_stream(
-                    UInt32(sid), UInt32(H2_CANCEL)
-                )
-            except:
-                pass
-            _ = self._streams.pop(sid)
-            self._free_streaming_stream(ctx_ptr)
-            return
-        # Coro finished or suspended — if done, drain will clean up via
-        # _maybe_cleanup_stream (called at end of _drain_responses).
-        # No immediate pop/free here.
+            ctx_ptr[].failure = String(e)
+        # Finished, suspended or failed: `_drain_responses` sends what was
+        # staged (or applies the failure policy) and frees the stream.
 
     # --- Event dispatch -----------------------------------------------------
 
@@ -771,118 +750,13 @@ struct H2StreamingServer(Movable):
     # --- Response draining --------------------------------------------------
 
     def _drain_responses(mut self) raises:
-        """Drain pending response data from stream contexts into H2Connection.
-        Uses take_pointee/init_pointee_move to safely interleave ctx access
-        with self._conn mutations.
-
-        For streaming: the handler may have written multiple chunks via
-        write_chunk (buffered into resp_writer) across several suspends.
-        This drain sends them in order with end_stream=False; when
-        response_ended is set (by finish()), the drain sends the terminal
-        END_STREAM.
-
-        The DATA frame folding from h2_sync_server._drain_responses is
-        reproduced here: we buffer data frames and fold END_STREAM onto the
-        last DATA payload to avoid sending a separate 0-byte DATA(END_STREAM)
-        frame (some H2 clients misbehave on that)."""
+        """Send what each handler staged (1xx, head, chunks, end); a raise or send error fails only that stream."""
         var stream_ids = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             stream_ids.append(key)
-        for ref sid_ref in stream_ids:
-            var sid = sid_ref
+        for sid in stream_ids:
             if not self._has_stream(sid):
                 continue
-            var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.unsafe_take_pointee()
-            if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.unsafe_write(ctx^)
-                continue
-            var made_progress = False
-            # Send response headers if not yet sent
-            if not ctx.headers_sent and ctx.resp_writer._has_status():
-                var status_opt = ctx.resp_writer._take_status()
-                var headers_opt = ctx.resp_writer._take_headers()
-                var status = status_opt.unsafe_take()
-                var resp_headers: Headers
-                if Bool(headers_opt):
-                    resp_headers = headers_opt.unsafe_take()
-                else:
-                    resp_headers = Headers()
-                var h2_hdrs = response_to_h2_headers(status^, resp_headers^)
-                try:
-                    self._conn.send_headers(
-                        UInt32(sid), h2_hdrs^, end_stream=False
-                    )
-                except:
-                    pass
-                ctx.headers_sent = True
-                made_progress = True
-            # Drain body frames written by write_chunk / finish.
-            # Buffer data frames so we can fold END_STREAM onto the last
-            # DATA payload instead of emitting a 0-byte trailer frame.
-            var pending_data = List[List[Byte]]()
-            while True:
-                var f_opt = ctx.resp_writer._pop_body_frame()
-                if not Bool(f_opt):
-                    break
-                var f = f_opt.unsafe_take()
-                if f.is_data():
-                    pending_data.append(f.data().copy())
-                    made_progress = True
-                elif f.is_end():
-                    if len(pending_data) == 0:
-                        try:
-                            self._conn.send_data(
-                                UInt32(sid), List[Byte](), end_stream=True
-                            )
-                        except:
-                            pass
-                    else:
-                        var n = len(pending_data)
-                        for k in range(n - 1):
-                            try:
-                                self._conn.send_data(
-                                    UInt32(sid), pending_data[k].copy(), end_stream=False
-                                )
-                            except:
-                                pass
-                        try:
-                            self._conn.send_data(
-                                UInt32(sid), pending_data[n - 1].copy(), end_stream=True
-                            )
-                        except:
-                            pass
-                        pending_data = List[List[Byte]]()
-                    ctx.response_ended = True
-                    made_progress = True
-                    break
-                elif f.is_trailers():
-                    for ref pd in pending_data:
-                        try:
-                            self._conn.send_data(
-                                UInt32(sid), pd.copy(), end_stream=False
-                            )
-                        except:
-                            pass
-                    pending_data = List[List[Byte]]()
-                    var trailer_h2 = headers_to_h2(f.trailers())
-                    try:
-                        self._conn.send_headers(
-                            UInt32(sid), trailer_h2^, end_stream=True
-                        )
-                    except:
-                        pass
-                    ctx.response_ended = True
-                    made_progress = True
-                    break
-            # Flush any leftover pending data (no END_STREAM yet)
-            for ref pd in pending_data:
-                try:
-                    self._conn.send_data(
-                        UInt32(sid), pd.copy(), end_stream=False
-                    )
-                except:
-                    pass
-            ctx_ptr.unsafe_write(ctx^)
-            if made_progress:
-                self._maybe_cleanup_stream(sid)
+            ref ctx = self._streams[sid].ptr()[]
+            if pump_or_fail(self._conn, sid, ctx.resp_writer, ctx.headers_sent, ctx.response_ended, ctx.failure, ctx.request_ended):
+                self._cleanup_stream(sid)

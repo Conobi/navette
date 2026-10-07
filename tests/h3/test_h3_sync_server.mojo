@@ -9,7 +9,7 @@
 #   uv run mojo run -I . -I conformance tests/test_h3_sync_server.mojo
 
 from std.memory import Pointer
-from std.collections import Span
+from std.collections import Dict, Span
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, QuicClientConfig
@@ -24,7 +24,10 @@ from navette.http.handler import RecvBody, ResponseWriter, StreamError, Capabili
 from navette.http.headers import Headers
 from navette.http.body import BodyFrame
 from navette.http.status import StatusCode
+from navette.h3.error import H3_NO_ERROR
 from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
+from tests.h3._h3_log import log_events, logged, stop_code
+from tests.http._driver_script import _bytes, _link
 
 
 # ── Shared loopback helpers ──────────────────────────────────────────────────
@@ -124,11 +127,63 @@ def _path_echo_body(
     ctx_ptr[].resp_writer.end()
 
 
-def _error_body(
-    ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
-) raises:
-    """Always raise — exercises the RST_STREAM-on-handler-error path."""
-    raise Error("h3 handler error")
+def _script_body(ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]) raises:
+    """`/info`: two 103s, then 200 "ok"; `/boom`: raise; anything else: 200 "ok"."""
+    var target = String(ctx_ptr[].request.target)
+    if target == "/boom":
+        raise Error("boom")
+    if target == "/info":
+        ctx_ptr[].resp_writer.send_informational(StatusCode(103), _link("</a>"))
+        ctx_ptr[].resp_writer.send_informational(StatusCode(103), _link("</b>"))
+    ctx_ptr[].resp_writer.send_status(StatusCode.ok(), Headers())
+    _ = ctx_ptr[].resp_writer.try_send_body(BodyFrame.data(_bytes("ok")))
+    ctx_ptr[].resp_writer.end()
+
+
+struct _Script(Movable):
+    """H3CoroServer running `_script_body` against a raw client; `log` holds the client's events per stream."""
+
+    var tc: _TestConfigs
+    var server: H3CoroServer
+    var client: H3Connection
+    var now: UInt64
+    var log: Dict[Int, String]
+
+    def __init__(out self) raises:
+        var tc = _TestConfigs()
+        var params = _h3_default_params()
+        var now = UInt64(1_000_000)
+        var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
+        var odcid = List[Byte](client_quic.initial_dcid.as_span())
+        var cdcid = odcid.copy()
+        var server_quic = QuicConnection.server(tc._tls.shared(), tc.srv_cfg, params, Span(odcid), Span(cdcid), now)
+        self.server = H3CoroServer(quic=server_quic^, body_fn=_script_body)
+        self.client = H3Connection.client(client_quic^)
+        self.tc = tc^
+        self.now = _pump_sync_client(self.server, self.client, now, 50)
+        self.log = Dict[Int, String]()
+
+    def request(mut self, method: String, path: String, fin: Bool) raises -> UInt64:
+        var sid = self.client.open_bidi_stream()
+        self.client.send_headers(sid, FieldSection(method=method, scheme="https", authority="localhost", path=path), fin)
+        return sid
+
+    def to_server(mut self) raises:
+        """Deliver the client's datagrams, dispatch and drain them, but don't flush, so a queued STOP_SENDING is still observable."""
+        self.now += UInt64(10_000)
+        var dgs = List[List[Byte]]()
+        self.client.drain_datagrams(self.now, dgs)
+        for i in range(len(dgs)):
+            self.server._h3.feed_datagram(Span(dgs[i]), self.now)
+        self.server._dispatch_h3_events(self.now)
+        self.server._drain_responses(self.now)
+
+    def pump(mut self, rounds: Int) raises:
+        self.now = _pump_sync_client(self.server, self.client, self.now, rounds)
+        log_events(self.client, self.log)
+
+    def of(self, sid: UInt64) -> String:
+        return logged(self.log, sid)
 
 
 # ── Tests ────────────────────────────────────────────────────────────────────
@@ -280,42 +335,34 @@ def test_h3_sync_multiple_streams() raises:
     print("  test_h3_sync_multiple_streams: PASS")
 
 
-def test_h3_sync_error_propagation() raises:
-    """Handler raises an Error → server sends RST_STREAM and survives.
-    Mirrors test_error_propagation in test_h2_sync_server.mojo."""
-    var tc = _TestConfigs()
-    var params = _h3_default_params()
-    var now = UInt64(1_000_000)
+def test_h3_sync_informational_then_final() raises:
+    """Two 103s reach the client in order before the final head and body."""
+    var t = _Script()
+    var sid = t.request("GET", "/info", True)
+    t.pump(20)
+    assert_true(t.of(sid) == "H103</a> H103</b> H200 Dok E ", "1xx then final, got: " + t.of(sid))
+    assert_equal_int(len(t.server._streams), 0, "stream freed")
+    print("  test_h3_sync_informational_then_final: PASS")
 
-    var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
-    var orig_dcid = List[Byte](client_quic.initial_dcid.as_span())
-    var client_dcid = List[Byte](client_quic.initial_dcid.as_span())
-    var server_quic = QuicConnection.server(
-        tc._tls.shared(), tc.srv_cfg, params, Span(orig_dcid), Span(client_dcid), now,
-    )
-    var server = H3CoroServer(quic=server_quic^, body_fn=_error_body)
-    var client = H3Connection.client(client_quic^)
 
-    now = _pump_sync_client(server, client, now, 50)
-
-    var stream_id = client.open_bidi_stream()
-    var req_fields = FieldSection(method="GET", scheme="https", authority="localhost", path="/boom")
-    client.send_headers(stream_id, req_fields, True)
-
-    now = _pump_sync_client(server, client, now, 30)
-
-    var got_reset = False
-    while True:
-        var ev = client.poll_event()
-        if not ev:
-            break
-        var e = ev.unsafe_take()
-        if e.kind == H3Event.STREAM_RESET and e.stream_id == stream_id:
-            got_reset = True
-
-    assert_true(got_reset, "client did not observe STREAM_RESET on the failed stream")
-    assert_true(not server.should_close(), "server connection closed after handler error — must survive")
-    print("  test_h3_sync_error_propagation: PASS")
+def test_h3_sync_raise_answers_500() raises:
+    """A raising handler gets 500 + content-length 0 + FIN; an open request body also gets STOP_SENDING H3_NO_ERROR; the connection keeps serving."""
+    var t = _Script()
+    var closed = t.request("GET", "/boom", True)
+    t.to_server()
+    assert_equal_int(stop_code(t.server._h3, closed), -1, "a finished request is not stopped")
+    t.pump(20)
+    assert_true(t.of(closed) == "H500/cl0 E ", "500 then FIN, got: " + t.of(closed))
+    var open = t.request("POST", "/boom", False)
+    t.to_server()
+    assert_equal_int(stop_code(t.server._h3, open), Int(H3_NO_ERROR), "STOP_SENDING H3_NO_ERROR")
+    t.pump(20)
+    assert_true(t.of(open) == "H500/cl0 E ", "500 then FIN, got: " + t.of(open))
+    var next = t.request("GET", "/", True)
+    t.pump(20)
+    assert_true(t.of(next) == "H200 Dok E ", "the connection keeps serving, got: " + t.of(next))
+    assert_true(len(t.server._streams) == 0 and not t.server.should_close(), "streams freed; connection open")
+    print("  test_h3_sync_raise_answers_500: PASS")
 
 
 def _gate_probe_body(
@@ -386,7 +433,8 @@ def main() raises:
     test_h3_sync_simple_get()
     test_h3_sync_goaway()
     test_h3_sync_multiple_streams()
-    test_h3_sync_error_propagation()
+    test_h3_sync_informational_then_final()
+    test_h3_sync_raise_answers_500()
     test_h3_sync_zero_rtt_disabled_gate_skips_dispatch()
     print("All H3SyncServer tests passed.")
     print("ok")

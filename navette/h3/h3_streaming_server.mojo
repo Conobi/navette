@@ -64,18 +64,11 @@ from navette.h3.connection import H3Connection, H3Event
 from navette.h3.early_data_filter_dispatch import (
     apply_early_data_filter, send_425_response, stream_is_zero_rtt,
 )
-from navette.h3.error import H3_REQUEST_CANCELLED
-from navette.h3.qpack import FieldSection
-from navette.http.handler import (
-    Capabilities,
-    RecvBody,
-    ResponseWriter,
-    StreamError,
-)
+from navette.http.handler import Capabilities, RecvBody, ResponseWriter
 from navette.http.body import BodyFrame
+from navette.http.handler_driver import pump_or_fail
 from navette.http.headers import Headers
 from navette.http.request import Request
-from navette.http.status import StatusCode
 from navette.tls.early_data_filter import (
     EarlyDataPredicateFn,
     IdempotentOnlyFilter,
@@ -145,6 +138,8 @@ struct H3StreamingCtx(Movable):
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
+    var failure: Optional[String]
+    """A handler raise, resolved by the next response drain."""
     var body_frame_ring: List[BodyFrame]
     var cancelled: Bool
     var coro_addr: PtrBox[H3StreamingCoro]
@@ -165,6 +160,7 @@ struct H3StreamingCtx(Movable):
         self.request_ended = False
         self.response_ended = False
         self.headers_sent = False
+        self.failure = None
         self.body_frame_ring = List[BodyFrame]()
         self.cancelled = False
         self.coro_addr = PtrBox[H3StreamingCoro].null()
@@ -533,7 +529,7 @@ struct H3StreamingServer(Movable):
             self._free_streaming_stream(ctx_ptr)
 
     def _resume_stream(mut self, sid: Int) raises:
-        """Resume the coroutine for stream sid. On error, set cancelled + free.
+        """Resume the coroutine for stream sid; a raise is recorded for `_drain_responses`.
 
         When the coro finishes normally (DONE after finish() returns), the
         stream is NOT freed here. Instead, _drain_responses will drain the
@@ -552,17 +548,9 @@ struct H3StreamingServer(Movable):
         try:
             coro_p[].resume()
         except e:
-            # Handler raised an error — send RST, clean up
-            try:
-                self._h3.reset_stream(UInt64(sid), H3_REQUEST_CANCELLED)
-            except:
-                pass
-            _ = self._streams.pop(sid)
-            self._free_streaming_stream(ctx_ptr)
-            return
-        # Coro finished or suspended — if done, drain will clean up via
-        # _maybe_cleanup_stream (called at end of _drain_responses).
-        # No immediate pop/free here.
+            ctx_ptr[].failure = String(e)
+        # Finished, suspended or failed: `_drain_responses` sends what was
+        # staged (or applies the failure policy) and frees the stream.
 
     # --- Event dispatch -----------------------------------------------------
 
@@ -757,64 +745,13 @@ struct H3StreamingServer(Movable):
     # --- Response draining --------------------------------------------------
 
     def _drain_responses(mut self, now: UInt64) raises:
-        """Drain pending response data from stream contexts into H3Connection.
-        Uses take_pointee/init_pointee_move to safely interleave ctx access
-        with self._h3 mutations.
-
-        For streaming: the handler may have written multiple chunks via
-        write_chunk (buffered into resp_writer) across several suspends.
-        This drain sends them in order with fin=False; when response_ended
-        is set (by finish()), the next drain sends the terminal FIN."""
+        """Send what each handler staged (1xx, head, chunks, end); a raise or send error fails only that stream."""
         var stream_ids = List[Int](capacity=len(self._streams))
         for key in self._streams.keys():
             stream_ids.append(key)
-        for ref sid in stream_ids:
+        for sid in stream_ids:
             if not self._has_stream(sid):
                 continue
-            var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.unsafe_take_pointee()
-            if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.unsafe_write(ctx^)
-                continue
-            # Send response headers if not yet sent
-            if not ctx.headers_sent and ctx.resp_writer._has_status():
-                var status_opt = ctx.resp_writer._take_status()
-                var headers_opt = ctx.resp_writer._take_headers()
-                var status = status_opt.unsafe_take()
-                var resp_headers: Headers
-                if Bool(headers_opt):
-                    resp_headers = headers_opt.unsafe_take()
-                else:
-                    resp_headers = Headers()
-                try:
-                    self._h3.send_headers(UInt64(sid), FieldSection(status=String(Int(status.code())), headers=resp_headers^), False)
-                except:
-                    pass
-                ctx.headers_sent = True
-            # Drain body frames written by write_chunk / finish
-            while True:
-                var f_opt = ctx.resp_writer._pop_body_frame()
-                if not Bool(f_opt):
-                    break
-                var f = f_opt.unsafe_take()
-                if f.is_data():
-                    try:
-                        self._h3.send_data(UInt64(sid), f.data(), False)
-                    except:
-                        pass
-                elif f.is_end():
-                    try:
-                        self._h3.send_data(UInt64(sid), List[Byte](), True)
-                    except:
-                        pass
-                    ctx.response_ended = True
-                    break
-                elif f.is_trailers():
-                    try:
-                        self._h3.send_headers(UInt64(sid), FieldSection(headers=f.trailers().copy()), True)
-                    except:
-                        pass
-                    ctx.response_ended = True
-                    break
-            ctx_ptr.unsafe_write(ctx^)
-            self._maybe_cleanup_stream(sid)
+            ref ctx = self._streams[sid].ptr()[]
+            if pump_or_fail(self._h3, sid, ctx.resp_writer, ctx.headers_sent, ctx.response_ended, ctx.failure, ctx.request_ended):
+                self._cleanup_stream(sid)

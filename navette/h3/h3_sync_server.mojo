@@ -21,18 +21,11 @@ from navette.h3.connection import H3Connection, H3Event
 from navette.h3.early_data_filter_dispatch import (
     apply_early_data_filter, send_425_response, stream_is_zero_rtt,
 )
-from navette.h3.error import H3_REQUEST_CANCELLED
-from navette.h3.qpack import FieldSection
-from navette.http.handler import (
-    Capabilities,
-    RecvBody,
-    ResponseWriter,
-    StreamError,
-)
+from navette.http.handler import Capabilities, RecvBody, ResponseWriter
 from navette.http.body import BodyFrame
+from navette.http.handler_driver import pump_or_fail
 from navette.http.headers import Headers
 from navette.http.request import Request
-from navette.http.status import StatusCode
 from navette.tls.early_data_filter import (
     EarlyDataPredicateFn,
     IdempotentOnlyFilter,
@@ -82,6 +75,8 @@ struct CoroStreamCtx(Movable):
     var request_ended: Bool
     var response_ended: Bool
     var headers_sent: Bool
+    var failure: Optional[String]
+    """A handler raise, resolved by the next response drain."""
 
     def __init__(
         out self,
@@ -99,6 +94,7 @@ struct CoroStreamCtx(Movable):
         self.request_ended = False
         self.response_ended = False
         self.headers_sent = False
+        self.failure = None
 
 
 # ---------------------------------------------------------------------------
@@ -284,20 +280,14 @@ struct H3CoroServer(Movable):
         self._h3.drain_datagrams(now, self._outbuf)
 
     def _run_handler(mut self, stream_id: Int) raises:
-        """Invoke the user handler synchronously. On error, send RST_STREAM
-        and clean up. On success, response data is in `ctx.resp_writer` for
-        `_drain_responses` to flush."""
+        """Invoke the user handler synchronously; its response waits in `ctx.resp_writer` for `_drain_responses`, and a raise is recorded for `_drain_responses`."""
         if not self._has_stream(stream_id):
             return
         var ctx_ptr = self._streams[stream_id].ptr()
         try:
             self._body_fn(ctx_ptr)
         except e:
-            try:
-                self._h3.reset_stream(UInt64(stream_id), H3_REQUEST_CANCELLED)
-            except:
-                pass
-            self._cleanup_stream(stream_id)
+            ctx_ptr[].failure = String(e)
 
     def _cleanup_stream(mut self, stream_id: Int) raises:
         """Unconditionally free stream context and remove from dict."""
@@ -466,64 +456,12 @@ struct H3CoroServer(Movable):
     # --- Response draining --------------------------------------------------
 
     def _drain_responses(mut self, now: UInt64) raises:
-        """Drain pending response data from stream contexts into the H3Connection.
-        Iterates only streams with pending responses (populated after
-        _run_handler), not the full _streams dict. Uses
-        take_pointee/init_pointee_move to safely interleave ctx access
-        with self._h3 mutations."""
+        """Send what the handlers that ran since the last pass staged (1xx, head, body, end); a raise or send error fails only that stream."""
         var pending = self._pending_response_streams^
         self._pending_response_streams = List[Int]()
-        for ref sid in pending:
+        for sid in pending:
             if not self._has_stream(sid):
                 continue
-            var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.unsafe_take_pointee()
-            if ctx.response_ended:
-                ctx_ptr.unsafe_write(ctx^)
-                self._maybe_cleanup_stream(sid)
-                continue
-            if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.unsafe_write(ctx^)
-                continue
-            # Send response headers
-            if not ctx.headers_sent and ctx.resp_writer._has_status():
-                var status_opt = ctx.resp_writer._take_status()
-                var headers_opt = ctx.resp_writer._take_headers()
-                var status = status_opt.unsafe_take()
-                var resp_headers: Headers
-                if Bool(headers_opt):
-                    resp_headers = headers_opt.unsafe_take()
-                else:
-                    resp_headers = Headers()
-                try:
-                    self._h3.send_headers(UInt64(sid), FieldSection(status=String(Int(status.code())), headers=resp_headers^), False)
-                except:
-                    pass
-                ctx.headers_sent = True
-            # Drain body frames
-            while True:
-                var f_opt = ctx.resp_writer._pop_body_frame()
-                if not Bool(f_opt):
-                    break
-                var f = f_opt.unsafe_take()
-                if f.is_data():
-                    try:
-                        self._h3.send_data(UInt64(sid), f.data(), False)
-                    except:
-                        pass
-                elif f.is_end():
-                    try:
-                        self._h3.send_data(UInt64(sid), List[Byte](), True)
-                    except:
-                        pass
-                    ctx.response_ended = True
-                    break
-                elif f.is_trailers():
-                    try:
-                        self._h3.send_headers(UInt64(sid), FieldSection(headers=f.trailers().copy()), True)
-                    except:
-                        pass
-                    ctx.response_ended = True
-                    break
-            ctx_ptr.unsafe_write(ctx^)
-            self._maybe_cleanup_stream(sid)
+            ref ctx = self._streams[sid].ptr()[]
+            if pump_or_fail(self._h3, sid, ctx.resp_writer, ctx.headers_sent, ctx.response_ended, ctx.failure, ctx.request_ended):
+                self._cleanup_stream(sid)

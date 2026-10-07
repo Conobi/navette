@@ -42,6 +42,8 @@ from navette.http.headers import Headers
 from navette.http.body import BodyFrame
 from navette.http.status import StatusCode
 from tests._test_util import assert_true, assert_equal_int
+from tests.h2._h2_log import event_log, send_request
+from tests.http._driver_script import _bytes, _link
 
 
 # ── Shared loopback helpers ──────────────────────────────────────────────────
@@ -221,6 +223,37 @@ def _cancel_signal_handler(mut yld: H2StreamingYielder) raises:
     except e:
         # Cancellation path — write signal 99
         signal_ptr[0] = Int(99)
+
+
+def _script_streaming(mut yld: H2StreamingYielder) raises:
+    """`/info`: two 103s, then 200 "ok"; `/boom`: raise at once; `/late`: 200 + "part", then raise on the first body chunk; else 200 "ok"."""
+    var ctx_ptr = yld.state()[]
+    var target = String(ctx_ptr[].request.target)
+    if target == "/boom":
+        raise Error("boom")
+    if target == "/info":
+        ctx_ptr[].resp_writer.send_informational(StatusCode(103), _link("</a>"))
+        ctx_ptr[].resp_writer.send_informational(StatusCode(103), _link("</b>"))
+    ctx_ptr[].resp_writer.send_status(StatusCode.ok(), Headers())
+    if target == "/late":
+        write_chunk(ctx_ptr, yld, _bytes("part"))
+        _ = next_chunk(ctx_ptr, yld)
+        raise Error("late failure")
+    write_chunk(ctx_ptr, yld, _bytes("ok"))
+    finish(ctx_ptr, yld)
+
+
+def _exchange(mut server: H2StreamingServer, mut client: H2Connection) raises -> List[H2Event]:
+    """Deliver the client's queued frames to the server, and the server's answer back."""
+    server.feed(Span(client.data_to_send()))
+    return client.receive_data(server.drain())
+
+
+def _script_pair(mut client: H2Connection) raises -> H2StreamingServer:
+    var server = H2StreamingServer(handler_fn=_script_streaming)
+    client.initiate_connection()
+    _do_preface(server, client)
+    return server^
 
 
 # ── Tests ────────────────────────────────────────────────────────────────────
@@ -474,6 +507,50 @@ def test_h2_streaming_multi_chunk_body_fifo_order() raises:
     print("  test_h2_streaming_multi_chunk_body_fifo_order: PASS")
 
 
+def test_h2_streaming_informational_then_final() raises:
+    """Two 103s go out in order, without END_STREAM, before the final head."""
+    var client = H2Connection(client_side=True)
+    var server = _script_pair(client)
+    send_request(client, 1, "GET", "/info", True)
+    var log = event_log(_exchange(server, client), 1)
+    assert_true(log == "H103</a> H103</b> H200 Dok D! ", "1xx then final, got: " + log)
+    assert_equal_int(len(server._streams), 0, "stream freed")
+    print("  test_h2_streaming_informational_then_final: PASS")
+
+
+def test_h2_streaming_raise_before_headers() raises:
+    """A raise before any head answers 500 + content-length 0 + END_STREAM; an open request body also gets RST_STREAM NO_ERROR."""
+    var client = H2Connection(client_side=True)
+    var server = _script_pair(client)
+    send_request(client, 1, "GET", "/boom", True)
+    send_request(client, 3, "POST", "/boom", False)
+    var events = _exchange(server, client)
+    var log1 = event_log(events, 1)
+    assert_true(log1 == "H500/cl0! ", "500 then END_STREAM, got: " + log1)
+    var log3 = event_log(events, 3)
+    assert_true(log3 == "H500/cl0! R0 ", "500, END_STREAM, RST_STREAM NO_ERROR, got: " + log3)
+    assert_true(len(server._streams) == 0 and not server.should_close(), "streams freed; connection open")
+    print("  test_h2_streaming_raise_before_headers: PASS")
+
+
+def test_h2_streaming_raise_after_headers_resets_only_that_stream() raises:
+    """A raise after the head was sent resets the stream with INTERNAL_ERROR, never END_STREAM; the other stream is answered."""
+    var client = H2Connection(client_side=True)
+    var server = _script_pair(client)
+    send_request(client, 1, "POST", "/late", False)
+    var log = event_log(_exchange(server, client), 1)
+    assert_true(log == "H200 Dpart ", "head and first chunk sent, got: " + log)
+    send_request(client, 3, "GET", "/", True)
+    client.send_data(UInt32(1), _bytes("x"), end_stream=False)
+    var events = _exchange(server, client)
+    var log1 = event_log(events, 1)
+    assert_true(log1 == "R2 ", "RST_STREAM INTERNAL_ERROR only, got: " + log1)
+    var log3 = event_log(events, 3)
+    assert_true(log3 == "H200 Dok D! ", "other stream answered, got: " + log3)
+    assert_true(len(server._streams) == 0 and not server.should_close(), "streams freed; connection open")
+    print("  test_h2_streaming_raise_after_headers_resets_only_that_stream: PASS")
+
+
 def main() raises:
     print("=== test_h2_streaming_server ===")
     test_h2_streaming_post_with_body()
@@ -481,5 +558,8 @@ def main() raises:
     test_h2_streaming_rst_stream()
     test_h2_streaming_cancel_via_rst_stream()
     test_h2_streaming_multi_chunk_body_fifo_order()
+    test_h2_streaming_informational_then_final()
+    test_h2_streaming_raise_before_headers()
+    test_h2_streaming_raise_after_headers_resets_only_that_stream()
     print("All H2StreamingServer tests passed.")
     print("ok")

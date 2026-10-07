@@ -26,6 +26,8 @@ from navette.http.body import BodyFrame
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.h2.h2_sync_server import H2CoroServer, CoroStreamCtx
+from tests.h2._h2_log import event_log, send_request
+from tests.http._driver_script import _bytes, _link
 
 
 # ---------------------------------------------------------------------------
@@ -75,11 +77,23 @@ def _echo_body(
     ctx_ptr[].resp_writer.end()
 
 
-def _raising_body(
-    ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]
-) raises:
-    """Always raise — exercises the RST_STREAM-on-handler-error path."""
-    raise Error("handler error")
+def _script_body(ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]) raises:
+    """`/info`: two 103s, then 200 "ok"; `/boom`: raise; anything else: 200 "ok"."""
+    var target = String(ctx_ptr[].request.target)
+    if target == "/boom":
+        raise Error("boom")
+    if target == "/info":
+        ctx_ptr[].resp_writer.send_informational(StatusCode(103), _link("</a>"))
+        ctx_ptr[].resp_writer.send_informational(StatusCode(103), _link("</b>"))
+    ctx_ptr[].resp_writer.send_status(StatusCode.ok(), Headers())
+    _ = ctx_ptr[].resp_writer.try_send_body(BodyFrame.data(_bytes("ok")))
+    ctx_ptr[].resp_writer.end()
+
+
+def _exchange(mut server: H2CoroServer, mut client: H2Connection) raises -> List[H2Event]:
+    """Deliver the client's queued frames to the server, and the server's answer back."""
+    server.feed(Span(client.data_to_send()))
+    return client.receive_data(server.drain())
 
 
 def _noop_body(
@@ -235,44 +249,43 @@ def test_multiple_streams() raises:
     print("PASS test_multiple_streams")
 
 
-def test_error_propagation() raises:
-    """Send GET / with END_STREAM to a handler that raises immediately;
-    server must send RST_STREAM(INTERNAL_ERROR) and survive."""
-    var server = H2CoroServer(body_fn=_raising_body)
+def test_informational_then_final() raises:
+    """Two 103s go out in order, without END_STREAM, before the final head."""
+    var server = H2CoroServer(body_fn=_script_body)
     var client = H2Connection(client_side=True)
     client.initiate_connection()
     _do_preface(server, client)
+    send_request(client, 1, "GET", "/info", True)
+    var log = event_log(_exchange(server, client), 1)
+    if log != "H103</a> H103</b> H200 Dok D! ":
+        raise Error("1xx then final, got: " + log)
+    if len(server._streams) != 0:
+        raise Error("stream freed")
+    print("PASS test_informational_then_final")
 
-    var headers = List[Header]()
-    headers.append(Header(":method", "GET"))
-    headers.append(Header(":path", "/"))
-    headers.append(Header(":scheme", "https"))
-    headers.append(Header(":authority", "localhost"))
-    client.send_headers(UInt32(1), headers^, end_stream=True)
-    var req_data = client.data_to_send()
 
-    server.feed(Span(req_data))
-    var server_out = server.drain()
-    var events = client.receive_data(server_out)
-
-    var got_reset = False
-    var reset_error_code = UInt32(0)
-    for i in range(len(events)):
-        if events[i].kind == H2_EVT_STREAM_RESET:
-            got_reset = True
-            reset_error_code = events[i].error_code
-
-    if not got_reset:
-        raise Error("expected H2_EVT_STREAM_RESET event")
-    if reset_error_code != UInt32(2):
-        raise Error(
-            "expected error_code 2 (INTERNAL_ERROR), got "
-            + String(reset_error_code)
-        )
-
-    if server.should_close():
-        raise Error("expected should_close() to be False after stream reset")
-    print("PASS test_error_propagation")
+def test_raise_answers_500() raises:
+    """A raising handler gets 500 + content-length 0 + END_STREAM; an open request body is refused with RST_STREAM NO_ERROR; other streams and the connection carry on."""
+    var server = H2CoroServer(body_fn=_script_body)
+    var client = H2Connection(client_side=True)
+    client.initiate_connection()
+    _do_preface(server, client)
+    send_request(client, 1, "GET", "/boom", True)
+    var log1 = event_log(_exchange(server, client), 1)
+    if log1 != "H500/cl0! ":
+        raise Error("500 then END_STREAM, got: " + log1)
+    send_request(client, 3, "POST", "/boom", False)
+    send_request(client, 5, "GET", "/", True)
+    var events = _exchange(server, client)
+    var log3 = event_log(events, 3)
+    if log3 != "H500/cl0! R0 ":
+        raise Error("500, END_STREAM, RST_STREAM NO_ERROR, got: " + log3)
+    var log5 = event_log(events, 5)
+    if log5 != "H200 Dok D! ":
+        raise Error("other stream answered, got: " + log5)
+    if len(server._streams) != 0 or server.should_close():
+        raise Error("streams freed; connection open")
+    print("PASS test_raise_answers_500")
 
 
 def test_stream_reset() raises:
@@ -309,6 +322,7 @@ def test_stream_reset() raises:
 def main() raises:
     test_single_complete_request()
     test_multiple_streams()
-    test_error_propagation()
+    test_informational_then_final()
+    test_raise_answers_500()
     test_stream_reset()
     print("All H2CoroServer (Path A) tests passed.")
