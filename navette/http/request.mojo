@@ -117,14 +117,6 @@ struct Request(Movable):
         self.headers = headers^
         self.body = body^
 
-    def __init__(out self, *, deinit move: Self):
-        """Move constructor."""
-        self.method = move.method^
-        self.target = move.target^
-        self.version = move.version^
-        self.headers = move.headers^
-        self.body = move.body^
-
     def clone(self) raises -> Self:
         """Deep-copy this Request. Raises if the body is a stream — streams
         cannot be replayed; callers wanting retry support should hold a

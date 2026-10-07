@@ -50,10 +50,21 @@ def test_copy_semantics() raises:
     assert_true(a.multiplexed == b.multiplexed, "copy.multiplexed")
 
 
+def test_copy_is_deep() raises:
+    """Mutating a copy's peer address leaves the original intact."""
+    var a = Capabilities.for_h2(peer_addr=String("10.0.0.1:443"))
+    var b = a.copy()
+    b.peer_addr += "x"
+    b.alpn = ALPN_H1
+    assert_equal_str(a.peer_addr, "10.0.0.1:443", "original peer_addr unchanged")
+    assert_equal_int(a.alpn, ALPN_H2, "original alpn unchanged")
+
+
 def main() raises:
     test_for_h1_flags()
     test_for_h2_flags()
     test_for_h3_flags()
     test_alpn_string()
     test_copy_semantics()
+    test_copy_is_deep()
     print("test_capabilities: all tests passed")

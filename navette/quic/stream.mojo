@@ -121,13 +121,6 @@ struct RecvBuf(Copyable, Movable):
         else:
             self.max_gaps = UInt64(64)
 
-    def __init__(out self, *, copy: Self):
-        self.seg_offsets = List[UInt64](copy=copy.seg_offsets)
-        self.seg_data = List[List[Byte]](copy=copy.seg_data)
-        self.read_offset = copy.read_offset
-        self.max_gaps = copy.max_gaps
-        self.total_received = copy.total_received
-
     def _seg_end(self, i: Int) -> UInt64:
         """Return the exclusive end offset of segment i."""
         return self.seg_offsets[i] + UInt64(len(self.seg_data[i]))
@@ -489,18 +482,6 @@ struct SendBuf(Copyable, Movable):
         self.fin_offset = None
         self.fin_acked = False
         self.read_cursor = 0
-
-    def __init__(out self, *, copy: Self):
-        self.data = List[Byte](copy=copy.data)
-        self.offset = copy.offset
-        self.unsent_offset = copy.unsent_offset
-        self.highest_sent_offset = copy.highest_sent_offset
-        self.acked_offset = copy.acked_offset
-        self.acked_above = copy.acked_above.copy()
-        self.fin = copy.fin
-        self.fin_offset = Optional[UInt64](copy=copy.fin_offset)
-        self.fin_acked = copy.fin_acked
-        self.read_cursor = copy.read_cursor
 
     def write(mut self, new_data: Span[Byte, _], set_fin: Bool) raises:
         """Append data to the outgoing buffer and optionally set the FIN flag."""

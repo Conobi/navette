@@ -60,17 +60,6 @@ struct Capabilities(Copyable, Movable):
         self.conn_id = conn_id
         self.peer_addr = peer_addr^
 
-    def __init__(out self, *, copy: Self):
-        self.multiplexed = copy.multiplexed
-        self.trailers = copy.trailers
-        self.priority_hints = copy.priority_hints
-        self.datagrams = copy.datagrams
-        self.alpn = copy.alpn
-        self.is_early_data = copy.is_early_data
-        self.stream_id = copy.stream_id
-        self.conn_id = copy.conn_id
-        self.peer_addr = copy.peer_addr.copy()
-
     @staticmethod
     def for_h1(var peer_addr: String = "") -> Self:
         return Self(
@@ -157,11 +146,6 @@ struct StreamError(Copyable, Movable):
         self.code = code
         self.message = message^
 
-    def __init__(out self, *, copy: Self):
-        self.kind = copy.kind
-        self.code = copy.code
-        self.message = copy.message.copy()
-
     @staticmethod
     def peer_closed() -> Self:
         return Self(kind=STREAM_ERR_PEER_CLOSED, code=UInt32(0), message=String("peer closed"))
@@ -203,9 +187,6 @@ struct WriteResult(Copyable, Movable):
 
     def __init__(out self, *, tag: Int):
         self.tag = tag
-
-    def __init__(out self, *, copy: Self):
-        self.tag = copy.tag
 
     @staticmethod
     def ok() -> Self:

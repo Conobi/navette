@@ -26,10 +26,6 @@ struct H3RawFrame(Copyable, Movable):
         self.frame_type = frame_type
         self.payload = payload^
 
-    def __init__(out self, *, copy: Self):
-        self.frame_type = copy.frame_type
-        self.payload = List[Byte](copy=copy.payload)
-
     def encode(self, mut buf: List[Byte]) raises:
         """Append wire-format bytes (type + length + payload) to buf."""
         var pos = len(buf)
@@ -46,9 +42,6 @@ struct DataFrame(Copyable, Movable):
 
     def __init__(out self, var data: List[Byte]):
         self.data = data^
-
-    def __init__(out self, *, copy: Self):
-        self.data = List[Byte](copy=copy.data)
 
     @staticmethod
     def decode(var payload: List[Byte]) -> DataFrame:
@@ -70,9 +63,6 @@ struct HeadersFrame(Copyable, Movable):
 
     def __init__(out self, var encoded_fields: List[Byte]):
         self.encoded_fields = encoded_fields^
-
-    def __init__(out self, *, copy: Self):
-        self.encoded_fields = List[Byte](copy=copy.encoded_fields)
 
     @staticmethod
     def decode(var payload: List[Byte]) -> HeadersFrame:
@@ -97,19 +87,12 @@ struct SettingsPair(Copyable, Movable):
         self.id = id
         self.value = value
 
-    def __init__(out self, *, copy: Self):
-        self.id = copy.id
-        self.value = copy.value
-
 
 struct SettingsFrame(Copyable, Movable):
     var pairs: List[SettingsPair]
 
     def __init__(out self, var pairs: List[SettingsPair]):
         self.pairs = pairs^
-
-    def __init__(out self, *, copy: Self):
-        self.pairs = List[SettingsPair](copy=copy.pairs)
 
     @staticmethod
     def decode(payload: List[Byte]) raises -> SettingsFrame:

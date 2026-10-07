@@ -33,10 +33,6 @@ struct QpackStaticEntry(Copyable, Movable):
         self.name = name
         self.value = value
 
-    def __init__(out self, *, copy_from: Self):
-        self.name = copy_from.name
-        self.value = copy_from.value
-
 
 struct QpackHeaderField(Copyable, Movable):
     var name: String
@@ -174,10 +170,6 @@ struct _IntDecodeResult(Copyable, Movable):
         self.value = value
         self.new_offset = new_offset
 
-    def __init__(out self, *, copy_from: Self):
-        self.value = copy_from.value
-        self.new_offset = copy_from.new_offset
-
 
 # RFC 9204 Section 4.1.1: decoders must handle integers up to 62 bits and
 # treat larger values as a decoding error. 2^62-1 also keeps any
@@ -240,10 +232,6 @@ struct _StrDecodeResult(Copyable, Movable):
     def __init__(out self, value: String, new_offset: Int):
         self.value = value
         self.new_offset = new_offset
-
-    def __init__(out self, *, copy_from: Self):
-        self.value = copy_from.value
-        self.new_offset = copy_from.new_offset
 
 
 def _qpack_decode_string_with_tables(

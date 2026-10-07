@@ -2,6 +2,7 @@
 #
 # Unit tests for the End/Error variants of BodyFrame (M2.5a §5.2).
 from navette.http.body import BodyFrame
+from navette.http.headers import Headers
 from navette.http.handler import StreamError, STREAM_ERR_PARSER, STREAM_ERR_PEER_CLOSED
 from tests._test_util import assert_true, assert_false, assert_equal_int, assert_equal_str
 
@@ -36,9 +37,27 @@ def test_copy_preserves_error_variant() raises:
     assert_equal_int(g.error().kind, STREAM_ERR_PEER_CLOSED, "copy.kind")
 
 
+def test_copy_is_deep() raises:
+    """Mutating a copy's payload or trailers leaves the original intact."""
+    var d = BodyFrame.data([Byte(1), Byte(2)])
+    var d2 = BodyFrame(copy=d)
+    d2.data().append(Byte(3))
+    assert_equal_int(len(d.data()), 2, "original data unchanged")
+    assert_equal_int(len(d2.data()), 3, "copy data changed")
+
+    var h = Headers()
+    h.add("x-a", "1")
+    var t = BodyFrame.trailers(h^)
+    var t2 = t.copy()
+    t2.trailers().add("x-b", "2")
+    assert_equal_int(len(t.trailers()), 1, "original trailers unchanged")
+    assert_equal_int(len(t2.trailers()), 2, "copy trailers changed")
+
+
 def main() raises:
     test_end_factory_and_predicate()
     test_error_factory_and_accessor()
     test_existing_data_still_works()
     test_copy_preserves_error_variant()
+    test_copy_is_deep()
     print("test_body_frame_v2: all tests passed")

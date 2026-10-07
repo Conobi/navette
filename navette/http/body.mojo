@@ -50,22 +50,6 @@ struct BodyFrame(Copyable, Movable):
         self._headers = _headers^
         self._error = _error^
 
-    # --- Copy / Move ---
-
-    def __init__(out self, *, copy: Self):
-        """Copy constructor."""
-        self._tag = copy._tag
-        self._data = copy._data.copy()
-        self._headers = Headers(copy=copy._headers)
-        self._error = copy._error.copy()
-
-    def __init__(out self, *, deinit move: Self):
-        """Move constructor."""
-        self._tag = move._tag
-        self._data = move._data^
-        self._headers = move._headers^
-        self._error = move._error^
-
     # --- Factory methods ---
 
     @staticmethod
