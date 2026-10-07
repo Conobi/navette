@@ -7,6 +7,7 @@
 from std.collections import Dict, Optional
 from std.memory import Pointer, UnsafePointer
 from std.collections import Span
+from std.bit import count_trailing_zeros
 
 from navette.quic.connection import (
     QuicConnection,
@@ -17,12 +18,10 @@ from navette.quic.connection import (
 from navette.quic.event import (
     QuicEvent, ConnectionClosedPayload, StreamResetPayload,
 )
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
 from navette.quic.path import PathKey
 from navette.h3.frame import (
     H3RawFrame,
-    DataFrame,
-    HeadersFrame,
     SettingsFrame,
     H3_FRAME_DATA,
     H3_FRAME_HEADERS,
@@ -98,6 +97,24 @@ def _is_http2_frame_type(frame_type: UInt64) -> Bool:
         frame_type == 0x02 or frame_type == 0x06
         or frame_type == 0x08 or frame_type == 0x09
     )
+
+
+def _write_frame(
+    mut quic: QuicConnection, stream_id: UInt64, frame_type: UInt8, payload: Span[Byte, _], fin: Bool
+) raises:
+    """Write a frame header built on the stack, then the borrowed payload: two stream writes, no combined copy.
+
+    `frame_type` must fit a one-byte varint (< 64). A free function so the
+    payload may borrow another field of the H3Connection that owns `quic`.
+    """
+    var n = varint_len(UInt64(len(payload)))
+    var head = InlineArray[Byte, 9](fill=0)
+    head[0] = frame_type
+    for i in range(n):
+        head[n - i] = UInt8((UInt64(len(payload)) >> UInt64(8 * i)) & 0xFF)
+    head[1] |= UInt8(count_trailing_zeros(n) << 6)  # varint size prefix: log2 of its byte count
+    quic.send_stream_data(stream_id, Span(head)[: 1 + n], False)
+    quic.send_stream_data(stream_id, payload, fin)
 
 
 def _settings_ids_invalid(settings: SettingsFrame) -> Bool:
@@ -571,25 +588,19 @@ struct H3Connection(Movable):
     def send_headers(
         mut self, stream_id: UInt64, fields: List[QpackHeaderField], fin: Bool
     ) raises:
-        """QPACK-encode fields → HeadersFrame → send_stream_data."""
-        var encoded = List[Byte](capacity=len(fields) * 32)
-        self._enc.encode(encoded, fields)
-        var hf = HeadersFrame(encoded^)
+        """QPACK-encode `fields` into `_wire_scratch` and write it as one HEADERS frame."""
         self._wire_scratch.clear()
-        hf.encode(self._wire_scratch)
-        self._quic.send_stream_data(stream_id, Span(self._wire_scratch), fin)
+        self._enc.encode(self._wire_scratch, fields)
+        _write_frame(self._quic, stream_id, UInt8(H3_FRAME_HEADERS), Span(self._wire_scratch), fin)
 
     def send_data(
-        mut self, stream_id: UInt64, data: List[Byte], fin: Bool
+        mut self, stream_id: UInt64, data: Span[Byte, _], fin: Bool
     ) raises:
-        """Fuse H3 DATA header with payload in a single QUIC stream write. Empty data + fin=True sends FIN only."""
-        if len(data) == 0 and fin:
-            var empty = List[Byte]()
-            self._quic.send_stream_data(stream_id, Span(empty), True)
-            return
-        if len(data) == 0:
-            return
-        self._quic.send_h3_data(stream_id, data, fin)
+        """Write `data` as one DATA frame without copying it. Empty data sends FIN only, or nothing without `fin`."""
+        if len(data) > 0:
+            _write_frame(self._quic, stream_id, UInt8(H3_FRAME_DATA), data, fin)
+        elif fin:
+            self._quic.send_stream_data(stream_id, data, True)
 
     def send_goaway(mut self, last_stream_id: UInt64) raises:
         """Write GOAWAY frame to local control stream."""

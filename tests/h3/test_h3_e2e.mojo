@@ -16,7 +16,8 @@ from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.h3.connection import H3Connection, H3Event, MAX_DATAGRAMS_PER_DRAIN
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.h3.h3_session import H3Session
-from navette.h3.qpack import QpackHeaderField, QpackEncoder
+from navette.h3.qpack import QpackHeaderField, QpackEncoder, QpackDecoder
+from navette.h3.frame import DataFrame, HeadersFrame
 from navette.http.handler import StreamHandler, RecvBody, ResponseWriter, Capabilities, StreamError
 from navette.http.request import Request, RequestBody
 from navette.http.response import Response
@@ -588,6 +589,73 @@ def test_h3_drain_cap_is_observable() raises:
     print("  test_h3_drain_cap_is_observable: PASS")
 
 
+def _sent_bytes(mut h3: H3Connection, sid: UInt64) raises -> List[Byte]:
+    """Everything queued so far on `sid`'s send side."""
+    var p = h3._quic.stream_map.stream_ptr(Int(sid))
+    var out = p[].send_buf.value().data.copy()
+    _ = h3._quic.stream_map.streams
+    return out^
+
+
+def _assert_same_bytes(got: List[Byte], want: List[Byte], what: String) raises:
+    assert_equal_int(len(got), len(want), what + ": length")
+    for i in range(len(want)):
+        assert_equal_int(Int(got[i]), Int(want[i]), what + ": byte " + String(i))
+
+
+def test_h3_frame_wire_bytes() raises:
+    """DATA and HEADERS frames keep the type + varint length + payload layout byte for byte."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var ck = generate_ephemeral_cert()
+    var cert = ck[0].copy()
+    var key = ck[1].copy()
+    var ca = load_test_ca()
+    var srv_cfg = QuicServerConfig(tls.shared(), Span(cert), Span(key))
+    var cli_cfg = QuicClientConfig.with_ca(tls.shared(), Span(ca))
+    var now = UInt64(1_000_000)
+    var client = QuicConnection.client(tls.shared(), cli_cfg, "localhost", _h3_default_params(), now)
+    var dcid = List[Byte](client.initial_dcid.as_span())
+    var dcid2 = dcid.copy()
+    var h3 = H3Connection.server(QuicConnection.server(
+        tls.shared(), srv_cfg, _h3_default_params(), Span(dcid), Span(dcid2), now,
+    ))
+    h3._quic.stream_map.peer_max_streams_bidi = UInt64(16)
+    var sizes: List[Int] = [0, 1, 63, 64, 16_383, 16_384]
+    for size in sizes:
+        var sid = h3.open_bidi_stream()
+        var body = List[Byte](capacity=size)
+        for i in range(size):
+            body.append(UInt8(i % 251))
+        h3.send_data(sid, Span(body), True)
+        var want = List[Byte]()
+        if size > 0:  # an empty body with FIN queues no DATA frame
+            DataFrame(body.copy()).encode(want)
+        _assert_same_bytes(_sent_bytes(h3, sid), want, "DATA " + String(size))
+        var p = h3._quic.stream_map.stream_ptr(Int(sid))
+        assert_true(p[].send_buf.value().fin, "FIN queued for size " + String(size))
+    for count in [0, 20]:
+        var sid = h3.open_bidi_stream()
+        var fields = List[QpackHeaderField]()
+        fields.append(QpackHeaderField(":status", "200"))
+        for i in range(count):
+            fields.append(QpackHeaderField("x-h" + String(i), "value-" + String(i)))
+        h3.send_headers(sid, fields, False)
+        var block = List[Byte]()
+        QpackEncoder(False).encode(block, fields)  # H3Connection encodes without Huffman
+        var want = List[Byte]()
+        HeadersFrame(block.copy()).encode(want)
+        var got = _sent_bytes(h3, sid)
+        _assert_same_bytes(got, want, "HEADERS " + String(count))
+        var dec = QpackDecoder()
+        var decoded = dec.decode(Span(got)[len(got) - len(block):])
+        assert_equal_int(len(decoded), count + 1, "HEADERS decode count")
+        for i in range(len(fields)):
+            assert_true(decoded[i].name == fields[i].name and decoded[i].value == fields[i].value, "field " + String(i))
+    _ = h3._quic.stream_map.streams
+    _ = tls^
+    print("  test_h3_frame_wire_bytes: PASS")
+
+
 def main() raises:
     print("=== test_h3_e2e ===")
     test_h3_simple_get()
@@ -597,4 +665,5 @@ def main() raises:
     test_h3_goaway()
     test_h3_drain_cap_is_observable()
     test_h3_drain_terminates()
+    test_h3_frame_wire_bytes()
     print("All H3 E2E tests passed.")

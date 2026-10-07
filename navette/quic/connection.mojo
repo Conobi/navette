@@ -28,7 +28,7 @@ from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.tls.early_data_store import (
     InMemoryEarlyDataStore, ReplayDecision,
 )
-from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, varint_decode, varint_len
+from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
 from navette.quic.error import (
     QuicTransportError, NO_ERROR, PROTOCOL_VIOLATION, APPLICATION_ERROR,
@@ -3795,33 +3795,6 @@ struct QuicConnection(Movable):
         var has_pending = p[].send_buf.value().has_pending()
         if has_pending:
             self.stream_map.add_sendable(key)
-
-    def send_h3_data(
-        mut self,
-        stream_id: UInt64,
-        app_payload: List[Byte],
-        fin: Bool,
-    ) raises:
-        """Write H3 DATA header + application payload as a single stream write.
-
-        Fuses the H3 DATA frame header (type 0x00 + varint length) with the
-        application payload into one buffer, avoiding the intermediate
-        H3RawFrame.encode allocation that the H3 layer would otherwise
-        perform.
-        """
-        var payload_len = len(app_payload)
-        var hdr_len = 1 + varint_len(UInt64(payload_len))
-        var combined = List[Byte](capacity=hdr_len + payload_len)
-        # H3 DATA frame type = 0x00.
-        combined.append(0x00)
-        # Varint-encode the payload length directly into the buffer.
-        var vl_size = varint_len(UInt64(payload_len))
-        var vl_base = len(combined)
-        combined.resize(vl_base + vl_size, Byte(0))
-        _ = varint_encode_at(combined, vl_base, UInt64(payload_len))
-        # Bulk-copy the application payload.
-        combined.extend(Span(app_payload))
-        self.send_stream_data(stream_id, Span(combined), fin)
 
     def recv_stream_data(
         mut self, stream_id: UInt64

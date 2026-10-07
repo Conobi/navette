@@ -151,8 +151,7 @@ struct H3Session(Session):
         self._h3.send_headers(stream_id, fields, fin_on_headers)
 
         if has_body:
-            var body_bytes = req.body.bytes().copy()
-            self._h3.send_data(stream_id, body_bytes, True)
+            self._h3.send_data(stream_id, req.body.bytes(), True)
 
         # Allocate client context on heap
         var ctx_ptr = _heap_alloc[_H3ClientCtx](1)
@@ -277,8 +276,7 @@ struct H3Session(Session):
             raise Error("H3Session.feed_body: unknown handle")
         var stream_id = UInt64(self._handle_to_stream[hid])
         if frame.is_data():
-            var bytes_copy = frame.data().copy()
-            self._h3.send_data(stream_id, bytes_copy^, False)
+            self._h3.send_data(stream_id, frame.data(), False)
         elif frame.is_end():
             self._h3.send_data(stream_id, List[Byte](), True)
 
