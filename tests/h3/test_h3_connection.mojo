@@ -52,6 +52,8 @@ def test_h3event_kind_constants() raises:
     assert_equal_int(Int(H3Event.STREAM_RESET),       6, "STREAM_RESET")
     assert_equal_int(Int(H3Event.GOAWAY_RECEIVED),    7, "GOAWAY_RECEIVED")
     assert_equal_int(Int(H3Event.CONNECTION_CLOSED),  8, "CONNECTION_CLOSED")
+    assert_equal_int(Int(H3Event.DATAGRAM_RECEIVED),  9, "DATAGRAM_RECEIVED")
+    assert_equal_int(Int(H3Event.TRAILERS_RECEIVED), 10, "TRAILERS_RECEIVED")
     print("  test_h3event_kind_constants: PASS")
 
 
@@ -290,7 +292,7 @@ def test_h3_datagram_round_trip() raises:
         var evo = server_h3.poll_event()
         if not evo:
             break
-        var ev = evo.value().copy()
+        var ev = evo.unsafe_take()
         if ev.kind == H3Event.DATAGRAM_RECEIVED:
             got_dg = True
             if ev.stream_id == sid:

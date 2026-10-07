@@ -32,7 +32,7 @@ from std.memory import Pointer
 
 from navette.h3.connection import H3Connection
 from navette.h3.error import H3_REQUEST_CANCELLED
-from navette.h3.qpack import QpackHeaderField
+from navette.h3.qpack import FieldSection
 from navette.http.headers import Headers
 from navette.quic.connection import QuicConnection
 from navette.tls.early_data_filter import (
@@ -192,8 +192,7 @@ def apply_early_data_filter(
 def send_425_response(stream_id: UInt64, mut h3_conn: H3Connection) raises:
     """Synthesise a 425 Too Early response per RFC 8470 §5.2.
 
-    Status-only response with no body; FIN closes the stream. Uses the
-    real `H3Connection.send_headers(stream_id, fields, fin=True)` API.
+    Status-only response with no body; FIN closes the stream.
 
     After queuing the 425 response, emit a `STOP_SENDING`
     (RFC 9000 §3.5) on the request stream with H3 error
@@ -203,7 +202,5 @@ def send_425_response(stream_id: UInt64, mut h3_conn: H3Connection) raises:
     per-stream recv buffer up to `fc_recv_limit` (default 1 MiB) even
     though those bytes are dropped at the H3 layer.
     """
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(String(":status"), String("425")))
-    h3_conn.send_headers(stream_id, fields, True)
+    h3_conn.send_headers(stream_id, FieldSection(status="425"), True)
     h3_conn._quic.stop_sending(stream_id, H3_REQUEST_CANCELLED)

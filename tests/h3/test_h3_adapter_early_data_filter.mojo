@@ -33,7 +33,7 @@ from std.collections import Span
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.error import H3_REQUEST_CANCELLED
 from navette.h3.h3_handler_server import H3HandlerServer
-from navette.h3.qpack import QpackHeaderField
+from navette.h3.qpack import FieldSection
 from navette.http.handler import (
     Capabilities,
     RecvBody,
@@ -135,17 +135,10 @@ def _build_h3_event(
     Includes the four pseudo-headers required by the adapter's QPACK
     walk (`:method`, `:scheme`, `:path`, `:authority`). No regular
     headers -- the test only exercises pseudo-header dispatch.
-    The `fin` parameter is kept for call-site compat but ignored
-    (H3Event.fin was dead code, now removed).
+    The `fin` parameter is kept for call-site compat but ignored.
     """
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(String(":method"), method))
-    fields.append(QpackHeaderField(String(":scheme"), String("https")))
-    fields.append(QpackHeaderField(String(":path"), String("/")))
-    fields.append(QpackHeaderField(String(":authority"), String("localhost")))
-    var ev = H3Event(H3Event.HEADERS_RECEIVED)
-    ev.stream_id = stream_id
-    ev.fields = fields^
+    var ev = H3Event(H3Event.HEADERS_RECEIVED, stream_id)
+    ev.section = FieldSection(method=method, scheme="https", authority="localhost", path="/")
     return ev^
 
 
@@ -236,7 +229,7 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), True)
-    server._on_request(ev, UInt64(1_000_001))
+    server._on_request(ev^, UInt64(1_000_001))
 
     assert_equal_int(
         server.handler.calls, 0,
@@ -274,7 +267,7 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
     # accept path. Guards against a regression where the 425 short-circuit
     # is bolted on AFTER the per-stream-ctx allocation.
     assert_false(
-        Int(ev.stream_id) in server._streams,
+        Int(stream_id) in server._streams,
         String("rejected stream must not allocate _H3StreamCtx (handler skip)"),
     )
     _ = server._h3._quic.conn_handle
@@ -308,7 +301,7 @@ def test_h3_handler_server_filter_reject_emits_stop_sending() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), False)
-    server._on_request(ev, UInt64(1_000_001))
+    server._on_request(ev^, UInt64(1_000_001))
 
     var key = Int(stream_id)
     assert_true(
@@ -349,7 +342,7 @@ def test_h3_handler_server_filter_accept_injects_early_data_header() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("GET"), True)
-    server._on_request(ev, UInt64(1_000_001))
+    server._on_request(ev^, UInt64(1_000_001))
 
     assert_equal_int(
         server.handler.calls, 1,
@@ -385,7 +378,7 @@ def test_h3_handler_server_filter_accept_query_on_0rtt() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("QUERY"), True)
-    server._on_request(ev, UInt64(1_000_001))
+    server._on_request(ev^, UInt64(1_000_001))
 
     assert_equal_int(
         server.handler.calls, 1,
@@ -429,7 +422,7 @@ def test_h3_handler_server_1rtt_request_bypasses_filter() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, APPLICATION_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), True)
-    server._on_request(ev, UInt64(1_000_001))
+    server._on_request(ev^, UInt64(1_000_001))
 
     assert_equal_int(
         server.handler.calls, 1,
@@ -476,7 +469,7 @@ def test_h3_handler_server_zero_rtt_disabled_skips_dispatch() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), True)
-    server._on_request(ev, UInt64(1_000_001))
+    server._on_request(ev^, UInt64(1_000_001))
 
     assert_equal_int(
         server.handler.calls, 1,
@@ -525,7 +518,7 @@ def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), True)
-    server._on_request(ev, UInt64(1_000_001))
+    server._on_request(ev^, UInt64(1_000_001))
 
     assert_equal_int(
         server.handler.calls, 0,

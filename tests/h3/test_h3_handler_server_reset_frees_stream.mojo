@@ -6,6 +6,9 @@
 # own side (RFC 9114 Section 4.1.1); otherwise the QUIC stream never
 # becomes terminal in both directions, is never freed, and never returns
 # its MAX_STREAMS credit.
+#
+# Request trailers must reach the open request's body, not start a new
+# request (which also leaked the first request's context).
 
 from std.collections import Span
 from navette.h3.h3_handler_server import H3HandlerServer
@@ -68,14 +71,57 @@ struct _OpenResponse(StreamHandler):
         pass
 
 
-struct _Pair(Movable):
+struct _TrailerProbe(StreamHandler):
+    """Counts requests and records the body frame kinds it reads at the end."""
+
+    var requests: Int
+    var frames: String  # one letter per frame: D(ata), T(railers), E(nd)
+
+    def __init__(out self):
+        self.requests = 0
+        self.frames = String("")
+
+    def on_request(
+        mut self,
+        var req: Request,
+        mut body: RecvBody,
+        mut resp: ResponseWriter,
+        caps: Capabilities,
+    ) raises:
+        self.requests += 1
+
+    def on_body_available(
+        mut self, mut body: RecvBody, mut resp: ResponseWriter
+    ) raises:
+        pass
+
+    def on_request_end(
+        mut self, mut body: RecvBody, mut resp: ResponseWriter
+    ) raises:
+        while True:
+            var f = body.try_read()
+            if not f:
+                break
+            ref frame = f.value()
+            self.frames += "D" if frame.is_data() else ("T" if frame.is_trailers() else ("E" if frame.is_end() else "?"))
+        resp.send_status(StatusCode(200), Headers())
+        resp.end()
+
+    def on_send_drained(mut self, mut resp: ResponseWriter) raises:
+        pass
+
+    def on_reset(mut self, error: StreamError):
+        pass
+
+
+struct _Pair[H: StreamHandler](Movable):
     """Raw QUIC client against an H3HandlerServer, pumped in memory."""
 
-    var srv: H3HandlerServer[_OpenResponse]
+    var srv: H3HandlerServer[Self.H]
     var cli: QuicConnection
     var now: UInt64
 
-    def __init__(out self) raises:
+    def __init__(out self, var handler: Self.H) raises:
         var tls = TlsBackend("lib/librustls_mojo.so")
         var ck = load_test_cert()
         var cert = ck[0].copy()
@@ -92,7 +138,7 @@ struct _Pair(Movable):
         var sq = QuicConnection.server(
             tls.shared(), srv_cfg, raw_params(), Span(odcid), Span(cdcid), self.now,
         )
-        self.srv = H3HandlerServer[_OpenResponse](quic=sq^, handler=_OpenResponse())
+        self.srv = H3HandlerServer[Self.H](quic=sq^, handler=handler^)
         self.cli = cli^
         _ = tls^
         self.pump(20)
@@ -131,7 +177,7 @@ struct _Pair(Movable):
 
 
 def test_reset_only_cancel_frees_stream_and_returns_credit() raises:
-    var p = _Pair()
+    var p = _Pair(_OpenResponse())
     var baseline = len(p.srv._h3._quic.stream_map.streams)
     for i in range(_INITIAL_BIDI + 10):
         var sid = p.cli.open_stream(True)
@@ -153,7 +199,23 @@ def test_reset_only_cancel_frees_stream_and_returns_credit() raises:
     print("  test_reset_only_cancel_frees_stream_and_returns_credit: PASS")
 
 
+def test_request_trailers_reach_the_open_request() raises:
+    var p = _Pair(_TrailerProbe())
+    var sid = p.cli.open_stream(True)
+    var b = headers_get()
+    b.extend([UInt8(0x00), 0x02, 0x68, 0x69])  # DATA "hi"
+    b.extend([UInt8(0x01), 0x03, 0x00, 0x00, 0xE7])  # trailers: cache-control no-cache
+    p.cli.send_stream_data(sid, Span(b), True)
+    p.pump(6)
+    assert_equal_int(p.srv.handler.requests, 1, "trailers do not re-run on_request")
+    assert_true(p.srv.handler.frames == "DTE", "body yields Data, Trailers, End: " + p.srv.handler.frames)
+    assert_true(not p.srv.has_stream(Int(sid)), "finished request freed")
+    assert_equal_int(len(p.srv._streams), 0, "no stream context left behind")
+    print("  test_request_trailers_reach_the_open_request: PASS")
+
+
 def main() raises:
     print("test_h3_handler_server_reset_frees_stream:")
     test_reset_only_cancel_frees_stream_and_returns_credit()
+    test_request_trailers_reach_the_open_request()
     print("All test_h3_handler_server_reset_frees_stream tests passed.")

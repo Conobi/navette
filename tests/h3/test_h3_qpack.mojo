@@ -4,7 +4,7 @@
 
 from navette.h3.qpack import (
     QpackStaticEntry,
-    QpackHeaderField,
+    FieldSection,
     QPACK_STATIC_TABLE_SIZE,
     qpack_static_get,
     qpack_static_find,
@@ -14,6 +14,7 @@ from navette.h3.qpack import (
     QpackEncoder,
     QpackDecoder,
 )
+from navette.http.headers import Headers
 from tests._test_util import assert_true, assert_false, assert_equal_int
 
 
@@ -184,13 +185,17 @@ def test_huffman_decode_all_ascii_fast_path() raises:
     print("  test_huffman_decode_all_ascii_fast_path: PASS")
 
 
+def _one(name: String, value: String) -> FieldSection:
+    var h = Headers()
+    h.add(name, value)
+    return FieldSection(headers=h^)
+
+
 def test_encode_prefix_two_zero_bytes() raises:
     # Any encoded block must start with [0x00, 0x00]
     var enc = QpackEncoder(False)
-    var headers = List[QpackHeaderField]()
-    headers.append(QpackHeaderField(":method", "GET"))
     var out = List[Byte]()
-    enc.encode(out, headers)
+    enc.encode(out, FieldSection(method="GET"))
     assert_equal_int(Int(out[0]), 0x00, "first byte should be 0x00")
     assert_equal_int(Int(out[1]), 0x00, "second byte should be 0x00")
     print("  test_encode_prefix_two_zero_bytes: PASS")
@@ -199,10 +204,8 @@ def test_encode_prefix_two_zero_bytes() raises:
 def test_encode_indexed_static_method_get() raises:
     # :method GET is static index 17; wire = 0xC0 | 17 = 0xD1
     var enc = QpackEncoder(False)
-    var headers = List[QpackHeaderField]()
-    headers.append(QpackHeaderField(":method", "GET"))
     var out = List[Byte]()
-    enc.encode(out, headers)
+    enc.encode(out, FieldSection(method="GET"))
     # prefix [0x00, 0x00] + indexed byte 0xD1
     assert_equal_int(len(out), 3, "output should be 3 bytes")
     assert_equal_int(Int(out[2]), 0xD1, "indexed :method GET should be 0xD1")
@@ -211,20 +214,18 @@ def test_encode_indexed_static_method_get() raises:
 
 def test_encode_literal_name_ref() raises:
     # :method PATCH: name matches first :method entry (index 15), value not in table.
-    # §4.5.4 wire format (use_huffman=False):
+    # Section 4.5.4 wire format (use_huffman=False):
     #   prefix     [0x00, 0x00]
-    #   §4.5.4     [0x5F, 0x00]  — 0x50 | 4-bit int(15); 15==max_first → 2 bytes
+    #   4.5.4      [0x5F, 0x00]  — 0x50 | 4-bit int(15); 15==max_first → 2 bytes
     #   value      [0x05, 'P','A','T','C','H']  — H=0, length=5
     var enc = QpackEncoder(False)
-    var headers = List[QpackHeaderField]()
-    headers.append(QpackHeaderField(":method", "PATCH"))
     var out = List[Byte]()
-    enc.encode(out, headers)
+    enc.encode(out, FieldSection(method="PATCH"))
     assert_equal_int(len(out), 10, "wire length should be 10 bytes")
     assert_equal_int(Int(out[0]), 0x00, "prefix byte 0")
     assert_equal_int(Int(out[1]), 0x00, "prefix byte 1")
-    assert_equal_int(Int(out[2]), 0x5F, "§4.5.4 first byte: N=0 T=1 index=15 multi-byte")
-    assert_equal_int(Int(out[3]), 0x00, "§4.5.4 second byte: remainder=0")
+    assert_equal_int(Int(out[2]), 0x5F, "4.5.4 first byte: N=0 T=1 index=15 multi-byte")
+    assert_equal_int(Int(out[3]), 0x00, "4.5.4 second byte: remainder=0")
     assert_equal_int(Int(out[4]), 0x05, "value: H=0, length=5")
     assert_equal_int(Int(out[5]), 0x50, "value: 'P'")
     assert_equal_int(Int(out[6]), 0x41, "value: 'A'")
@@ -237,48 +238,43 @@ def test_encode_literal_name_ref() raises:
 def test_encode_literal_no_name_ref() raises:
     # x-custom: myval — not in static table
     var enc = QpackEncoder(False)
-    var headers = List[QpackHeaderField]()
-    headers.append(QpackHeaderField("x-custom", "myval"))
     var out = List[Byte]()
-    enc.encode(out, headers)
+    enc.encode(out, _one("x-custom", "myval"))
     var dec = QpackDecoder()
     var decoded = dec.decode(out)
-    assert_equal_int(len(decoded), 1, "should decode 1 header")
-    assert_true(decoded[0].name == "x-custom", "name should be x-custom")
-    assert_true(decoded[0].value == "myval", "value should be myval")
+    assert_equal_int(len(decoded.headers), 1, "should decode 1 header")
+    assert_true(decoded.headers.name_at(0) == "x-custom", "name should be x-custom")
+    assert_true(decoded.headers.value_at(0) == "myval", "value should be myval")
     print("  test_encode_literal_no_name_ref: PASS")
 
 
 def test_encode_multi_headers() raises:
+    """Every known pseudo-header and regular fields round-trip, in wire order."""
     var enc = QpackEncoder(False)
-    var headers = List[QpackHeaderField]()
-    headers.append(QpackHeaderField(":method", "GET"))
-    headers.append(QpackHeaderField(":path", "/"))
-    headers.append(QpackHeaderField(":scheme", "https"))
-    headers.append(QpackHeaderField(":authority", "example.com"))
+    var h = Headers()
+    h.add("x-a", "1")
+    h.add("x-b", "2")
     var out = List[Byte]()
-    enc.encode(out, headers)
+    enc.encode(out, FieldSection(
+        method="GET", scheme="https", authority="example.com", path="/", status="200", headers=h^
+    ))
     var dec = QpackDecoder()
     var decoded = dec.decode(out)
-    assert_equal_int(len(decoded), 4, "should decode 4 headers")
-    assert_true(decoded[0].name == ":method", "h0 name")
-    assert_true(decoded[0].value == "GET", "h0 value")
-    assert_true(decoded[1].name == ":path", "h1 name")
-    assert_true(decoded[1].value == "/", "h1 value")
-    assert_true(decoded[2].name == ":scheme", "h2 name")
-    assert_true(decoded[2].value == "https", "h2 value")
-    assert_true(decoded[3].name == ":authority", "h3 name")
-    assert_true(decoded[3].value == "example.com", "h3 value")
+    assert_true(decoded.method == "GET", ":method")
+    assert_true(decoded.scheme == "https", ":scheme")
+    assert_true(decoded.authority == "example.com", ":authority")
+    assert_true(decoded.path == "/", ":path")
+    assert_true(decoded.status == "200", ":status")
+    assert_equal_int(len(decoded.headers), 2, "two regular fields")
+    assert_true(decoded.headers.name_at(0) == "x-a" and decoded.headers.value_at(1) == "2", "regular fields in order")
     print("  test_encode_multi_headers: PASS")
 
 
 def test_encode_huffman_disabled() raises:
     # With huffman=False, literal strings must not be Huffman-encoded
     var enc = QpackEncoder(False)
-    var headers = List[QpackHeaderField]()
-    headers.append(QpackHeaderField("x-test", "hello"))
     var out = List[Byte]()
-    enc.encode(out, headers)
+    enc.encode(out, _one("x-test", "hello"))
     # Find "hello" in raw bytes (should appear as-is since no huffman)
     var found = False
     for i in range(len(out) - 4):
@@ -291,66 +287,35 @@ def test_encode_huffman_disabled() raises:
 
 def test_decode_indexed_static() raises:
     # [0x00, 0x00, 0xD1] = prefix + indexed :method GET (index 17, wire=0xC0|17=0xD1)
-    var data = List[Byte]()
-    data.append(0x00)
-    data.append(0x00)
-    data.append(0xD1)  # 0xC0 | 17
+    var data: List[Byte] = [0x00, 0x00, 0xD1]
     var dec = QpackDecoder()
-    var headers = dec.decode(data)
-    assert_equal_int(len(headers), 1, "should decode 1 header")
-    assert_true(headers[0].name == ":method", "name should be :method")
-    assert_true(headers[0].value == "GET", "value should be GET")
+    var section = dec.decode(data)
+    assert_true(section.method == "GET", ":method should be GET")
+    assert_equal_int(len(section.headers), 0, "no regular fields")
     print("  test_decode_indexed_static: PASS")
 
 
 def test_decode_literal_name_ref() raises:
-    # Decode known-correct §4.5.4 wire bytes for :method PATCH (use_huffman=False).
+    # Decode known-correct Section 4.5.4 wire bytes for :method PATCH (use_huffman=False).
     # Same bytes as oracle (pylsqpack) for :method PATCH field alone.
     # [0x00, 0x00, 0x5F, 0x00, 0x05, 'P','A','T','C','H']
-    var data = List[Byte]()
-    data.append(0x00)  # RIC=0
-    data.append(0x00)  # S=0, delta=0
-    data.append(0x5F)  # §4.5.4: N=0, T=1 (static), index=15 multi-byte first byte
-    data.append(0x00)  # index remainder = 0 → index = 15
-    data.append(0x05)  # H=0, length=5
-    data.append(0x50)  # 'P'
-    data.append(0x41)  # 'A'
-    data.append(0x54)  # 'T'
-    data.append(0x43)  # 'C'
-    data.append(0x48)  # 'H'
+    var data: List[Byte] = [0x00, 0x00, 0x5F, 0x00, 0x05, 0x50, 0x41, 0x54, 0x43, 0x48]
     var dec = QpackDecoder()
-    var headers = dec.decode(data)
-    assert_equal_int(len(headers), 1, "should decode 1 header")
-    assert_true(headers[0].name == ":method", "name should be :method")
-    assert_true(headers[0].value == "PATCH", "value should be PATCH")
+    var section = dec.decode(data)
+    assert_true(section.method == "PATCH", ":method should be PATCH")
+    assert_equal_int(len(section.headers), 0, "no regular fields")
     print("  test_decode_literal_name_ref: PASS")
-
-
-def test_decode_literal_no_name_ref() raises:
-    var enc = QpackEncoder(False)
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField("x-custom", "hello"))
-    var encoded = List[Byte]()
-    enc.encode(encoded, fields)
-    var dec = QpackDecoder()
-    var headers = dec.decode(encoded)
-    assert_equal_int(len(headers), 1, "should decode 1 header")
-    assert_true(headers[0].name == "x-custom", "name should be x-custom")
-    assert_true(headers[0].value == "hello", "value should be hello")
-    print("  test_decode_literal_no_name_ref: PASS")
 
 
 def test_decode_huffman_value() raises:
     # Encode with Huffman enabled, then decode
     var enc = QpackEncoder(True)
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField("x-custom", "world"))
     var encoded = List[Byte]()
-    enc.encode(encoded, fields)
+    enc.encode(encoded, _one("x-custom", "world"))
     var dec = QpackDecoder()
-    var headers = dec.decode(encoded)
-    assert_equal_int(len(headers), 1, "should decode 1 header")
-    assert_true(headers[0].value == "world", "value should be world")
+    var section = dec.decode(encoded)
+    assert_equal_int(len(section.headers), 1, "should decode 1 header")
+    assert_true(section.headers.value_at(0) == "world", "value should be world")
     print("  test_decode_huffman_value: PASS")
 
 
@@ -372,10 +337,8 @@ def test_decode_nonzero_insert_count_raises() raises:
 def test_decode_truncated_raises() raises:
     # Truncated literal (half of a literal field line)
     var enc2 = QpackEncoder(False)
-    var f2 = List[QpackHeaderField]()
-    f2.append(QpackHeaderField("x-header", "longvalue"))
     var e2 = List[Byte]()
-    enc2.encode(e2, f2)
+    enc2.encode(e2, _one("x-header", "longvalue"))
     # Take only first half (truncated)
     var half = List[Byte]()
     for i in range(len(e2) // 2):
@@ -390,21 +353,17 @@ def test_decode_truncated_raises() raises:
     print("  test_decode_truncated_raises: PASS")
 
 
-def test_decode_multi_fields() raises:
-    var enc = QpackEncoder(False)
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(":method", "GET"))
-    fields.append(QpackHeaderField(":path", "/"))
-    fields.append(QpackHeaderField(":scheme", "https"))
-    var encoded = List[Byte]()
-    enc.encode(encoded, fields)
+def test_decode_pseudo_header_routing() raises:
+    """Unknown pseudo-headers stay in `headers` in wire order; a repeated known one keeps its last value."""
+    # Raw literals (Section 4.5.6): ":protocol: x", ":path: /a", then indexed ":path /".
+    var data: List[Byte] = [0x00, 0x00, 0x27, 0x02, 0x3A, 0x70, 0x72, 0x6F, 0x74, 0x6F, 0x63, 0x6F, 0x6C, 0x01, 0x78]
+    data.extend([UInt8(0x25), 0x3A, 0x70, 0x61, 0x74, 0x68, 0x02, 0x2F, 0x61, 0xC1])
     var dec = QpackDecoder()
-    var headers = dec.decode(encoded)
-    assert_equal_int(len(headers), 3, "should decode 3 headers")
-    assert_true(headers[0].name == ":method", "h0 name should be :method")
-    assert_true(headers[1].name == ":path", "h1 name should be :path")
-    assert_true(headers[2].name == ":scheme", "h2 name should be :scheme")
-    print("  test_decode_multi_fields: PASS")
+    var section = dec.decode(data)
+    assert_true(section.path == "/", "last :path wins")
+    assert_equal_int(len(section.headers), 1, "unknown pseudo-header kept")
+    assert_true(section.headers.name_at(0) == ":protocol" and section.headers.value_at(0) == "x", ":protocol in headers")
+    print("  test_decode_pseudo_header_routing: PASS")
 
 
 def test_decode_static_index_out_of_range_raises() raises:
@@ -427,30 +386,26 @@ def test_decode_static_index_out_of_range_raises() raises:
     print("  test_decode_static_index_out_of_range_raises: PASS")
 
 
-def _decode_one(data: List[Byte]) raises -> QpackHeaderField:
-    var dec = QpackDecoder()
-    var headers = dec.decode(data)
-    assert_equal_int(len(headers), 1, "exactly one field")
-    return headers[0].copy()
-
-
 def test_decode_span_strings() raises:
     # Section 4.5.6 raw name + raw value, both zero length.
-    var empty = _decode_one([0x00, 0x00, 0x20, 0x00])
-    assert_true(empty.name == "" and empty.value == "", "zero-length name and value")
+    var dec = QpackDecoder()
+    var empty_block: List[Byte] = [0x00, 0x00, 0x20, 0x00]
+    var empty = dec.decode(empty_block)
+    assert_equal_int(len(empty.headers), 1, "exactly one field")
+    assert_true(empty.headers.name_at(0) == "" and empty.headers.value_at(0) == "", "zero-length name and value")
     # Section 4.5.6 Huffman name + Huffman value round-trip, then raw/raw.
     for huff in range(2):
         var enc = QpackEncoder(huff == 1)
-        var fields = List[QpackHeaderField]()
-        fields.append(QpackHeaderField("x-span-name", "some longer value past 23 bytes"))
         var encoded = List[Byte]()
-        enc.encode(encoded, fields)
-        var f = _decode_one(encoded)
-        assert_true(f.name == "x-span-name", "name round-trips")
-        assert_true(f.value == "some longer value past 23 bytes", "value round-trips")
-    # Section 4.5.4 static name ref with a raw value byte >= 0x80: Latin-1 transcode.
-    var latin = _decode_one([0x00, 0x00, 0x5F, 0x00, 0x02, 0x41, 0xE9])
-    assert_true(latin.value == "A" + chr(0xE9), "0xE9 decodes as U+00E9")
+        enc.encode(encoded, _one("x-span-name", "some longer value past 23 bytes"))
+        var f = dec.decode(encoded)
+        assert_equal_int(len(f.headers), 1, "exactly one field")
+        assert_true(f.headers.name_at(0) == "x-span-name", "name round-trips")
+        assert_true(f.headers.value_at(0) == "some longer value past 23 bytes", "value round-trips")
+    # Section 4.5.4 static name ref (:method) with a raw value byte >= 0x80: Latin-1 transcode.
+    var latin_block: List[Byte] = [0x00, 0x00, 0x5F, 0x00, 0x02, 0x41, 0xE9]
+    var latin = dec.decode(latin_block)
+    assert_true(latin.method == "A" + chr(0xE9), "0xE9 decodes as U+00E9")
     print("  test_decode_span_strings: PASS")
 
 
@@ -477,6 +432,7 @@ def test_decode_size_cap_boundary() raises:
     var dec = QpackDecoder()
     assert_true(Bool(dec.decode_bounded(data, 80)), "exactly the cap decodes")
     assert_false(Bool(dec.decode_bounded(data, 79)), "cap+1 returns None")
+    assert_false(Bool(dec.decode_bounded(data, 37)), "a first field over the cap returns None")
     print("  test_decode_size_cap_boundary: PASS")
 
 
@@ -485,25 +441,19 @@ def test_encode_field_all_three_paths() raises:
     var enc = QpackEncoder(use_huffman=False)
 
     # Exact static match: (:method, GET) = index 17
-    var exact_hdrs = List[QpackHeaderField]()
-    exact_hdrs.append(QpackHeaderField(":method", "GET"))
     var exact_bytes = List[Byte]()
-    enc.encode(exact_bytes, exact_hdrs)
+    enc.encode(exact_bytes, FieldSection(method="GET"))
     assert_true(len(exact_bytes) == 3, "exact: 2-byte prefix + 1 indexed")
     assert_true(Int(exact_bytes[2]) == 0xD1, "exact: 0xC0 | 17")
 
     # Name-only: (:authority, example.com) — name at index 0, value literal
-    var name_hdrs = List[QpackHeaderField]()
-    name_hdrs.append(QpackHeaderField(":authority", "example.com"))
     var name_bytes = List[Byte]()
-    enc.encode(name_bytes, name_hdrs)
+    enc.encode(name_bytes, FieldSection(authority="example.com"))
     assert_true(Int(name_bytes[2]) == 0x50, "name-ref: 0x50 | 0")
 
     # Literal: (x-custom, val) — no match
-    var lit_hdrs = List[QpackHeaderField]()
-    lit_hdrs.append(QpackHeaderField("x-custom", "val"))
     var lit_bytes = List[Byte]()
-    enc.encode(lit_bytes, lit_hdrs)
+    enc.encode(lit_bytes, _one("x-custom", "val"))
     assert_true(Int(lit_bytes[2]) & 0xE0 == 0x20, "literal: starts with 001xxxxx")
 
     print("  test_encode_field_all_three_paths: PASS")
@@ -619,11 +569,10 @@ def main() raises:
     test_encode_huffman_disabled()
     test_decode_indexed_static()
     test_decode_literal_name_ref()
-    test_decode_literal_no_name_ref()
     test_decode_huffman_value()
     test_decode_nonzero_insert_count_raises()
     test_decode_truncated_raises()
-    test_decode_multi_fields()
+    test_decode_pseudo_header_routing()
     test_decode_static_index_out_of_range_raises()
     test_decode_s_bit_raises()
     test_encode_field_all_three_paths()

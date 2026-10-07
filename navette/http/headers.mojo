@@ -52,17 +52,18 @@ struct Headers(Copyable, Movable, Sized):
         self._names.append(_to_lower(name))
         self._values.append(value)
 
-    def add_lowercase(mut self, name: String, value: String):
-        """Append a header where `name` is already lowercase.
+    def add_lowercase(mut self, var name: String, var value: String):
+        """Append a header where `name` is already lowercase, taking both Strings without a copy.
 
         Caller MUST guarantee `name` contains no ASCII A-Z. Used by
-        the HPACK ingress path: HTTP/2 wire header names are required
-        to be lowercase by RFC 7540 Section 8.1.2, so the decoder
-        output is already valid input here. Skips `_to_lower` to
-        avoid the duplicate scan + allocation.
+        the HPACK and QPACK ingress paths: HTTP/2 and HTTP/3 wire
+        header names are required to be lowercase (RFC 9113 Section
+        8.2.1, RFC 9114 Section 4.2), so the decoder output is
+        already valid input here. Skips `_to_lower` to avoid the
+        duplicate scan + allocation.
         """
-        self._names.append(name)
-        self._values.append(value)
+        self._names.append(name^)
+        self._values.append(value^)
 
     def set(mut self, name: String, value: String):
         """Set a header, replacing all existing values for this name."""

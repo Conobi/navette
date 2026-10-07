@@ -8,7 +8,7 @@
 # Properties:
 #   P1 (byte input): decoder must not crash on arbitrary bytes; either decodes
 #       cleanly or raises a recoverable error.
-#   P2 (encode roundtrip): for any List[QpackHeaderField], decode(encode(h))
+#   P2 (encode roundtrip): for any FieldSection of regular fields, decode(encode(h))
 #       returns headers equal to h.
 
 from std.os import getenv
@@ -18,7 +18,8 @@ from tests.fuzz.lib.generators import random_bytes_geom, mutate
 from tests.fuzz.lib.corpus import load_corpus_dir
 from tests.fuzz.lib.report import FuzzReport, ObserveResult
 
-from navette.h3.qpack import QpackEncoder, QpackDecoder, QpackHeaderField
+from navette.h3.qpack import QpackEncoder, QpackDecoder, FieldSection
+from navette.http.headers import Headers
 
 
 def _check_byte_property(b: List[Byte]) -> ObserveResult:
@@ -30,9 +31,9 @@ def _check_byte_property(b: List[Byte]) -> ObserveResult:
     return ObserveResult(True, String(""))
 
 
-def _gen_headers(mut rng: SplitMix64) -> List[QpackHeaderField]:
+def _gen_headers(mut rng: SplitMix64) -> Headers:
     var n = Int(rng.next_below(UInt64(5))) + 1
-    var out = List[QpackHeaderField]()
+    var out = Headers()
     for _ in range(n):
         var nlen = Int(rng.next_below(UInt64(8))) + 1
         var vlen = Int(rng.next_below(UInt64(16))) + 1
@@ -42,7 +43,7 @@ def _gen_headers(mut rng: SplitMix64) -> List[QpackHeaderField]:
         var value = String("")
         for _ in range(vlen):
             value += chr(Int(UInt8(ord(" ")) + (rng.next_u8() % UInt8(95))))
-        out.append(QpackHeaderField(name, value))
+        out.add(name, value)
     return out^
 
 
@@ -51,21 +52,21 @@ def _check_roundtrip_property(mut rng: SplitMix64) -> ObserveResult:
     var enc = QpackEncoder()
     var wire = List[Byte](capacity=128)
     try:
-        enc.encode(wire, headers.copy())
+        enc.encode(wire, FieldSection(headers=headers.copy()))
     except e:
         return ObserveResult(False, String("encode raised: ") + String(e))
     var dec = QpackDecoder()
-    var decoded: List[QpackHeaderField]
+    var decoded: Headers
     try:
-        decoded = dec.decode(wire.copy())
+        decoded = dec.decode(wire.copy()).take_headers()
     except e:
         return ObserveResult(False, String("decode raised: ") + String(e))
     if len(decoded) != len(headers):
         return ObserveResult(False, String("header count: got ") + String(len(decoded)) + String(" expected ") + String(len(headers)))
     for i in range(len(headers)):
-        if decoded[i].name != headers[i].name:
+        if decoded.name_at(i) != headers.name_at(i):
             return ObserveResult(False, String("hdr ") + String(i) + String(" name mismatch"))
-        if decoded[i].value != headers[i].value:
+        if decoded.value_at(i) != headers.value_at(i):
             return ObserveResult(False, String("hdr ") + String(i) + String(" value mismatch"))
     return ObserveResult(True, String(""))
 

@@ -8,7 +8,7 @@ matches the oracle byte-for-byte (possible only for fully-indexed fields
 where Huffman strategy is irrelevant, and for the name-reference case where
 pylsqpack and our encoder use the same encoding).
 """
-from navette.h3.qpack import QpackDecoder, QpackEncoder, QpackHeaderField
+from navette.h3.qpack import QpackDecoder, QpackEncoder, FieldSection
 from oracle.test_util import assert_true, assert_equal
 
 
@@ -56,16 +56,12 @@ def test_cross_decode_get_slash() raises:
     """
     var wire = hex_to_bytes("0000d1c1d750882f91d35d055c87a7")
     var dec = QpackDecoder()
-    var headers = dec.decode(wire)
-    assert_equal(len(headers), 4, "decoded header count")
-    assert_true(headers[0].name == ":method", "h0.name")
-    assert_true(headers[0].value == "GET", "h0.value")
-    assert_true(headers[1].name == ":path", "h1.name")
-    assert_true(headers[1].value == "/", "h1.value")
-    assert_true(headers[2].name == ":scheme", "h2.name")
-    assert_true(headers[2].value == "https", "h2.value")
-    assert_true(headers[3].name == ":authority", "h3.name")
-    assert_true(headers[3].value == "example.com", "h3.value")
+    var section = dec.decode(wire)
+    assert_equal(len(section.headers), 0, "no regular fields")
+    assert_true(section.method == "GET", ":method")
+    assert_true(section.path == "/", ":path")
+    assert_true(section.scheme == "https", ":scheme")
+    assert_true(section.authority == "example.com", ":authority")
     print("  test_cross_decode_get_slash: PASS")
 
 
@@ -76,20 +72,17 @@ def test_cross_decode_post_upload() raises:
     """
     var wire = hex_to_bytes("0000d4518562dae838e4d750882f91d35d055c87a7eec4")
     var dec = QpackDecoder()
-    var headers = dec.decode(wire)
-    assert_equal(len(headers), 6, "decoded header count")
-    assert_true(headers[0].name == ":method", "h0.name")
-    assert_true(headers[0].value == "POST", "h0.value")
-    assert_true(headers[1].name == ":path", "h1.name")
-    assert_true(headers[1].value == "/upload", "h1.value")
-    assert_true(headers[2].name == ":scheme", "h2.name")
-    assert_true(headers[2].value == "https", "h2.value")
-    assert_true(headers[3].name == ":authority", "h3.name")
-    assert_true(headers[3].value == "example.com", "h3.value")
-    assert_true(headers[4].name == "content-type", "h4.name")
-    assert_true(headers[4].value == "application/json", "h4.value")
-    assert_true(headers[5].name == "content-length", "h5.name")
-    assert_true(headers[5].value == "0", "h5.value")
+    var section = dec.decode(wire)
+    assert_true(section.method == "POST", ":method")
+    assert_true(section.path == "/upload", ":path")
+    assert_true(section.scheme == "https", ":scheme")
+    assert_true(section.authority == "example.com", ":authority")
+    ref headers = section.headers
+    assert_equal(len(headers), 2, "regular field count")
+    assert_true(headers.name_at(0) == "content-type", "h0.name")
+    assert_true(headers.value_at(0) == "application/json", "h0.value")
+    assert_true(headers.name_at(1) == "content-length", "h1.name")
+    assert_true(headers.value_at(1) == "0", "h1.value")
     print("  test_cross_decode_post_upload: PASS")
 
 
@@ -103,22 +96,18 @@ def test_cross_decode_200_ok() raises:
     # Decode direction
     var wire = hex_to_bytes(oracle_hex)
     var dec = QpackDecoder()
-    var headers = dec.decode(wire)
-    assert_equal(len(headers), 3, "decoded header count")
-    assert_true(headers[0].name == ":status", "h0.name")
-    assert_true(headers[0].value == "200", "h0.value")
-    assert_true(headers[1].name == "content-type", "h1.name")
-    assert_true(headers[1].value == "text/html; charset=utf-8", "h1.value")
-    assert_true(headers[2].name == "cache-control", "h2.name")
-    assert_true(headers[2].value == "no-cache", "h2.value")
+    var section = dec.decode(wire)
+    assert_true(section.status == "200", ":status")
+    ref headers = section.headers
+    assert_equal(len(headers), 2, "regular field count")
+    assert_true(headers.name_at(0) == "content-type", "h0.name")
+    assert_true(headers.value_at(0) == "text/html; charset=utf-8", "h0.value")
+    assert_true(headers.name_at(1) == "cache-control", "h1.name")
+    assert_true(headers.value_at(1) == "no-cache", "h1.value")
     # Encode direction (fully indexed — Huffman irrelevant)
     var enc = QpackEncoder(False)
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(":status", "200"))
-    fields.append(QpackHeaderField("content-type", "text/html; charset=utf-8"))
-    fields.append(QpackHeaderField("cache-control", "no-cache"))
     var encoded = List[Byte]()
-    enc.encode(encoded, fields)
+    enc.encode(encoded, section)
     assert_bytes_equal(encoded, wire, "encode must match oracle")
     print("  test_cross_decode_200_ok: PASS")
 
@@ -131,16 +120,13 @@ def test_cross_decode_404() raises:
     var oracle_hex = "0000db"
     var wire = hex_to_bytes(oracle_hex)
     var dec = QpackDecoder()
-    var headers = dec.decode(wire)
-    assert_equal(len(headers), 1, "decoded header count")
-    assert_true(headers[0].name == ":status", "h0.name")
-    assert_true(headers[0].value == "404", "h0.value")
+    var section = dec.decode(wire)
+    assert_true(section.status == "404", ":status")
+    assert_equal(len(section.headers), 0, "no regular fields")
     # Encode direction (fully indexed)
     var enc = QpackEncoder(False)
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(":status", "404"))
     var encoded = List[Byte]()
-    enc.encode(encoded, fields)
+    enc.encode(encoded, FieldSection(status="404"))
     assert_bytes_equal(encoded, wire, "encode must match oracle")
     print("  test_cross_decode_404: PASS")
 
@@ -152,12 +138,11 @@ def test_cross_decode_custom_literal() raises:
     """
     var wire = hex_to_bytes("0000d12f04f2b12d424f4ad3947216cf86a7d771d1697f")
     var dec = QpackDecoder()
-    var headers = dec.decode(wire)
-    assert_equal(len(headers), 2, "decoded header count")
-    assert_true(headers[0].name == ":method", "h0.name")
-    assert_true(headers[0].value == "GET", "h0.value")
-    assert_true(headers[1].name == "x-custom-header", "h1.name")
-    assert_true(headers[1].value == "myvalue", "h1.value")
+    var section = dec.decode(wire)
+    assert_true(section.method == "GET", ":method")
+    assert_equal(len(section.headers), 1, "regular field count")
+    assert_true(section.headers.name_at(0) == "x-custom-header", "h0.name")
+    assert_true(section.headers.value_at(0) == "myvalue", "h0.value")
     print("  test_cross_decode_custom_literal: PASS")
 
 
@@ -172,19 +157,15 @@ def test_cross_decode_patch_name_ref() raises:
     # Decode direction
     var wire = hex_to_bytes(oracle_hex)
     var dec = QpackDecoder()
-    var headers = dec.decode(wire)
-    assert_equal(len(headers), 2, "decoded header count")
-    assert_true(headers[0].name == ":method", "h0.name")
-    assert_true(headers[0].value == "PATCH", "h0.value")
-    assert_true(headers[1].name == ":path", "h1.name")
-    assert_true(headers[1].value == "/api", "h1.value")
+    var section = dec.decode(wire)
+    assert_true(section.method == "PATCH", ":method")
+    assert_true(section.path == "/api", ":path")
+    assert_equal(len(section.headers), 0, "no regular fields")
     # Encode direction: verify RFC 9204 sec 4.5.4 header byte and index bytes for :method PATCH
     # (first 10 bytes match oracle exactly for use_huffman=False)
     var enc = QpackEncoder(False)
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(":method", "PATCH"))
     var encoded = List[Byte]()
-    enc.encode(encoded, fields)
+    enc.encode(encoded, FieldSection(method="PATCH"))
     assert_equal(Int(encoded[2]), 0x5F, "RFC 9204 sec 4.5.4 first byte: N=0 T=1 index=15 multi-byte")
     assert_equal(Int(encoded[3]), 0x00, "RFC 9204 sec 4.5.4 second byte: remainder=0")
     assert_equal(Int(encoded[4]), 0x05, "value H=0 length=5")
@@ -198,16 +179,12 @@ def test_cross_decode_huffman() raises:
     """
     var wire = hex_to_bytes("0000d1c1d7508cf1e3c2e5f23a6ba0ab90f4ff")
     var dec = QpackDecoder()
-    var headers = dec.decode(wire)
-    assert_equal(len(headers), 4, "decoded header count")
-    assert_true(headers[0].name == ":method", "h0.name")
-    assert_true(headers[0].value == "GET", "h0.value")
-    assert_true(headers[1].name == ":path", "h1.name")
-    assert_true(headers[1].value == "/", "h1.value")
-    assert_true(headers[2].name == ":scheme", "h2.name")
-    assert_true(headers[2].value == "https", "h2.value")
-    assert_true(headers[3].name == ":authority", "h3.name")
-    assert_true(headers[3].value == "www.example.com", "h3.value")
+    var section = dec.decode(wire)
+    assert_true(section.method == "GET", ":method")
+    assert_true(section.path == "/", ":path")
+    assert_true(section.scheme == "https", ":scheme")
+    assert_true(section.authority == "www.example.com", ":authority")
+    assert_equal(len(section.headers), 0, "no regular fields")
     print("  test_cross_decode_huffman: PASS")
 
 

@@ -70,6 +70,8 @@ struct RawPair(Movable):
     var data: List[Byte]  # concatenated DATA_RECEIVED payloads
     var headers_events: Int
     var ended_events: Int
+    # Kinds of the request-stream events (HEADERS, DATA, TRAILERS, ENDED) in order.
+    var stream_kinds: List[UInt8]
     # When set, `pump` feeds the server's QUIC layer only; H3 sees the
     # queued stream data at the next `release_server_events`.
     var hold_server_events: Bool
@@ -97,6 +99,7 @@ struct RawPair(Movable):
         self.data = List[Byte]()
         self.headers_events = 0
         self.ended_events = 0
+        self.stream_kinds = List[UInt8]()
         self.hold_server_events = False
         _ = tls^
         self.pump(20)
@@ -147,12 +150,15 @@ struct RawPair(Movable):
             var hev = self.srv.poll_event()
             if not hev:
                 break
-            if hev.value().kind == H3Event.DATA_RECEIVED:
-                self.data.extend(Span(hev.value().data))
-            elif hev.value().kind == H3Event.HEADERS_RECEIVED:
+            ref ev = hev.value()
+            if ev.kind == H3Event.DATA_RECEIVED:
+                self.data.extend(Span(ev.data))
+            elif ev.kind == H3Event.HEADERS_RECEIVED:
                 self.headers_events += 1
-            elif hev.value().kind == H3Event.STREAM_ENDED:
+            elif ev.kind == H3Event.STREAM_ENDED:
                 self.ended_events += 1
+            if ev.kind == H3Event.HEADERS_RECEIVED or ev.kind == H3Event.DATA_RECEIVED or ev.kind == H3Event.TRAILERS_RECEIVED or ev.kind == H3Event.STREAM_ENDED:
+                self.stream_kinds.append(ev.kind)
 
     def buffered(self, sid: UInt64) -> Int:
         var e = self.srv._stream_bufs.find(Int(sid))

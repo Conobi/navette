@@ -65,7 +65,7 @@ from navette.h3.early_data_filter_dispatch import (
     apply_early_data_filter, send_425_response, stream_is_zero_rtt,
 )
 from navette.h3.error import H3_REQUEST_CANCELLED
-from navette.h3.qpack import QpackHeaderField
+from navette.h3.qpack import FieldSection
 from navette.http.handler import (
     Capabilities,
     RecvBody,
@@ -74,10 +74,8 @@ from navette.http.handler import (
 )
 from navette.http.body import BodyFrame
 from navette.http.headers import Headers
-from navette.http.method import Method
 from navette.http.request import Request
 from navette.http.status import StatusCode
-from navette.http.version import Version
 from navette.tls.early_data_filter import (
     EarlyDataPredicateFn,
     IdempotentOnlyFilter,
@@ -575,13 +573,13 @@ struct H3StreamingServer(Movable):
             if not ev_opt:
                 break
             var ev = ev_opt.unsafe_take()
+            var sid = Int(ev.stream_id)
             if ev.kind == H3Event.HEADERS_RECEIVED:
-                if Int(ev.stream_id) not in self._streams:
-                    self._on_request(ev)
-                else:
-                    self._on_trailers(ev)
+                self._on_request(ev^)
+            elif ev.kind == H3Event.TRAILERS_RECEIVED:
+                self._on_trailers(sid, ev^.take_section().take_headers())
             elif ev.kind == H3Event.DATA_RECEIVED:
-                self._on_data(ev)
+                self._on_data(sid, ev^.take_data())
             elif ev.kind == H3Event.STREAM_ENDED:
                 self._on_stream_ended(ev)
             elif ev.kind == H3Event.STREAM_RESET:
@@ -591,43 +589,18 @@ struct H3StreamingServer(Movable):
             # H3Event.HANDSHAKE_COMPLETE and H3Event.SETTINGS_RECEIVED are
             # informational only — no per-stream action needed.
 
-    def _on_request(mut self, ev: H3Event) raises:
-        """First HEADERS_RECEIVED: parse pseudo-fields into Request, allocate
-        an H3StreamingCtx plus its H3StreamingCoro (on a stack borrowed from
+    def _on_request(mut self, var ev: H3Event) raises:
+        """Build the Request from the stream's head, allocate an
+        H3StreamingCtx plus its H3StreamingCoro (on a stack borrowed from
         the per-connection StackPool), register in the streams dict, and do
         the first resume.
-        If ev.fin==True (bodyless GET), set request_ended + recv_body._set_end().
-
-        Args:
-            ev: The HEADERS_RECEIVED event opening this stream.
 
         Raises:
             If coroutine creation fails; the partially built context is
             released before the error propagates, so no stream is leaked.
         """
-        var method_str = String("GET")
-        var path_str = String("/")
-        var authority_str = String("")
-        var user_headers = Headers()
-        for ref field in ev.fields:
-            var name = field.name
-            var value = field.value
-            if name == ":method":
-                method_str = value
-            elif name == ":path":
-                path_str = value
-            elif name == ":authority":
-                authority_str = value
-            elif name == ":scheme":
-                pass
-            else:
-                user_headers.add_lowercase(name, value)
-
-        var req_headers = Headers()
-        if authority_str != "":
-            req_headers.add_lowercase("host", authority_str)
-        for i in range(len(user_headers)):
-            req_headers.add_lowercase(user_headers.name_at(i), user_headers.value_at(i))
+        var sid = ev.stream_id
+        var req = ev^.take_section().into_request()
 
         # RFC 8470 0-RTT HTTP filter dispatch, gated on the connection's
         # cached `zrtt.enabled` opt-in (the authoritative O(1) signal
@@ -647,44 +620,32 @@ struct H3StreamingServer(Movable):
         # On reject (0-RTT request whose method is non-idempotent OR
         # fail-closed misconfig), synthesise a 425 Too Early and skip the
         # handler. On accept, the helper has already injected
-        # `Early-Data: 1` into req_headers.
+        # `Early-Data: 1` into the request headers.
         var stream_is_zr = False
         if self._h3._quic.zrtt.enabled:
-            stream_is_zr = stream_is_zero_rtt(self._h3._quic, ev.stream_id)
+            stream_is_zr = stream_is_zero_rtt(self._h3._quic, sid)
             var outcome = apply_early_data_filter(
-                method_str,
-                path_str,
+                String(req.method),
+                req.target,
                 stream_is_zr,
                 self._early_data_filter_ptr,
                 self._early_data_predicate_fn,
-                req_headers,
+                req.headers,
             )
             if outcome.should_send_425():
-                send_425_response(ev.stream_id, self._h3)
+                send_425_response(sid, self._h3)
                 return
 
-        var req = Request(
-            method=Method.custom(method_str),
-            target=path_str,
-            version=Version.http_3(),
-            headers=req_headers^,
-        )
-
-        var stream_id = Int(ev.stream_id)
+        var stream_id = Int(sid)
 
         # Allocate ctx from pool
         var ctx_ptr = self._ctx_pool.acquire()
         var ctx = H3StreamingCtx(
             request=req^,
             caps=Capabilities.for_h3(is_early_data=stream_is_zr),
-            stream_id=ev.stream_id,
+            stream_id=sid,
             extra_data=self._extra_data,
         )
-
-        # FIN on HEADERS = bodyless request (e.g. GET) — mark ended immediately
-        if ev.fin:
-            ctx.request_ended = True
-            ctx.recv_body._set_end()
 
         ctx_ptr.unsafe_write(ctx^)
 
@@ -715,36 +676,27 @@ struct H3StreamingServer(Movable):
         # First resume: runs handler until first suspend or completion
         self._resume_stream(stream_id)
 
-    def _on_trailers(mut self, ev: H3Event) raises:
-        """Second HEADERS_RECEIVED on an open stream = trailers.
-        Push as BodyFrame.trailers into body_frame_ring, resume coroutine."""
-        var sid = Int(ev.stream_id)
+    def _on_trailers(mut self, sid: Int, var trailers: Headers) raises:
+        """Push the request trailers into body_frame_ring, end the body and resume the coroutine."""
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.unsafe_take_pointee()
-        var trailer_headers = Headers()
-        for ref field in ev.fields:
-            var name = field.name
-            if not name.startswith(":"):
-                trailer_headers.add(name, field.value)
-        ctx.body_frame_ring.append(BodyFrame.trailers(trailer_headers^))
+        ctx.body_frame_ring.append(BodyFrame.trailers(trailers^))
         if not ctx.request_ended:
             ctx.request_ended = True
             ctx.recv_body._set_end()
         ctx_ptr.unsafe_write(ctx^)
         self._resume_stream(sid)
 
-    def _on_data(mut self, ev: H3Event) raises:
+    def _on_data(mut self, sid: Int, var data: List[Byte]) raises:
         """DATA_RECEIVED: push data into body_frame_ring, resume coroutine.
         No flow-control ACK — QUIC handles FC internally."""
-        var sid = Int(ev.stream_id)
         if not self._has_stream(sid):
             return
         var ctx_ptr = self._streams[sid].ptr()
         var ctx = ctx_ptr.unsafe_take_pointee()
-        var data_copy = List[Byte](copy=ev.data)
-        ctx.body_frame_ring.append(BodyFrame.data(data_copy^))
+        ctx.body_frame_ring.append(BodyFrame.data(data^))
         ctx_ptr.unsafe_write(ctx^)
         self._resume_stream(sid)
 
@@ -834,12 +786,8 @@ struct H3StreamingServer(Movable):
                     resp_headers = headers_opt.unsafe_take()
                 else:
                     resp_headers = Headers()
-                var fields = List[QpackHeaderField]()
-                fields.append(QpackHeaderField(":status", String(Int(status.code()))))
-                for j in range(len(resp_headers)):
-                    fields.append(QpackHeaderField(resp_headers.name_at(j), resp_headers.value_at(j)))
                 try:
-                    self._h3.send_headers(UInt64(sid), fields, False)
+                    self._h3.send_headers(UInt64(sid), FieldSection(status=String(Int(status.code())), headers=resp_headers^), False)
                 except:
                     pass
                 ctx.headers_sent = True
@@ -862,12 +810,8 @@ struct H3StreamingServer(Movable):
                     ctx.response_ended = True
                     break
                 elif f.is_trailers():
-                    ref trailer_hdrs = f.trailers()
-                    var t_fields = List[QpackHeaderField]()
-                    for j in range(len(trailer_hdrs)):
-                        t_fields.append(QpackHeaderField(trailer_hdrs.name_at(j), trailer_hdrs.value_at(j)))
                     try:
-                        self._h3.send_headers(UInt64(sid), t_fields, True)
+                        self._h3.send_headers(UInt64(sid), FieldSection(headers=f.trailers().copy()), True)
                     except:
                         pass
                     ctx.response_ended = True

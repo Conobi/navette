@@ -12,7 +12,7 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.quic.connection import QuicConnection
 from navette.h3.connection import H3Connection, H3Event
-from navette.h3.qpack import QpackHeaderField
+from navette.h3.qpack import FieldSection
 from navette.http.handler import Capabilities, StreamError, ALPN_H3
 from navette.http.session import Session, RequestHandle
 from navette.http.request import Request
@@ -124,21 +124,17 @@ struct H3Session(Session):
         if not scheme:
             scheme = String("https")
 
-        var fields = List[QpackHeaderField](capacity=4 + len(req.headers))
-        fields.append(QpackHeaderField(":method", String(req.method)))
-        fields.append(QpackHeaderField(":path", req.target))
-        fields.append(QpackHeaderField(":scheme", scheme^))
-        fields.append(QpackHeaderField(":authority", authority^))
         # Forward regular headers, skipping pseudo-headers and the now-mapped
         # `host` / `x-h3-scheme` hints.
+        var headers = Headers()
         for i in range(len(req.headers)):
             var name = req.headers.name_at(i)
-            var value = req.headers.value_at(i)
-            if name.startswith(":"):
+            if name.startswith(":") or name == "host" or name == "x-h3-scheme":
                 continue
-            if name == "host" or name == "x-h3-scheme":
-                continue
-            fields.append(QpackHeaderField(name, value))
+            headers.add_lowercase(name^, req.headers.value_at(i))
+        var section = FieldSection(
+            method=String(req.method), scheme=scheme^, authority=authority^, path=req.target, headers=headers^
+        )
 
         # Determine if there is a body
         var is_stream = req.body.is_stream()
@@ -148,7 +144,7 @@ struct H3Session(Session):
         var fin_on_headers = not has_body and not is_stream
 
         var stream_id = self._h3.open_bidi_stream()
-        self._h3.send_headers(stream_id, fields, fin_on_headers)
+        self._h3.send_headers(stream_id, section, fin_on_headers)
 
         if has_body:
             self._h3.send_data(stream_id, req.body.bytes(), True)
@@ -289,8 +285,8 @@ struct H3Session(Session):
             if not ev_opt:
                 break
             var ev = ev_opt.unsafe_take()
-            if ev.kind == H3Event.HEADERS_RECEIVED:
-                self._on_response_headers(ev)
+            if ev.kind == H3Event.HEADERS_RECEIVED or ev.kind == H3Event.TRAILERS_RECEIVED:
+                self._on_response_headers(ev^)
             elif ev.kind == H3Event.DATA_RECEIVED:
                 self._on_response_data(ev)
             elif ev.kind == H3Event.STREAM_ENDED:
@@ -300,31 +296,29 @@ struct H3Session(Session):
             elif ev.kind == H3Event.GOAWAY_RECEIVED:
                 self.received_goaway = True
 
-    def _on_response_headers(mut self, ev: H3Event) raises:
-        """Parse :status and regular headers from HEADERS_RECEIVED event."""
+    def _on_response_headers(mut self, var ev: H3Event) raises:
+        """Record `:status` (when present) and append the regular fields of a response head or trailer section."""
         var sid = Int(ev.stream_id)
         var ctx_ptr: Pointer[_H3ClientCtx, MutUntrackedOrigin]
         try:
             ctx_ptr = self._streams[sid].ptr()
         except:
             return
+        var section = ev^.take_section()
         var ctx = ctx_ptr.unsafe_take_pointee()
-        for ref field in ev.fields:
-            var name = field.name
-            var value = field.value
-            if name == ":status":
-                try:
-                    ctx.status_code = atol(value)
-                except:
-                    ctx.status_code = 200
-            elif not name.startswith(":"):
-                ctx.headers.add_lowercase(name, value)
-        if ev.fin:
-            ctx.complete = True
+        if section.status:
+            try:
+                ctx.status_code = atol(section.status)
+            except:
+                ctx.status_code = 200
+        for i in range(len(section.headers)):
+            var name = section.headers.name_at(i)
+            if not name.startswith(":"):
+                ctx.headers.add_lowercase(name^, section.headers.value_at(i))
         ctx_ptr.unsafe_write(ctx^)
 
     def _on_response_data(mut self, ev: H3Event) raises:
-        """Accumulate DATA_RECEIVED payload; mark complete on fin."""
+        """Accumulate a DATA_RECEIVED payload."""
         var sid = Int(ev.stream_id)
         var ctx_ptr: Pointer[_H3ClientCtx, MutUntrackedOrigin]
         try:
@@ -332,10 +326,7 @@ struct H3Session(Session):
         except:
             return
         var ctx = ctx_ptr.unsafe_take_pointee()
-        for ref byte in ev.data:
-            ctx.body_data.append(byte)
-        if ev.fin:
-            ctx.complete = True
+        ctx.body_data.extend(Span(ev.data))
         ctx_ptr.unsafe_write(ctx^)
 
     def _on_stream_ended(mut self, ev: H3Event) raises:

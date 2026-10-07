@@ -10,7 +10,7 @@ order that rotates from pass to pass.
 from std.collections import Span
 
 from navette.h3.h3_udp_server import INGEST_BUDGET_DATAGRAMS
-from navette.h3.qpack import QpackHeaderField
+from navette.h3.qpack import FieldSection
 from navette.http.body import BodyFrame
 from navette.http.handler import (
     StreamHandler,
@@ -120,11 +120,7 @@ def _partial_request(mut client: HarnessClient) raises:
 def _send_get(mut client: HarnessClient) raises:
     """Queue `GET /` with FIN on a fresh bidi stream."""
     var sid = client.h3.open_bidi_stream()
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(":method", "GET"))
-    fields.append(QpackHeaderField(":path", "/"))
-    fields.append(QpackHeaderField(":scheme", "https"))
-    fields.append(QpackHeaderField(":authority", "localhost"))
+    var fields = FieldSection(method="GET", scheme="https", authority="localhost", path="/")
     client.h3.send_headers(sid, fields, True)
 
 

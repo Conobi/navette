@@ -40,7 +40,7 @@ from navette.h3.frame import (
 )
 from navette.h3.qpack import (
     QpackStaticEntry,
-    QpackHeaderField,
+    FieldSection,
     QpackCodecTables,
     QpackEncoder,
     QpackDecoder,

@@ -36,7 +36,7 @@ from navette.h3.h3_streaming_server import (
     finish,
     cancelled,
 )
-from navette.h3.qpack import QpackHeaderField
+from navette.h3.qpack import FieldSection
 from navette.http.handler import RecvBody, ResponseWriter, StreamError, Capabilities
 from navette.http.headers import Headers
 from navette.http.body import BodyFrame
@@ -244,11 +244,7 @@ def test_h3_streaming_post_with_body() raises:
     now = _pump_streaming_client(server, client, now, 50)
 
     var stream_id = client.open_bidi_stream()
-    var req_fields = List[QpackHeaderField]()
-    req_fields.append(QpackHeaderField(":method", "POST"))
-    req_fields.append(QpackHeaderField(":path", "/upload"))
-    req_fields.append(QpackHeaderField(":scheme", "https"))
-    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    var req_fields = FieldSection(method="POST", scheme="https", authority="localhost", path="/upload")
     client.send_headers(stream_id, req_fields, False)  # no fin yet
 
     var body_data = List[Byte]()
@@ -267,11 +263,9 @@ def test_h3_streaming_post_with_body() raises:
             break
         var e = ev.unsafe_take()
         if e.kind == H3Event.HEADERS_RECEIVED:
-            for i in range(len(e.fields)):
-                if e.fields[i].name == ":status" and e.fields[i].value == "200":
-                    got_200 = True
-                elif e.fields[i].name == "x-body-length":
-                    got_body_length = e.fields[i].value
+            got_200 = got_200 or e.section.status == "200"
+            if e.section.headers.has("x-body-length"):
+                got_body_length = e.section.headers.get("x-body-length")
 
     assert_true(got_200, "did not receive 200 OK")
     assert_true(got_body_length == "11", "expected body length 11, got: " + got_body_length)
@@ -302,11 +296,7 @@ def test_h3_streaming_trailers() raises:
     now = _pump_streaming_client(server, client, now, 50)
 
     var stream_id = client.open_bidi_stream()
-    var req_fields = List[QpackHeaderField]()
-    req_fields.append(QpackHeaderField(":method", "POST"))
-    req_fields.append(QpackHeaderField(":path", "/"))
-    req_fields.append(QpackHeaderField(":scheme", "https"))
-    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    var req_fields = FieldSection(method="POST", scheme="https", authority="localhost", path="/")
     client.send_headers(stream_id, req_fields, False)
 
     var body_data = List[Byte]()
@@ -314,8 +304,8 @@ def test_h3_streaming_trailers() raises:
     client.send_data(stream_id, body_data^, False)
 
     # Send trailers (second HEADERS frame, fin=True)
-    var trailer_fields = List[QpackHeaderField]()
-    trailer_fields.append(QpackHeaderField("x-custom-trailer", "test"))
+    var trailer_fields = FieldSection()
+    trailer_fields.headers.add("x-custom-trailer", "test")
     client.send_headers(stream_id, trailer_fields, True)
 
     now = _pump_streaming_client(server, client, now, 30)
@@ -352,11 +342,7 @@ def test_h3_streaming_rst_stream() raises:
 
     # Send POST without fin — coroutine yields waiting for body
     var stream_id = client.open_bidi_stream()
-    var req_fields = List[QpackHeaderField]()
-    req_fields.append(QpackHeaderField(":method", "POST"))
-    req_fields.append(QpackHeaderField(":path", "/"))
-    req_fields.append(QpackHeaderField(":scheme", "https"))
-    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    var req_fields = FieldSection(method="POST", scheme="https", authority="localhost", path="/")
     client.send_headers(stream_id, req_fields, False)
 
     now = _pump_streaming_client(server, client, now, 10)
@@ -413,11 +399,7 @@ def test_h3_streaming_cancel_via_rst_stream() raises:
 
     # Open stream; POST without body — handler will suspend waiting for next_chunk
     var stream_id = client.open_bidi_stream()
-    var req_fields = List[QpackHeaderField]()
-    req_fields.append(QpackHeaderField(":method", "POST"))
-    req_fields.append(QpackHeaderField(":path", "/stream"))
-    req_fields.append(QpackHeaderField(":scheme", "https"))
-    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    var req_fields = FieldSection(method="POST", scheme="https", authority="localhost", path="/stream")
     client.send_headers(stream_id, req_fields, False)
 
     # Pump enough to ensure the handler has started and suspended
@@ -485,11 +467,7 @@ def test_h3_streaming_multi_chunk_body_fifo_order() raises:
     now = _pump_streaming_client(server, client, now, 50)
 
     var stream_id = client.open_bidi_stream()
-    var req_fields = List[QpackHeaderField]()
-    req_fields.append(QpackHeaderField(":method", "POST"))
-    req_fields.append(QpackHeaderField(":path", "/multi"))
-    req_fields.append(QpackHeaderField(":scheme", "https"))
-    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    var req_fields = FieldSection(method="POST", scheme="https", authority="localhost", path="/multi")
     client.send_headers(stream_id, req_fields, False)
 
     # Send 3 distinct body chunks via 3 separate DATA frames, all queued
@@ -565,15 +543,9 @@ def test_h3_streaming_zero_rtt_disabled_gate_skips_dispatch() raises:
         "white-box setup: stream must carry the artificial 0-RTT tag",
     )
 
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(String(":method"), String("GET")))
-    fields.append(QpackHeaderField(String(":scheme"), String("https")))
-    fields.append(QpackHeaderField(String(":path"), String("/")))
-    fields.append(QpackHeaderField(String(":authority"), String("localhost")))
-    var ev = H3Event(H3Event.HEADERS_RECEIVED)
-    ev.stream_id = UInt64(0)
-    ev.fields = fields^
-    server._on_request(ev)
+    var ev = H3Event(H3Event.HEADERS_RECEIVED, UInt64(0))
+    ev.section = FieldSection(method="GET", scheme="https", authority="localhost", path="/")
+    server._on_request(ev^)
 
     var sid = Int(0)
     assert_true(

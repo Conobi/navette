@@ -15,7 +15,7 @@ from navette.quic.connection import QuicConnection
 from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.tls.lib import TlsBackend
 from navette.h3.error import H3_NO_ERROR
-from navette.h3.qpack import QpackDecoder, QpackHeaderField
+from navette.h3.qpack import QpackDecoder, FieldSection
 from navette.protect.governor import UNLIMITED, GovState, Mode, Sample, step
 from navette.quic.event import QuicEvent, StreamStoppedPayload
 from tests._test_util import assert_true, load_test_cert, load_test_ca
@@ -34,9 +34,7 @@ def _requests(mut p: RawPair, n: Int, fin: Bool) raises -> List[UInt64]:
 
 
 def _respond(mut p: RawPair, sid: UInt64) raises:
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(String(":status"), String("200")))
-    p.srv.send_headers(sid, fields, True)
+    p.srv.send_headers(sid, FieldSection(status="200"), True)
 
 
 def _shed_at(mut h3: H3Connection, k: UInt64):
@@ -131,9 +129,9 @@ def test_shed_above_share_and_hold() raises:
         var b = got[0].copy()
         assert_true(len(b) > 2 and b[0] == 0x01 and Int(b[1]) == len(b) - 2, "one HEADERS frame")
         var dec = QpackDecoder()
-        var fields = dec.decode(List[Byte](b[2:]))
-        assert_true(fields[0].name == ":status" and fields[0].value == "503", "status 503")
-        assert_true(fields[1].name == "retry-after" and fields[1].value == "1", "retry-after: 1")
+        var section = dec.decode(List[Byte](b[2:]))
+        assert_true(section.status == "503", "status 503")
+        assert_true(len(section.headers) == 1 and section.headers.get("retry-after") == "1", "retry-after: 1")
     var q = RawPair()
     var many = _requests(q, 40, False)
     for i in range(40):

@@ -8,6 +8,10 @@ from std.memory.alloc import unsafe_alloc
 from navette.util.byte_string import bytes_to_string
 from navette.util.null_ptr import null_ptr
 from navette.http.header_table_index import StaticTableIndex
+from navette.http.headers import Headers
+from navette.http.method import Method
+from navette.http.request import Request
+from navette.http.version import Version
 from navette.quic.codec import hpack_encode_int_at
 from navette.codec.huffman import (
     HuffmanEntry,
@@ -34,17 +38,71 @@ struct QpackStaticEntry(Copyable, Movable):
         self.value = value
 
 
-struct QpackHeaderField(Copyable, Movable):
-    var name: String
-    var value: String
+struct FieldSection(Movable):
+    """One HTTP field section: request or response head, or trailers.
 
-    def __init__(out self, var name: String, var value: String):
-        self.name = name^
-        self.value = value^
+    The five pseudo-headers this stack knows are split out; an empty
+    String means absent. `headers` holds every other field in wire order,
+    including unknown pseudo-headers. A repeated known pseudo-header keeps
+    its last value.
+    """
 
-    def __init__(out self, *, copy_from: Self):
-        self.name = copy_from.name
-        self.value = copy_from.value
+    var method: String
+    var scheme: String
+    var authority: String
+    var path: String
+    var status: String
+    var headers: Headers
+
+    def __init__(
+        out self,
+        *,
+        var method: String = "",
+        var scheme: String = "",
+        var authority: String = "",
+        var path: String = "",
+        var status: String = "",
+        var headers: Headers = Headers(),
+    ):
+        self.method = method^
+        self.scheme = scheme^
+        self.authority = authority^
+        self.path = path^
+        self.status = status^
+        self.headers = headers^
+
+    def into_request(deinit self) -> Request:
+        """The HTTP/3 request this head describes: `host` from `:authority` goes first, and absent `:method` / `:path` read as GET and /."""
+        if self.authority:
+            self.headers._names.insert(0, "host")
+            self.headers._values.insert(0, self.authority^)
+        return Request(
+            method=Method.custom(self.method if self.method else "GET"),
+            target=self.path if self.path else "/",
+            version=Version.http_3(),
+            headers=self.headers^,
+        )
+
+    def take_headers(deinit self) -> Headers:
+        """Consume the section for its regular fields: all a trailer section carries."""
+        return self.headers^
+
+    def _add(mut self, var name: String, var value: String):
+        """Store a decoded field: a known pseudo-header into its slot, anything else into `headers` as received."""
+        if not name.startswith(":"):
+            self.headers.add_lowercase(name^, value^)
+        elif name == ":method":
+            self.method = value^
+        elif name == ":scheme":
+            self.scheme = value^
+        elif name == ":authority":
+            self.authority = value^
+        elif name == ":path":
+            self.path = value^
+        elif name == ":status":
+            self.status = value^
+        else:
+            self.headers.add_lowercase(name^, value^)
 
 
 # QPACK static table — RFC 9204 Appendix A (99 entries, indices 0–98)
@@ -213,12 +271,6 @@ def qpack_decode_int(
     raise "QPACK: truncated integer encoding"
 
 
-@always_inline
-def _field_size(f: QpackHeaderField) -> Int:
-    """RFC 9114 Section 4.2.2 field size: name + value bytes + 32."""
-    return f.name.byte_length() + f.value.byte_length() + 32
-
-
 def _qpack_decode_string(
     data: Span[Byte, _],
     offset: Int,
@@ -308,20 +360,30 @@ struct QpackEncoder(Movable):
             self._tables.unsafe_deinit_pointee()
             self._tables.unsafe_free()
 
-    def encode(self, mut buf: List[Byte], headers: List[QpackHeaderField]) raises:
-        """Encode a header list as a QPACK field section block, appending directly to buf.
+    def encode(self, mut buf: List[Byte], section: FieldSection) raises:
+        """Append `section` to `buf` as a static-table-only QPACK field section.
 
-        Prefix: [Required Insert Count=0, S=0, Delta Base=0] = [0x00, 0x00].
-        Each field:
-          - Indexed Static Field Line (§4.5.2): 11xxxxxx (6-bit index)
-          - Literal Field Line With Name Reference (§4.5.4): 0 1 N T xxxx (N=0, T=1, 4-bit index)
-          - Literal Field Line Without Name Reference (§4.5.6): 0 0 1 N H nnn | name | value
+        Prefix [Required Insert Count=0, Delta Base=0], then the present
+        pseudo-headers (:method, :scheme, :authority, :path, :status), then
+        `headers` in order. Each field is an Indexed Static Field Line
+        (RFC 9204 Section 4.5.2), a Literal With Static Name Reference
+        (Section 4.5.4) or a Literal Without Name Reference (Section 4.5.6).
         """
         buf.append(0x00)  # Required Insert Count = 0
         buf.append(0x00)  # S bit = 0, Delta Base = 0
-
-        for ref hdr in headers:
-            self._encode_field(buf, hdr.name, hdr.value)
+        if section.method:
+            self._encode_field(buf, ":method", section.method)
+        if section.scheme:
+            self._encode_field(buf, ":scheme", section.scheme)
+        if section.authority:
+            self._encode_field(buf, ":authority", section.authority)
+        if section.path:
+            self._encode_field(buf, ":path", section.path)
+        if section.status:
+            self._encode_field(buf, ":status", section.status)
+        ref h = section.headers
+        for i in range(len(h)):
+            self._encode_field(buf, h._names[i], h._values[i])
 
     def _encode_field(self, mut buf: List[Byte], name: String, value: String) raises:
         """Encode one header field, appending directly to buf."""
@@ -404,23 +466,24 @@ struct QpackDecoder(Movable):
 
     def decode(
         mut self, data: Span[Byte, _], max_size: Int = Int.MAX
-    ) raises -> List[QpackHeaderField]:
+    ) raises -> FieldSection:
         """Decode a field section; raises QPACK_FIELD_SECTION_TOO_LARGE past `max_size`."""
-        var fields = self.decode_bounded(data, max_size)
-        if not fields:
+        var section = self.decode_bounded(data, max_size)
+        if not section:
             raise QPACK_FIELD_SECTION_TOO_LARGE
-        return fields.unsafe_take()
+        return section.unsafe_take()
 
     def decode_bounded(
         mut self, data: Span[Byte, _], max_size: Int
-    ) raises -> Optional[List[QpackHeaderField]]:
+    ) raises -> Optional[FieldSection]:
         """Decode a QPACK field section block, or None once it outgrows `max_size`.
 
         Skips the 2-byte prefix (Required Insert Count + Delta Base),
         then decodes each field instruction until data is exhausted.
 
-        Strings are decoded straight from `data`; only the decoded Strings
-        allocate. Reuses the cached Huffman decode tables.
+        Strings are decoded straight from `data` and moved into the
+        section; only the decoded Strings allocate. Reuses the cached
+        Huffman decode tables.
 
         Args:
             data: The encoded field section.
@@ -441,7 +504,7 @@ struct QpackDecoder(Movable):
         var ric, ric_end = qpack_decode_int(data, 0, 8)
         if ric != 0:
             raise "QPACK: non-zero Required Insert Count not supported (dynamic table not implemented)"
-        var result = List[QpackHeaderField](capacity=16)
+        var result = FieldSection()
         # RFC 9204 §4.5.1: Parse Delta Base byte — S bit (bit 7) + 7-bit Delta Base value.
         # Static-only decoders only support S=0 and Delta Base=0.
         if (data[ric_end] & 0x80) != 0:
@@ -456,13 +519,9 @@ struct QpackDecoder(Movable):
         ref table = self._tables[].static_table
 
         while pos < len(data):
-            # Account for the field the previous iteration appended (the
-            # last one is accounted after the loop).
-            if len(result) > 0:
-                size += _field_size(result[len(result) - 1])
-                if size > max_size:
-                    return None
             var b = data[pos]
+            var name: String
+            var value: String
 
             if (b & 0x80) != 0:
                 # §4.5.2: Indexed Field Line
@@ -473,33 +532,32 @@ struct QpackDecoder(Movable):
                     raise "QPACK: dynamic table not supported (indexed)"
                 if idx >= UInt64(len(table)):
                     raise "QPACK: invalid static table index"
-                result.append(QpackHeaderField(table[Int(idx)].name, table[Int(idx)].value))
+                name, value = table[Int(idx)].name, table[Int(idx)].value
 
             elif (b & 0xC0) == 0x40:
                 # §4.5.4: Literal Field Line With Name Reference
                 # 0 1 N T xxxx — bit 5 is N (never-indexed), bit 4 is T (T=1 = static)
                 var idx, name_end = qpack_decode_int(data, pos, 4)
-                var value, end = _qpack_decode_string(data, name_end, 7, trie, fast)
-                pos = end
+                value, pos = _qpack_decode_string(data, name_end, 7, trie, fast)
                 if (b & 0x10) == 0:
                     raise "QPACK: dynamic table not supported (literal name ref)"
                 if idx >= UInt64(len(table)):
                     raise "QPACK: invalid static table index"
-                result.append(QpackHeaderField(table[Int(idx)].name, value^))
+                name = table[Int(idx)].name
 
             elif (b & 0xE0) == 0x20:
                 # §4.5.6: Literal Field Line Without Name Reference
                 # 0 0 1 N H nnn — bit 3 = H (Huffman for name), bits 2:0 = 3-bit name length prefix
-                var name, name_end = _qpack_decode_string(data, pos, 3, trie, fast)
-                var value, end = _qpack_decode_string(data, name_end, 7, trie, fast)
-                pos = end
-                result.append(QpackHeaderField(name^, value^))
+                var name_end: Int
+                name, name_end = _qpack_decode_string(data, pos, 3, trie, fast)
+                value, pos = _qpack_decode_string(data, name_end, 7, trie, fast)
 
             else:
                 raise "QPACK: unknown field instruction byte: " + String(Int(b))
 
-        if len(result) > 0:
-            size += _field_size(result[len(result) - 1])
+            # RFC 9114 Section 4.2.2 field size: name + value bytes + 32.
+            size += name.byte_length() + value.byte_length() + 32
             if size > max_size:
                 return None
+            result._add(name^, value^)
         return result^

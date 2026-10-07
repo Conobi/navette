@@ -16,7 +16,7 @@ from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.h3.connection import H3Connection, H3Event, MAX_DATAGRAMS_PER_DRAIN
 from navette.h3.h3_handler_server import H3HandlerServer
 from navette.h3.h3_session import H3Session
-from navette.h3.qpack import QpackHeaderField, QpackEncoder, QpackDecoder
+from navette.h3.qpack import FieldSection, QpackEncoder, QpackDecoder
 from navette.h3.frame import DataFrame, HeadersFrame
 from navette.http.handler import StreamHandler, RecvBody, ResponseWriter, Capabilities, StreamError
 from navette.http.request import Request, RequestBody
@@ -162,11 +162,7 @@ def test_h3_simple_get() raises:
 
     # Client opens bidi stream and sends GET /
     var stream_id = client.open_bidi_stream()
-    var req_fields = List[QpackHeaderField]()
-    req_fields.append(QpackHeaderField(":method", "GET"))
-    req_fields.append(QpackHeaderField(":path", "/"))
-    req_fields.append(QpackHeaderField(":scheme", "https"))
-    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    var req_fields = FieldSection(method="GET", scheme="https", authority="localhost", path="/")
     client.send_headers(stream_id, req_fields, True)  # fin=True (no body)
 
     # Pump 20 more rounds for request/response
@@ -181,9 +177,7 @@ def test_h3_simple_get() raises:
             break
         var e = ev.unsafe_take()
         if e.kind == H3Event.HEADERS_RECEIVED:
-            for i in range(len(e.fields)):
-                if e.fields[i].name == ":status" and e.fields[i].value == "200":
-                    got_200 = True
+            got_200 = got_200 or e.section.status == "200"
         elif e.kind == H3Event.DATA_RECEIVED:
             for i in range(len(e.data)):
                 body_bytes.append(e.data[i])
@@ -215,11 +209,7 @@ def test_h3_post_with_body() raises:
 
     # Client sends POST /upload with body
     var stream_id = client.open_bidi_stream()
-    var req_fields = List[QpackHeaderField]()
-    req_fields.append(QpackHeaderField(":method", "POST"))
-    req_fields.append(QpackHeaderField(":path", "/upload"))
-    req_fields.append(QpackHeaderField(":scheme", "https"))
-    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    var req_fields = FieldSection(method="POST", scheme="https", authority="localhost", path="/upload")
     client.send_headers(stream_id, req_fields, False)
     var body_bytes = List[Byte]()
     var src = "data".as_bytes()
@@ -237,9 +227,7 @@ def test_h3_post_with_body() raises:
             break
         var e = ev.unsafe_take()
         if e.kind == H3Event.HEADERS_RECEIVED:
-            for i in range(len(e.fields)):
-                if e.fields[i].name == ":status" and e.fields[i].value == "200":
-                    got_200 = True
+            got_200 = got_200 or e.section.status == "200"
 
     assert_true(got_200, "POST: client did not receive 200 OK")
     print("  test_h3_post_with_body: PASS")
@@ -440,11 +428,7 @@ struct _BigResponseHandler(StreamHandler):
 def _send_get(mut client: H3Connection) raises -> UInt64:
     """Open a bidi stream and send `GET /` with FIN; returns the stream id."""
     var stream_id = client.open_bidi_stream()
-    var req_fields = List[QpackHeaderField]()
-    req_fields.append(QpackHeaderField(":method", "GET"))
-    req_fields.append(QpackHeaderField(":path", "/"))
-    req_fields.append(QpackHeaderField(":scheme", "https"))
-    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    var req_fields = FieldSection(method="GET", scheme="https", authority="localhost", path="/")
     client.send_headers(stream_id, req_fields, True)
     return stream_id
 
@@ -635,10 +619,9 @@ def test_h3_frame_wire_bytes() raises:
         assert_true(p[].send_buf.value().fin, "FIN queued for size " + String(size))
     for count in [0, 20]:
         var sid = h3.open_bidi_stream()
-        var fields = List[QpackHeaderField]()
-        fields.append(QpackHeaderField(":status", "200"))
+        var fields = FieldSection(status="200")
         for i in range(count):
-            fields.append(QpackHeaderField("x-h" + String(i), "value-" + String(i)))
+            fields.headers.add("x-h" + String(i), "value-" + String(i))
         h3.send_headers(sid, fields, False)
         var block = List[Byte]()
         QpackEncoder(False).encode(block, fields)  # H3Connection encodes without Huffman
@@ -648,9 +631,14 @@ def test_h3_frame_wire_bytes() raises:
         _assert_same_bytes(got, want, "HEADERS " + String(count))
         var dec = QpackDecoder()
         var decoded = dec.decode(Span(got)[len(got) - len(block):])
-        assert_equal_int(len(decoded), count + 1, "HEADERS decode count")
-        for i in range(len(fields)):
-            assert_true(decoded[i].name == fields[i].name and decoded[i].value == fields[i].value, "field " + String(i))
+        assert_true(decoded.status == "200", "HEADERS decodes :status")
+        assert_equal_int(len(decoded.headers), count, "HEADERS decode count")
+        for i in range(count):
+            assert_true(
+                decoded.headers.name_at(i) == fields.headers.name_at(i)
+                and decoded.headers.value_at(i) == fields.headers.value_at(i),
+                "field " + String(i),
+            )
     _ = h3._quic.stream_map.streams
     _ = tls^
     print("  test_h3_frame_wire_bytes: PASS")

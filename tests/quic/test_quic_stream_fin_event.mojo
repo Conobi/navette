@@ -15,7 +15,7 @@ from navette.quic.frame import StreamFrame
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.frame import HeadersFrame
-from navette.h3.qpack import QpackEncoder, QpackHeaderField
+from navette.h3.qpack import QpackEncoder, FieldSection
 from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
 
 
@@ -78,14 +78,9 @@ def test_h3_request_ends_on_bare_fin() raises:
     var tls = TlsBackend("lib/librustls_mojo.so")
     var h3 = H3Connection.server(_server(tls))
     var sid = UInt64(0)
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(":method", "POST"))
-    fields.append(QpackHeaderField(":path", "/"))
-    fields.append(QpackHeaderField(":scheme", "https"))
-    fields.append(QpackHeaderField(":authority", "localhost"))
     var enc = QpackEncoder(False)
     var block = List[Byte]()
-    enc.encode(block, fields)
+    enc.encode(block, FieldSection(method="POST", scheme="https", authority="localhost", path="/"))
     var wire = List[Byte]()
     HeadersFrame(block^).encode(wire)
     var now = UInt64(1_000_000)
@@ -99,7 +94,7 @@ def test_h3_request_ends_on_bare_fin() raises:
             break
         if ev.value().kind == H3Event.HEADERS_RECEIVED:
             saw_headers = True
-            ended = ended or ev.value().fin
+        ended = ended or ev.value().kind == H3Event.STREAM_ENDED
     assert_true(saw_headers and not ended, "headers, request still open")
     var empty = List[Byte]()
     h3._quic._handle_stream_frame(StreamFrame(sid, UInt64(len(wire)), List[Byte](), True), Span(empty))
@@ -108,7 +103,7 @@ def test_h3_request_ends_on_bare_fin() raises:
         var ev = h3.poll_event()
         if not ev:
             break
-        if ev.value().kind == H3Event.STREAM_ENDED or ev.value().fin:
+        if ev.value().kind == H3Event.STREAM_ENDED:
             ended = True
     assert_true(ended, "the bare FIN ends the request")
     _ = tls^

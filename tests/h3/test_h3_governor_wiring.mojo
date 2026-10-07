@@ -6,7 +6,7 @@ from std.collections import Span
 
 from navette.h3.h3_udp_server import EgressPacket
 from navette.h3.ingress_guard import EGRESS_HOLD_AT
-from navette.h3.qpack import QpackHeaderField
+from navette.h3.qpack import FieldSection
 from navette.http.body import BodyFrame
 from navette.http.handler import StreamHandler, Request, RecvBody, ResponseWriter, Capabilities, StreamError
 from navette.http.headers import Headers
@@ -62,10 +62,7 @@ def _params() -> TransportParams:
 
 def _send_get(mut client: HarnessClient, fin: Bool = True) raises -> UInt64:
     var sid = client.h3.open_bidi_stream()
-    var fields: List[QpackHeaderField] = [
-        QpackHeaderField(":method", "GET"), QpackHeaderField(":path", "/"),
-        QpackHeaderField(":scheme", "https"), QpackHeaderField(":authority", "localhost"),
-    ]
+    var fields = FieldSection(method="GET", scheme="https", authority="localhost", path="/")
     client.h3.send_headers(sid, fields, fin)
     return sid
 

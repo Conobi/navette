@@ -1,7 +1,7 @@
 # src/h3/connection.mojo
 #
 # H3Connection — sans-I/O HTTP/3 state machine wrapping a QuicConnection.
-# H3Event — flat-tag event struct emitted to callers.
+# H3Event — flat-tag event struct emitted to callers (move-only).
 # _H3StreamBuf — per-stream byte accumulator.
 
 from std.collections import Dict, Optional
@@ -48,9 +48,10 @@ from navette.h3.error import (
 from navette.h3.qpack import (
     QpackEncoder,
     QpackDecoder,
-    QpackHeaderField,
+    FieldSection,
     QpackCodecTables,
 )
+from navette.http.headers import Headers
 from navette.h3.guard_predicates import (
     H3StreamCtx,
     predicate_f31_data_before_headers,
@@ -162,11 +163,17 @@ comptime _PAYLOAD_REJECT: UInt8 = 3  # connection closed on the header alone
 # ---------------------------------------------------------------------------
 
 
-struct H3Event(Copyable, Movable):
-    """Event emitted by H3Connection for the application layer."""
+struct H3Event(Movable):
+    """Event emitted by H3Connection for the application layer.
+
+    Move-only: `poll_event` hands each event out of the queue without
+    copying its field section or payload.
+    """
 
     comptime HANDSHAKE_COMPLETE: UInt8 = 1
     comptime SETTINGS_RECEIVED:  UInt8 = 2
+    # The stream's first final head (a request, or a response after any
+    # 1xx). Interim 1xx responses are HEADERS_RECEIVED too.
     comptime HEADERS_RECEIVED:   UInt8 = 3
     comptime DATA_RECEIVED:      UInt8 = 4
     comptime STREAM_ENDED:       UInt8 = 5
@@ -177,35 +184,33 @@ struct H3Event(Copyable, Movable):
     # carries the associated request stream id (quarter_id * 4); `data`
     # holds the payload bytes following the quarter-stream-ID varint.
     comptime DATAGRAM_RECEIVED:  UInt8 = 9
+    # A HEADERS frame after the final head: trailers (RFC 9114 Section 4.1).
+    comptime TRAILERS_RECEIVED:  UInt8 = 10
 
     var kind:          UInt8
     var stream_id:     UInt64
-    var fields:        List[QpackHeaderField]
+    var section:       FieldSection
     var data:          List[Byte]
-    var fin:           Bool
     var error_code:    UInt64
     var reason:        String
     var last_stream_id: UInt64
 
-    def __init__(out self, kind: UInt8):
+    def __init__(out self, kind: UInt8, stream_id: UInt64 = 0):
         self.kind = kind
-        self.stream_id = UInt64(0)
-        self.fields = List[QpackHeaderField]()
+        self.stream_id = stream_id
+        self.section = FieldSection()
         self.data = List[Byte]()
-        self.fin = False
         self.error_code = UInt64(0)
         self.reason = String("")
         self.last_stream_id = UInt64(0)
 
-    def __init__(out self, *, copy: Self):
-        self.kind = copy.kind
-        self.stream_id = copy.stream_id
-        self.fields = List[QpackHeaderField](copy=copy.fields)
-        self.data = List[Byte](copy=copy.data)
-        self.fin = copy.fin
-        self.error_code = copy.error_code
-        self.reason = copy.reason
-        self.last_stream_id = copy.last_stream_id
+    def take_section(deinit self) -> FieldSection:
+        """Consume the event for its field section (HEADERS / TRAILERS_RECEIVED)."""
+        return self.section^
+
+    def take_data(deinit self) -> List[Byte]:
+        """Consume the event for its payload (DATA / DATAGRAM_RECEIVED)."""
+        return self.data^
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +237,9 @@ struct _H3StreamBuf(Copyable, Movable):
     var skipping:  Bool
     # Unknown or QPACK uni stream: every received byte is dropped.
     var discard:   Bool
+    # A final head arrived: DATA is now legal (F31) and a further HEADERS
+    # frame carries trailers.
+    var headers_seen: Bool
 
     def __init__(out self):
         self.buf = List[Byte]()
@@ -240,6 +248,7 @@ struct _H3StreamBuf(Copyable, Movable):
         self.payload_remaining = 0
         self.skipping = False
         self.discard = False
+        self.headers_seen = False
 
 
 @fieldwise_init
@@ -275,9 +284,6 @@ struct H3Connection(Movable):
     var _peer_goaway_sid:            Optional[UInt64]
     var _enc:                        QpackEncoder
     var _dec:                        QpackDecoder
-    # Per-request-stream HEADERS-seen flag, feeding the F31 (DATA-before-
-    # HEADERS) and F36 (CANCEL_PUSH-on-request) predicate inputs.
-    var _request_headers_seen:       Dict[Int, Bool]
     # RFC 9297 §2.2 — both endpoints MUST advertise SETTINGS_H3_DATAGRAM=1
     # before H3 datagrams may flow. `_local_h3_datagram_enabled` controls
     # what THIS connection emits in its own SETTINGS frame; the field
@@ -333,7 +339,6 @@ struct H3Connection(Movable):
         else:
             self._enc = QpackEncoder(False)
             self._dec = QpackDecoder()
-        self._request_headers_seen = Dict[Int, Bool]()
         self._local_h3_datagram_enabled = False
         self._peer_h3_datagram_enabled = False
         self._wire_scratch = List[Byte](capacity=256)
@@ -445,14 +450,16 @@ struct H3Connection(Movable):
     def poll_event(mut self) -> Optional[H3Event]:
         """Return the next pending H3Event, or None if the queue is empty.
 
-        O(1): advances a head cursor instead of rebuilding the list; the
-        list is cleared once the cursor reaches its end.
+        O(1): swaps the event out behind a head cursor instead of copying
+        it or rebuilding the list; the list is cleared once the cursor
+        reaches its end.
         """
         if self._h3_events_head >= len(self._h3_events):
             self._h3_events.clear()
             self._h3_events_head = 0
             return Optional[H3Event]()
-        var ev = H3Event(copy=self._h3_events[self._h3_events_head])
+        var ev = H3Event(0)
+        swap(ev, self._h3_events[self._h3_events_head])
         self._h3_events_head += 1
         if self._h3_events_head >= len(self._h3_events):
             self._h3_events.clear()
@@ -489,8 +496,7 @@ struct H3Connection(Movable):
                 if not self._init_done:
                     self._init_done = True
                     self._bootstrap_local_streams(now)
-                var h3ev = H3Event(H3Event.HANDSHAKE_COMPLETE)
-                self._h3_events.append(h3ev^)
+                self._h3_events.append(H3Event(H3Event.HANDSHAKE_COMPLETE))
             elif ev.type_id == QuicEvent.STREAM_OPENED:
                 var stream_id = ev.payload.unsafe_get[UInt64]()
                 if self._is_peer_initiated(stream_id):
@@ -511,8 +517,7 @@ struct H3Connection(Movable):
                 ref rst = ev.payload.unsafe_get[StreamResetPayload]()
                 self._release_stream(rst.stream_id, now)
                 if self._is_request_stream(rst.stream_id):
-                    var h3ev = H3Event(H3Event.STREAM_RESET)
-                    h3ev.stream_id = rst.stream_id
+                    var h3ev = H3Event(H3Event.STREAM_RESET, rst.stream_id)
                     h3ev.error_code = rst.error_code
                     self._h3_events.append(h3ev^)
             elif ev.type_id == QuicEvent.CONNECTION_CLOSED:
@@ -576,8 +581,9 @@ struct H3Connection(Movable):
         ref sm = self._quic.stream_map
         if stream_id // 4 - min(stream_id // 4, sm.peer_completed_bidi) < max(self.shed_above, sm.regrant_window):  # ordinal - D
             return False
-        var fields: List[QpackHeaderField] = [QpackHeaderField(":status", "503"), QpackHeaderField("retry-after", String(self.retry_after_s))]
-        self.send_headers(stream_id, fields, True)
+        var headers = Headers()
+        headers.add_lowercase("retry-after", String(self.retry_after_s))
+        self.send_headers(stream_id, FieldSection(status="503", headers=headers^), True)
         self._quic.stop_sending(stream_id, H3_NO_ERROR)
         self._release_stream(stream_id, 0)  # its later bytes are discarded by QUIC, never read here
         self.refused_503 += 1
@@ -586,11 +592,11 @@ struct H3Connection(Movable):
     # --- Send API ------------------------------------------------------------
 
     def send_headers(
-        mut self, stream_id: UInt64, fields: List[QpackHeaderField], fin: Bool
+        mut self, stream_id: UInt64, section: FieldSection, fin: Bool
     ) raises:
-        """QPACK-encode `fields` into `_wire_scratch` and write it as one HEADERS frame."""
+        """QPACK-encode `section` into `_wire_scratch` and write it as one HEADERS frame."""
         self._wire_scratch.clear()
-        self._enc.encode(self._wire_scratch, fields)
+        self._enc.encode(self._wire_scratch, section)
         _write_frame(self._quic, stream_id, UInt8(H3_FRAME_HEADERS), Span(self._wire_scratch), fin)
 
     def send_data(
@@ -709,8 +715,7 @@ struct H3Connection(Movable):
         var stream_id = quarter_id * UInt64(4)
         var rest = List[Byte](capacity=len(payload) - r.pos)
         rest.extend(Span(payload)[r.pos:])
-        var h3ev = H3Event(H3Event.DATAGRAM_RECEIVED)
-        h3ev.stream_id = stream_id
+        var h3ev = H3Event(H3Event.DATAGRAM_RECEIVED, stream_id)
         h3ev.data = rest^
         self._h3_events.append(h3ev^)
 
@@ -857,7 +862,8 @@ struct H3Connection(Movable):
 
         var remaining = self._stream_bufs[key].payload_remaining
         var skipping = self._stream_bufs[key].skipping
-        pos = self._parse_frames(stream_id, is_ctrl, buf, pos, remaining, skipping, now)
+        var headers_seen = self._stream_bufs[key].headers_seen
+        pos = self._parse_frames(stream_id, is_ctrl, buf, pos, remaining, skipping, headers_seen, now)
 
         # Keep only the unparsed tail. It lies inside one frame that began
         # in this drain or is the previous tail, so copying it is bounded by
@@ -868,6 +874,7 @@ struct H3Connection(Movable):
             ref sb = self._stream_bufs[key]
             sb.payload_remaining = remaining
             sb.skipping = skipping
+            sb.headers_seen = headers_seen
             if pos == 0:
                 swap(sb.buf, buf)
             elif pos < len(buf):
@@ -880,9 +887,7 @@ struct H3Connection(Movable):
                 # connection error, not a complete message.
                 self._quic.close_app(H3_FRAME_ERROR, "stream ended inside a frame", now)
             elif open and not self._stream_bufs[key].is_uni:
-                var h3ev = H3Event(H3Event.STREAM_ENDED)
-                h3ev.stream_id = stream_id
-                self._h3_events.append(h3ev^)
+                self._h3_events.append(H3Event(H3Event.STREAM_ENDED, stream_id))
             self._release_stream(stream_id, now)
 
     def _release_stream(mut self, stream_id: UInt64, now: UInt64):
@@ -894,7 +899,6 @@ struct H3Connection(Movable):
         """
         var key = Int(stream_id)
         _ = self._stream_bufs.pop(key, _H3StreamBuf())
-        _ = self._request_headers_seen.pop(key, False)
         if (
             (self._peer_ctrl_sid and self._peer_ctrl_sid.value() == stream_id)
             or (self._peer_qenc_sid and self._peer_qenc_sid.value() == stream_id)
@@ -910,6 +914,7 @@ struct H3Connection(Movable):
         start: Int,
         mut remaining: Int,
         mut skipping: Bool,
+        mut headers_seen: Bool,
         now: UInt64,
     ) -> Int:
         """Dispatch every frame `buf[start:]` completes; return the new read position.
@@ -923,8 +928,9 @@ struct H3Connection(Movable):
         capped frame, or once the connection starts closing.
 
         `remaining` / `skipping` carry a streamed or skipped payload across
-        drains. When one DATA chunk spans all of `buf`, its storage moves
-        into the event and `buf` is left empty (position 0).
+        drains; `headers_seen` is the stream's final-head flag. When one
+        DATA chunk spans all of `buf`, its storage moves into the event and
+        `buf` is left empty (position 0).
         """
         var pos = start
         while True:
@@ -948,7 +954,7 @@ struct H3Connection(Movable):
                     chunk.reserve(n)
                     chunk.extend(Span(buf)[pos : pos + n])
                     pos += n
-                self._handle_request_frame(stream_id, H3RawFrame(H3_FRAME_DATA, chunk^), now)
+                self._handle_request_frame(stream_id, H3RawFrame(H3_FRAME_DATA, chunk^), headers_seen, now)
                 continue
 
             var frame_type = UInt64(0)
@@ -976,7 +982,7 @@ struct H3Connection(Movable):
                 var payload = List[Byte](capacity=n)
                 payload.extend(Span(buf)[pos + hdr_len : pos + hdr_len + n])
                 pos += hdr_len + n
-                self._dispatch_frame(stream_id, is_ctrl, H3RawFrame(frame_type, payload^), now)
+                self._dispatch_frame(stream_id, is_ctrl, H3RawFrame(frame_type, payload^), headers_seen, now)
                 continue
 
             # _PAYLOAD_STREAM / _PAYLOAD_SKIP: length is a varint (< 2^62).
@@ -986,7 +992,7 @@ struct H3Connection(Movable):
             if skipping or length == 0:
                 # Skipped frames still reach the handler (type-only checks
                 # such as "first control frame must be SETTINGS").
-                self._dispatch_frame(stream_id, is_ctrl, H3RawFrame(frame_type, List[Byte]()), now)
+                self._dispatch_frame(stream_id, is_ctrl, H3RawFrame(frame_type, List[Byte]()), headers_seen, now)
         return pos
 
     def _payload_action(
@@ -1050,13 +1056,13 @@ struct H3Connection(Movable):
         return _PAYLOAD_SKIP
 
     def _dispatch_frame(
-        mut self, stream_id: UInt64, is_ctrl: Bool, var frame: H3RawFrame, now: UInt64
+        mut self, stream_id: UInt64, is_ctrl: Bool, var frame: H3RawFrame, mut headers_seen: Bool, now: UInt64
     ):
         """Route a whole frame to the control- or request-stream handler."""
         if is_ctrl:
             self._handle_control_frame(stream_id, frame^, now)
         else:
-            self._handle_request_frame(stream_id, frame^, now)
+            self._handle_request_frame(stream_id, frame^, headers_seen, now)
 
     def _handle_control_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64):
         """Process one frame received on the peer control stream."""
@@ -1108,8 +1114,7 @@ struct H3Connection(Movable):
             if peer_h3d:
                 if peer_h3d.value() != UInt64(0):
                     self._peer_h3_datagram_enabled = True
-            var h3ev = H3Event(H3Event.SETTINGS_RECEIVED)
-            self._h3_events.append(h3ev^)
+            self._h3_events.append(H3Event(H3Event.SETTINGS_RECEIVED))
 
         elif (
             frame.frame_type == H3_FRAME_GOAWAY
@@ -1140,51 +1145,37 @@ struct H3Connection(Movable):
                 settings_seen=self._peer_ctrl_settings,
                 first_frame_seen=self._peer_ctrl_first_frame_seen,
             )
-            var _f33_v = predicate_f33_data_on_control(frame.frame_type, _ctrl_ctx)
-            if _f33_v:
-                var v = _f33_v.value().copy()
-                self._quic.close_app(v.error_code, v.tag, now)
-                return
-            var _f34_v = predicate_f34_headers_on_control(frame.frame_type, _ctrl_ctx)
-            if _f34_v:
-                var v = _f34_v.value().copy()
+            var verdict = predicate_f33_data_on_control(frame.frame_type, _ctrl_ctx)
+            if not verdict:
+                verdict = predicate_f34_headers_on_control(frame.frame_type, _ctrl_ctx)
+            if verdict:
+                ref v = verdict.value()
                 self._quic.close_app(v.error_code, v.tag, now)
                 return
 
         # else: unknown frame types are ignored (RFC 9114 §7.2.8)
 
-    def _handle_request_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, now: UInt64):
-        """Process one frame received on a request/response bidi stream."""
-        # F31 — DATA before HEADERS on a request-bidi stream is illegal
-        # (RFC 9114 §4.1). The predicate keys on (frame_type, headers_seen)
-        # so dispatch order in this function is irrelevant — see the
-        # cohort exclusivity tests.
-        var _headers_seen = self._request_headers_seen.get(Int(stream_id), False)
-        var _f31_ctx = H3StreamCtx(
-            kind=UInt8(0),
-            headers_seen=_headers_seen,
-            settings_seen=False,
-        )
-        var _f31_verdict = predicate_f31_data_before_headers(frame.frame_type, _f31_ctx)
-        if _f31_verdict:
-            var v = _f31_verdict.value().copy()
-            self._quic.close_app(v.error_code, v.tag, now)
-            return
+    def _handle_request_frame(mut self, stream_id: UInt64, var frame: H3RawFrame, mut headers_seen: Bool, now: UInt64):
+        """Process one frame received on a request/response bidi stream.
 
-        # F36 — CANCEL_PUSH is illegal on request streams (RFC 9114 §7.2.5).
-        var _f36_ctx = H3StreamCtx(
-            kind=UInt8(0),
-            headers_seen=_headers_seen,
-            settings_seen=False,
-        )
-        var _f36_verdict = predicate_f36_cancel_push_on_request(frame.frame_type, _f36_ctx)
-        if _f36_verdict:
-            var v = _f36_verdict.value().copy()
+        The first final head is HEADERS_RECEIVED and sets `headers_seen`; a
+        1xx response head leaves it unset, so the final head that follows
+        is HEADERS_RECEIVED too. Any later HEADERS frame is TRAILERS_RECEIVED.
+        """
+        # F31 (DATA before HEADERS, RFC 9114 Section 4.1) and F36
+        # (CANCEL_PUSH on a request stream, Section 7.2.5) key on
+        # (frame_type, headers_seen) only, so they share one context.
+        var ctx = H3StreamCtx(kind=UInt8(0), headers_seen=headers_seen, settings_seen=False)
+        var verdict = predicate_f31_data_before_headers(frame.frame_type, ctx)
+        if not verdict:
+            verdict = predicate_f36_cancel_push_on_request(frame.frame_type, ctx)
+        if verdict:
+            ref v = verdict.value()
             self._quic.close_app(v.error_code, v.tag, now)
             return
 
         if frame.frame_type == H3_FRAME_HEADERS:
-            var decoded: Optional[List[QpackHeaderField]]
+            var decoded: Optional[FieldSection]
             try:
                 decoded = self._dec.decode_bounded(frame.payload, H3_MAX_FIELD_SECTION_SIZE)
             except:
@@ -1196,16 +1187,14 @@ struct H3Connection(Movable):
                 # with H3_EXCESSIVE_LOAD too.
                 self._quic.close_app(H3_EXCESSIVE_LOAD, "field section too large", now)
                 return
-            var fields = decoded.unsafe_take()
-            self._request_headers_seen[Int(stream_id)] = True
-            var h3ev = H3Event(H3Event.HEADERS_RECEIVED)
-            h3ev.stream_id = stream_id
-            h3ev.fields = fields^
+            var h3ev = H3Event(H3Event.TRAILERS_RECEIVED if headers_seen else H3Event.HEADERS_RECEIVED, stream_id)
+            h3ev.section = decoded.unsafe_take()
+            if not h3ev.section.status.startswith("1"):
+                headers_seen = True
             self._h3_events.append(h3ev^)
 
         elif frame.frame_type == H3_FRAME_DATA:
-            var h3ev = H3Event(H3Event.DATA_RECEIVED)
-            h3ev.stream_id = stream_id
+            var h3ev = H3Event(H3Event.DATA_RECEIVED, stream_id)
             swap(h3ev.data, frame.payload)
             self._h3_events.append(h3ev^)
 

@@ -19,7 +19,7 @@ from navette.quic.guard_predicates import ZERO_RTT_SPACE_IDX
 from navette.quic.trans_param import TransportParams, default_transport_params
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.h3_sync_server import H3CoroServer, CoroStreamCtx, H3BodyFn
-from navette.h3.qpack import QpackHeaderField
+from navette.h3.qpack import FieldSection
 from navette.http.handler import RecvBody, ResponseWriter, StreamError, Capabilities
 from navette.http.headers import Headers
 from navette.http.body import BodyFrame
@@ -154,11 +154,7 @@ def test_h3_sync_simple_get() raises:
 
     # Send GET / with fin=True (no body)
     var stream_id = client.open_bidi_stream()
-    var req_fields = List[QpackHeaderField]()
-    req_fields.append(QpackHeaderField(":method", "GET"))
-    req_fields.append(QpackHeaderField(":path", "/"))
-    req_fields.append(QpackHeaderField(":scheme", "https"))
-    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    var req_fields = FieldSection(method="GET", scheme="https", authority="localhost", path="/")
     client.send_headers(stream_id, req_fields, True)  # fin=True
 
     now = _pump_sync_client(server, client, now, 20)
@@ -172,9 +168,7 @@ def test_h3_sync_simple_get() raises:
             break
         var e = ev.unsafe_take()
         if e.kind == H3Event.HEADERS_RECEIVED:
-            for i in range(len(e.fields)):
-                if e.fields[i].name == ":status" and e.fields[i].value == "200":
-                    got_200 = True
+            got_200 = got_200 or e.section.status == "200"
         elif e.kind == H3Event.DATA_RECEIVED:
             for i in range(len(e.data)):
                 body_bytes.append(e.data[i])
@@ -250,11 +244,7 @@ def test_h3_sync_multiple_streams() raises:
     for i in range(len(paths)):
         var sid = client.open_bidi_stream()
         stream_ids.append(sid)
-        var fields = List[QpackHeaderField]()
-        fields.append(QpackHeaderField(":method", "GET"))
-        fields.append(QpackHeaderField(":path", paths[i]))
-        fields.append(QpackHeaderField(":scheme", "https"))
-        fields.append(QpackHeaderField(":authority", "localhost"))
+        var fields = FieldSection(method="GET", scheme="https", authority="localhost", path=paths[i])
         client.send_headers(sid, fields, True)  # fin=True (no body)
 
     now = _pump_sync_client(server, client, now, 30)
@@ -272,11 +262,8 @@ def test_h3_sync_multiple_streams() raises:
         if e.kind == H3Event.HEADERS_RECEIVED:
             var got_200 = False
             var path_value = String("")
-            for i in range(len(e.fields)):
-                if e.fields[i].name == ":status" and e.fields[i].value == "200":
-                    got_200 = True
-                elif e.fields[i].name == "x-path":
-                    path_value = e.fields[i].value
+            got_200 = e.section.status == "200"
+            path_value = e.section.headers.get("x-path")
             if got_200:
                 # Find the index of this stream id in stream_ids
                 for i in range(len(stream_ids)):
@@ -312,11 +299,7 @@ def test_h3_sync_error_propagation() raises:
     now = _pump_sync_client(server, client, now, 50)
 
     var stream_id = client.open_bidi_stream()
-    var req_fields = List[QpackHeaderField]()
-    req_fields.append(QpackHeaderField(":method", "GET"))
-    req_fields.append(QpackHeaderField(":path", "/boom"))
-    req_fields.append(QpackHeaderField(":scheme", "https"))
-    req_fields.append(QpackHeaderField(":authority", "localhost"))
+    var req_fields = FieldSection(method="GET", scheme="https", authority="localhost", path="/boom")
     client.send_headers(stream_id, req_fields, True)
 
     now = _pump_sync_client(server, client, now, 30)
@@ -380,15 +363,9 @@ def test_h3_sync_zero_rtt_disabled_gate_skips_dispatch() raises:
         "white-box setup: stream must carry the artificial 0-RTT tag",
     )
 
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(String(":method"), String("GET")))
-    fields.append(QpackHeaderField(String(":scheme"), String("https")))
-    fields.append(QpackHeaderField(String(":path"), String("/")))
-    fields.append(QpackHeaderField(String(":authority"), String("localhost")))
-    var ev = H3Event(H3Event.HEADERS_RECEIVED)
-    ev.stream_id = UInt64(0)
-    ev.fields = fields^
-    server._on_request(ev)
+    var ev = H3Event(H3Event.HEADERS_RECEIVED, UInt64(0))
+    ev.section = FieldSection(method="GET", scheme="https", authority="localhost", path="/")
+    server._on_request(ev^)
 
     var sid = Int(0)
     assert_true(

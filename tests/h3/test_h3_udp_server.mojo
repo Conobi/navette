@@ -30,7 +30,7 @@ from navette.h3.h3_handler_server import H3HandlerServer
 from navette.quic.connection import HANDSHAKE_TIMEOUT_US
 from navette.util.null_ptr import null_ptr
 from navette.h3.connection import MAX_DATAGRAMS_PER_DRAIN
-from navette.h3.qpack import QpackHeaderField
+from navette.h3.qpack import FieldSection
 from navette.http.handler import (
     StreamHandler,
     Request,
@@ -238,11 +238,7 @@ def _warm_ack_eliciting[H: StreamHandler](
 def _send_get(mut client: HarnessClient) raises -> UInt64:
     """Queue `GET /` with FIN on a fresh bidi stream."""
     var sid = client.h3.open_bidi_stream()
-    var fields = List[QpackHeaderField]()
-    fields.append(QpackHeaderField(":method", "GET"))
-    fields.append(QpackHeaderField(":path", "/"))
-    fields.append(QpackHeaderField(":scheme", "https"))
-    fields.append(QpackHeaderField(":authority", "localhost"))
+    var fields = FieldSection(method="GET", scheme="https", authority="localhost", path="/")
     client.h3.send_headers(sid, fields, True)
     return sid
 
