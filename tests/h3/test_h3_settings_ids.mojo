@@ -11,7 +11,14 @@ from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.frame import StreamFrame
 from navette.quic.trans_param import TransportParams, default_transport_params
-from navette.h3.connection import H3Connection
+from navette.h3.connection import H3Connection, H3_MAX_FIELD_SECTION_SIZE
+from navette.h3.frame import (
+    SettingsFrame,
+    SettingsPair,
+    SETTINGS_QPACK_MAX_TABLE_CAPACITY,
+    SETTINGS_MAX_FIELD_SECTION_SIZE,
+    SETTINGS_H3_DATAGRAM,
+)
 from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
 
 
@@ -82,9 +89,47 @@ def test_http2_ids_are_settings_error() raises:
     print("  test_http2_ids_are_settings_error: PASS")
 
 
+def _local_control_bytes(datagrams: Bool) raises -> List[Byte]:
+    """Bytes a fresh server queues on its control stream; checks the QPACK stream types too."""
+    var tls = TlsBackend("lib/librustls_mojo.so")
+    var h3 = _server(tls)
+    if datagrams:
+        h3.enable_h3_datagrams()
+    h3._quic.stream_map.peer_max_streams_uni = UInt64(3)
+    h3._bootstrap_local_streams(UInt64(1_000_000))
+    var sids = [h3._local_ctrl_sid.value(), h3._local_qenc_sid.value(), h3._local_qdec_sid.value()]
+    for i in range(1, 3):
+        var p = h3._quic.stream_map.stream_ptr(Int(sids[i]))
+        ref d = p[].send_buf.value().data
+        assert_true(len(d) == 1 and d[0] == UInt8(i + 1), "QPACK stream type byte")
+    var p = h3._quic.stream_map.stream_ptr(Int(sids[0]))
+    var out = p[].send_buf.value().data.copy()
+    _ = h3._quic.stream_map.streams
+    _ = tls^
+    return out^
+
+
+def test_local_settings_bytes() raises:
+    """The control stream carries type 0x00 then the same SETTINGS frame SettingsFrame encodes."""
+    for dg in range(2):
+        var pairs = List[SettingsPair]()
+        pairs.append(SettingsPair(SETTINGS_QPACK_MAX_TABLE_CAPACITY, UInt64(0)))
+        pairs.append(SettingsPair(SETTINGS_MAX_FIELD_SECTION_SIZE, UInt64(H3_MAX_FIELD_SECTION_SIZE)))
+        if dg == 1:
+            pairs.append(SettingsPair(SETTINGS_H3_DATAGRAM, UInt64(1)))
+        var want: List[Byte] = [0x00]
+        SettingsFrame(pairs^).encode(want)
+        var got = _local_control_bytes(dg == 1)
+        assert_equal_int(len(got), len(want), "control stream length")
+        for i in range(len(want)):
+            assert_equal_int(Int(got[i]), Int(want[i]), "control stream byte " + String(i))
+    print("  test_local_settings_bytes: PASS")
+
+
 def main() raises:
     print("test_h3_settings_ids:")
     test_normal_settings_pass()
     test_duplicate_id_is_settings_error()
     test_http2_ids_are_settings_error()
+    test_local_settings_bytes()
     print("All test_h3_settings_ids tests passed.")

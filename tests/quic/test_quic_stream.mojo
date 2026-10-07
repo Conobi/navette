@@ -190,6 +190,35 @@ def test_recv_buf_gap_limit() raises:
     print("  test_recv_buf_gap_limit: PASS")
 
 
+def test_recv_buf_read_moves_segments() raises:
+    """A gap holds back later bytes; FIN lands on a segment boundary; a consumed head is sliced off."""
+    var fin_offset = Optional[UInt64](None)
+    var buf = RecvBuf(UInt64(65536))
+    var d0: List[Byte] = [0, 1, 2, 3]
+    var d2: List[Byte] = [8, 9]
+    var d1: List[Byte] = [4, 5, 6, 7]
+    _ = buf.write(UInt64(0), Span(d0), False, fin_offset)
+    _ = buf.write(UInt64(8), Span(d2), True, fin_offset)
+    var r0 = buf.read(fin_offset)
+    assert_equal_int(len(r0[0]), 4, "first segment only, gap at 4")
+    assert_false(r0[1], "no fin before the gap fills")
+    assert_equal_int(len(buf.read(fin_offset)[0]), 0, "gap: nothing to read")
+    _ = buf.write(UInt64(4), Span(d1), False, fin_offset)
+    var r1 = buf.read(fin_offset)
+    assert_equal_int(len(r1[0]), 6, "gap filled: merged tail")
+    for i in range(6):
+        assert_equal_int(Int(r1[0][i]), 4 + i, "tail byte " + String(i))
+    assert_true(r1[1], "fin at the segment boundary")
+    # A head already consumed (read_offset inside segment 0) is sliced off.
+    var part = RecvBuf(UInt64(65536))
+    _ = part.write(UInt64(0), Span(d0), False, fin_offset)
+    part.read_offset = UInt64(1)
+    var rp = part.read(Optional[UInt64](None))
+    assert_equal_int(len(rp[0]), 3, "partial head: 3 bytes")
+    assert_equal_int(Int(rp[0][0]), 1, "partial head starts at read_offset")
+    print("  test_recv_buf_read_moves_segments: PASS")
+
+
 def test_recv_buf_fin() raises:
     var fin_offset = Optional[UInt64](None)
     var buf = RecvBuf(UInt64(65536))
@@ -851,6 +880,7 @@ def main() raises:
     test_recv_buf_data_beyond_fin()
     test_recv_buf_empty_fin()
     test_recv_buf_new_bytes_count()
+    test_recv_buf_read_moves_segments()
 
     test_send_buf_write_and_frame()
     test_send_buf_on_ack_trims()

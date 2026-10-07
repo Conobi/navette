@@ -24,13 +24,10 @@ from navette.h3.frame import (
     DataFrame,
     HeadersFrame,
     SettingsFrame,
-    SettingsPair,
     H3_FRAME_DATA,
     H3_FRAME_HEADERS,
     H3_FRAME_SETTINGS,
     H3_FRAME_GOAWAY,
-    SETTINGS_QPACK_MAX_TABLE_CAPACITY,
-    SETTINGS_MAX_FIELD_SECTION_SIZE,
     SETTINGS_H3_DATAGRAM,
     parse_h3_frame,
 )
@@ -715,27 +712,18 @@ struct H3Connection(Movable):
         var qdec_sid = self._quic.open_stream(False)
         self._local_qdec_sid = Optional[UInt64](qdec_sid)
 
-        # Write stream type varint to each (single byte: 0x00, 0x02, 0x03)
-        var ctrl_type: List[Byte] = [UInt8(0x00)]
-        self._quic.send_stream_data(ctrl_sid, Span(ctrl_type), False)
-        var qenc_type: List[Byte] = [UInt8(0x02)]
-        self._quic.send_stream_data(qenc_sid, Span(qenc_type), False)
-        var qdec_type: List[Byte] = [UInt8(0x03)]
-        self._quic.send_stream_data(qdec_sid, Span(qdec_type), False)
-
-        # Send SETTINGS on control stream (RFC 9114 §7.2.4)
-        var pairs = List[SettingsPair]()
-        pairs.append(SettingsPair(SETTINGS_QPACK_MAX_TABLE_CAPACITY, UInt64(0)))
-        pairs.append(SettingsPair(SETTINGS_MAX_FIELD_SECTION_SIZE, UInt64(H3_MAX_FIELD_SECTION_SIZE)))
-        # RFC 9297 §2.2 — only advertise H3_DATAGRAM if the caller opted in
-        # via `enable_h3_datagrams()`. Default-off keeps SETTINGS wire-byte
-        # compatibility with non-MASQUE/WebTransport tests.
+        # Control stream type 0x00, then SETTINGS (RFC 9114 Section 7.2.4.1):
+        # QPACK_MAX_TABLE_CAPACITY=0, MAX_FIELD_SECTION_SIZE as a 4-byte
+        # varint, and H3_DATAGRAM=1 (RFC 9297) only after
+        # `enable_h3_datagrams()`, which also bumps the frame length.
+        comptime assert H3_MAX_FIELD_SECTION_SIZE == 0x8000, "SETTINGS bytes hard-code it"
+        var ctrl: InlineArray[Byte, 12] = [0x00, 0x04, 0x07, 0x01, 0x00, 0x06, 0x80, 0x00, 0x80, 0x00, 0x33, 0x01]
         if self._local_h3_datagram_enabled:
-            pairs.append(SettingsPair(SETTINGS_H3_DATAGRAM, UInt64(1)))
-        var sf = SettingsFrame(pairs^)
-        self._wire_scratch.clear()
-        sf.encode(self._wire_scratch)
-        self._quic.send_stream_data(ctrl_sid, Span(self._wire_scratch), False)
+            ctrl[2] = 0x09
+        self._quic.send_stream_data(ctrl_sid, Span(ctrl)[: 12 if self._local_h3_datagram_enabled else 10], False)
+        var qpack_types: InlineArray[Byte, 2] = [0x02, 0x03]  # encoder, decoder
+        self._quic.send_stream_data(qenc_sid, Span(qpack_types)[0:1], False)
+        self._quic.send_stream_data(qdec_sid, Span(qpack_types)[1:2], False)
 
     # --- Internal: stream drain + frame parse --------------------------------
 

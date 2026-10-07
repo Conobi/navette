@@ -383,50 +383,23 @@ struct RecvBuf(Copyable, Movable):
         self.seg_data = new_segs^
 
     def read(mut self, fin_offset: Optional[UInt64]) -> Tuple[List[Byte], Bool]:
-        """Drain contiguous bytes starting from read_offset.
+        """Drain the contiguous segment at read_offset, moving its List out.
 
-        Returns (bytes, fin_reached). fin_reached is True when all bytes up to
-        fin_offset have been delivered and read_offset == fin_offset.
+        Returns (bytes, fin_reached). fin_reached is True once read_offset has
+        reached fin_offset. The segment is copied only when its head was
+        already consumed, which `_insert`'s clamp to read_offset rules out.
         """
         var result = List[Byte]()
-
-        if len(self.seg_offsets) == 0:
-            if fin_offset:
-                if self.read_offset >= fin_offset.value():
-                    return (result^, True)
-            return (result^, False)
-
-        # Check if the first segment covers read_offset
-        if self.seg_offsets[0] > self.read_offset:
-            if fin_offset:
-                if self.read_offset >= fin_offset.value():
-                    return (result^, True)
-            return (result^, False)
-
-        # Deliver bytes from read_offset to end of first segment
-        var deliver_end = self._seg_end(0)
-        var skip = Int(self.read_offset - self.seg_offsets[0])
-        var n = Int(deliver_end - self.read_offset)
-
-        result = List[Byte](capacity=n)
-        result.extend(Span(self.seg_data[0])[skip : skip + n])
-
-        self.read_offset = deliver_end
-
-        # Remove the consumed first segment.
-        if len(self.seg_offsets) == 1:
-            self.seg_offsets.clear()
-            self.seg_data.clear()
-        else:
+        if len(self.seg_offsets) > 0 and self.seg_offsets[0] <= self.read_offset:
+            var skip = Int(self.read_offset - self.seg_offsets[0])
+            self.read_offset = self._seg_end(0)
             _ = self.seg_offsets.pop(0)
-            _ = self.seg_data.pop(0)
-
-        # Check fin
-        var fin_reached = False
-        if fin_offset:
-            if self.read_offset >= fin_offset.value():
-                fin_reached = True
-
+            result = self.seg_data.pop(0)
+            if skip > 0:
+                var tail = List[Byte](capacity=len(result) - skip)
+                tail.extend(Span(result)[skip:])
+                result = tail^
+        var fin_reached = Bool(fin_offset) and self.read_offset >= fin_offset.value()
         return (result^, fin_reached)
 
     def is_complete(self, fin_offset: Optional[UInt64]) -> Bool:
