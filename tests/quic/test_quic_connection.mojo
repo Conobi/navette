@@ -4905,7 +4905,7 @@ def test_empty_ffi_inputs_do_not_fault() raises:
 
     # Empty transport parameters: rustls may accept or reject, but must not fault.
     try:
-        var h = _create_server_tls_conn(tls.shared(), server_config.handle(), List[Byte]())
+        var h = _create_server_tls_conn(tls.shared(), server_config.handle(), List[Byte](), None)
         _ = tls.shared().inner_ptr()[].quic_conn_free(h)
     except:
         pass

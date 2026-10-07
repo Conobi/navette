@@ -11,6 +11,7 @@ from std.collections import Span
 from navette.quic.connection import QuicConnection
 from navette.quic.cid import dcid_to_u64
 from navette.quic.path import PathKey
+from navette.quic.profile import AcceptProfile, monotonic_us, rdtsc, CallId, PROFILE_ACCEPT
 from navette.h3.connection import H3Connection, H3Event
 from navette.h3.early_data_filter_dispatch import (
     apply_early_data_filter, send_425_response, stream_is_zero_rtt,
@@ -83,6 +84,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     var _h3:      H3Connection
     var driver:   HandlerDriver[Self.H]
+    var profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]]
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
     # the `QuicServerConfig` that birthed this connection. Populated
     # only when 0-RTT is enabled via the IdempotentOnly / Tuned
@@ -114,6 +116,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         var quic: QuicConnection,
         var handler: Self.H,
         codec_tables: Optional[Pointer[QpackCodecTables, MutUntrackedOrigin]] = None,
+        profile_ptr: Optional[Pointer[AcceptProfile, MutUntrackedOrigin]] = None,
         early_data_filter_ptr: Optional[
             Pointer[IdempotentOnlyFilter, MutUntrackedOrigin]
         ] = None,
@@ -121,6 +124,11 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     ) raises:
         self._h3 = H3Connection.server(quic^, codec_tables)
         self.driver = HandlerDriver[Self.H](handler^)
+        self.profile_ptr = profile_ptr
+        # Shape B threading: H3Connection.server/.client have ~15 call sites
+        # in src/h3/ and tests/; we set profile_ptr post-construction here
+        # rather than threading it through 15 call sites.
+        self._h3.profile_ptr = profile_ptr
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
         self._raise_on_next_drain = False
@@ -198,7 +206,38 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     # --- Internal: event dispatch --------------------------------------------
 
     def _serve(mut self) raises:
-        """Hand each pending event to the driver, then send what the handlers staged (only once established)."""
+        """Hand each pending event to the driver, then send what the handlers staged (only once established).
+
+        With PROFILE_ACCEPT on and a profile wired, the dispatch and drain
+        phases are timed into `h3_dispatch` / `h3_drain_resp`.
+        """
+        comptime if PROFILE_ACCEPT:
+            var t_dispatch_start: UInt64 = 0
+            if self.profile_ptr is not None:
+                t_dispatch_start = monotonic_us()
+            self._dispatch_h3_events()
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].record_h3_dispatch(monotonic_us() - t_dispatch_start)
+        else:
+            self._dispatch_h3_events()
+
+        if self._h3.is_established():
+            comptime if PROFILE_ACCEPT:
+                var t_drain_resp_start: UInt64 = 0
+                var ct_start: UInt64 = 0
+                if self.profile_ptr is not None:
+                    t_drain_resp_start = monotonic_us()
+                    ct_start = rdtsc()
+                self.driver.drain(self._h3)
+                if self.profile_ptr is not None:
+                    self.profile_ptr.value()[].call_tracker.record(CallId.DRAIN_RESPONSES, rdtsc() - ct_start)
+                    self.profile_ptr.value()[].record_h3_drain_resp(monotonic_us() - t_drain_resp_start)
+            else:
+                self.driver.drain(self._h3)
+        self._h3.long_lived = self.driver.detached
+
+    def _dispatch_h3_events(mut self) raises:
+        """Hand each pending H3 event to the driver."""
         while True:
             var ev_opt = self._h3.poll_event()
             if not ev_opt:
@@ -217,15 +256,15 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 # Cancel our side too, so the QUIC stream can be freed.
                 if self.driver.on_reset(sid, UInt32(ev.error_code)):
                     self._h3.cancel_send_side(ev.stream_id)
-        if self._h3.is_established():
-            self.driver.drain(self._h3)
-        self._h3.long_lived = self.driver.detached
 
     def _on_request(mut self, var ev: H3Event) raises:
         """Build the Request from the stream's head and open it in the driver (unless the connection sheds it or 0-RTT refuses it)."""
         var sid = ev.stream_id
         if self._h3.shed_if_over_share(sid):
             return
+        var _ct_start = UInt64(0)
+        comptime if PROFILE_ACCEPT:
+            _ct_start = rdtsc()
         var req = ev^.take_section().into_request()
 
         # RFC 8470 0-RTT HTTP filter dispatch, gated on the connection's
@@ -260,6 +299,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             )
             if outcome.should_send_425():
                 send_425_response(sid, self._h3)
+                comptime if PROFILE_ACCEPT:
+                    if self.profile_ptr is not None:
+                        self.profile_ptr.value()[].call_tracker.record(CallId.ON_REQUEST, rdtsc() - _ct_start)
                 return
 
         # Surface a stable connection identity (the server SCID as a u64)
@@ -276,6 +318,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             peer_addr=_path_key_to_peer_addr(self._h3.peer_addr_copy()),
         )
         self.driver.on_request(Int(sid), req^, caps, False)
+        comptime if PROFILE_ACCEPT:
+            if self.profile_ptr is not None:
+                self.profile_ptr.value()[].call_tracker.record(CallId.ON_REQUEST, rdtsc() - _ct_start)
 
     # --- Out-of-band response injection (cross-transport wake) ---------------
 

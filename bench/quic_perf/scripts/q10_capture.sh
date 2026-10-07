@@ -29,7 +29,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
     echo "=== Q10 capture iter $i/10 ==="
     "$HERE/scripts/bench.sh" navette 1k short-conn tquic_client --iters 1
     # Move/rename instrumentation sidecar to keep them numbered.
-    LATEST=$(ls -1t "$HERE/results/profile"/INSTRUMENTATION-*.json 2>/dev/null | head -1 || true)
+    LATEST=$(ls -1t "$HERE/results/profile"/INSTRUMENTATION-*.json 2>/dev/null | head -1)
     if [[ -n "$LATEST" ]]; then
         mv "$LATEST" "$OUT_DIR/iter-${i}-sidecar.json"
         echo "  -> $OUT_DIR/iter-${i}-sidecar.json"

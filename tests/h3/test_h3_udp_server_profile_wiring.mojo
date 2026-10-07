@@ -1,0 +1,168 @@
+"""Accept-profile wiring through the library UDP server's per-connection
+construction (`test_h3_udp_server_profile_wiring.mojo`).
+
+The headline defect this guards: `H3UdpServer.profile` was declared and
+initialized but never handed to `QuicConnection.server` or the
+per-connection `H3HandlerServer`, so every accept-profile counter family
+stayed DEAD in the library server (the bench server wired both pointers;
+the library server wired neither).
+
+Construction is now extracted into `H3UdpServer._construct_conn_handler`
+so this test can exercise the REAL wiring without standing up an
+io_uring loop:
+
+  * `test_udp_construction_wires_profile` — both `profile_ptr` slots
+    (`H3HandlerServer.profile_ptr` and the inner
+    `H3Connection._quic.prof.ptr`) are non-None after construction, and
+    the policy-on config also wires the early-data filter pointer.
+"""
+
+from std.collections import Optional
+from std.memory import Pointer
+from std.collections import Span
+
+from navette.h3.h3_udp_server import H3UdpServer
+from navette.http.handler import (
+    Capabilities,
+    RecvBody,
+    Request,
+    ResponseWriter,
+    StreamError,
+    StreamHandler,
+)
+from navette.quic.trans_param import default_transport_params
+from navette.runtime.socket_helpers import udp_listener
+from navette.tls.config import QuicServerConfig
+from navette.tls.early_data_policy import EarlyDataPolicy
+from navette.tls.lib import TlsBackend
+
+from interop.file_io import read_file
+
+
+# ---------------------------------------------------------------------------
+# StubHandler — no-op StreamHandler (synthetic drive never reaches a body)
+# ---------------------------------------------------------------------------
+
+
+struct StubHandler(StreamHandler):
+    """No-op handler. The synthetic-event drive feeds exactly one
+    HEADERS_RECEIVED per test; none of the body/end/drain/reset callbacks
+    are reached, so all five are `pass`."""
+
+    def __init__(out self):
+        pass
+
+    def __init__(out self, *, deinit move: Self):
+        pass
+
+    def on_request(
+        mut self,
+        var req: Request,
+        mut body: RecvBody,
+        mut resp: ResponseWriter,
+        caps: Capabilities,
+    ) raises:
+        pass
+
+    def on_body_available(
+        mut self, mut body: RecvBody, mut resp: ResponseWriter
+    ) raises:
+        pass
+
+    def on_request_end(
+        mut self, mut body: RecvBody, mut resp: ResponseWriter
+    ) raises:
+        pass
+
+    def on_send_drained(mut self, mut resp: ResponseWriter) raises:
+        pass
+
+    def on_reset(mut self, error: StreamError):
+        pass
+
+
+def make_stub_handler() raises -> StubHandler:
+    """Per-conn factory handed to `H3UdpServer`."""
+    return StubHandler()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_policy_on_server() raises -> H3UdpServer[StubHandler]:
+    """Build an `H3UdpServer[StubHandler]` on an ephemeral UDP port with
+    `EarlyDataPolicy.idempotent_only()`.
+
+    The policy-on config sets `max_early_data = u32::MAX`
+    (`zrtt.enabled = True` at conn creation) AND populates
+    `_early_data_filter`, so construction wires the early-data filter
+    pointer as well as both profile pointers.
+    """
+    var cert = read_file(String("certs/server.crt"))
+    var key = read_file(String("certs/server.key"))
+    var tls = TlsBackend()
+    var config = QuicServerConfig(
+        tls.shared(),
+        Span(cert),
+        Span(key),
+        policy=EarlyDataPolicy.idempotent_only(),
+    )
+    var sock = udp_listener(0)  # kernel picks a free port
+    var tp = default_transport_params()
+    return H3UdpServer[StubHandler](
+        sock^,
+        tls^,
+        config^,
+        tp^,
+        make_stub_handler,
+    )
+
+
+def _synth_dcid() -> List[Byte]:
+    """An 8-byte synthetic client Initial DCID (all 0xAB)."""
+    var dcid = List[Byte]()
+    for _ in range(8):
+        dcid.append(UInt8(0xAB))
+    return dcid^
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+def test_udp_construction_wires_profile() raises:
+    """The extracted constructor wires BOTH profile pointers (the H3
+    adapter's and the inner QUIC connection's) plus the early-data filter
+    pointer for a policy-on config."""
+    var server = _make_policy_on_server()
+    var dcid = _synth_dcid()
+    var h3_ptr = server._construct_conn_handler(Span(dcid), UInt64(1_000_000))
+
+    if h3_ptr[].profile_ptr is None:
+        raise Error("H3HandlerServer.profile_ptr must be wired (got None)")
+    if h3_ptr[]._h3._quic.prof.ptr is None:
+        raise Error(
+            "inner QuicConnection.prof.ptr must be wired (got None)"
+        )
+    if h3_ptr[]._early_data_filter_ptr is None:
+        raise Error(
+            "policy-on config must wire the early-data filter pointer"
+            " (got None)"
+        )
+
+    h3_ptr.destroy_pointee()
+    h3_ptr.free()
+    # Extend the server's lifetime past the FFI-dependent reads above so
+    # ASAP-destruction does not free `server.profile` mid-assertion.
+    _ = server.profile
+    print("PASS: test_udp_construction_wires_profile")
+
+
+def main() raises:
+    """Driver for `scripts/run_tests.sh`."""
+    print("=== test_h3_udp_server_profile_wiring ===")
+    test_udp_construction_wires_profile()
+    print("test_h3_udp_server_profile_wiring: PASS")

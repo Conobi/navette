@@ -374,6 +374,17 @@ pub fn send_raw_1rtt_bytes(
     socket.send_to(&buf[..written], server_addr)
 }
 
+/// Reserved for future counter-snapshot wiring. Returns `None` in the
+/// current build because `hello_h3_server` runs with PROFILE_ACCEPT
+/// off by default. The wire-level scenarios assert behavioural
+/// outcomes (no application reply after replay) rather than scraping
+/// in-process counters; if a future change wires
+/// HELLO_H3_AP_DUMP=stdout this helper can be filled in.
+#[allow(dead_code)]
+pub fn read_accept_profile_counter(_name: &str) -> Option<i64> {
+    None
+}
+
 /// Poll for a CONNECTION_CLOSE frame emitted by navette within `timeout_ms`.
 ///
 /// Drives the standard `recv` / `flush_send` / `is_closed` loop until either

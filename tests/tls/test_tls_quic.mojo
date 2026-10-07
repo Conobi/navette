@@ -33,11 +33,12 @@ def test_quic_conn_read_hs_null_out_params_do_not_crash() raises:
 
 
 def test_quic_conn_read_hs_q6_profiled_form_null_safe() raises:
-    """5-arg call form with both timing out-pointers wired.
+    """Q6: 5-arg profile-aware call form with both Q6 out-pointers wired.
 
-    Slots 1+2 are the state-machine and handle-lookup timings. Invalid
-    handle returns -1 without writing to the out-pointers; this exercises
-    the Rust-side early-return-before-out-param-write path.
+    Mirrors the bracket-site call shape in connection.mojo's _drive_handshake
+    under PROFILE_ACCEPT=True + profile_ptr != 0. Slot 1+2 are Q6 (state-machine,
+    handle-lookup). Invalid handle returns -1 without writing to the out-pointers;
+    this exercises the Rust-side early-return-before-out-param-write path.
     """
     var tls = TlsBackend()
     var shared = tls.shared()
@@ -54,7 +55,7 @@ def test_quic_conn_read_hs_q6_profiled_form_null_safe() raises:
     # Anchor `shared` past the FFI call -- see the note in the test above.
     _ = shared.inner_ptr()
     assert_equal_int(
-        Int(rc), -1, "invalid handle returns -1 (timing out-param form)"
+        Int(rc), -1, "invalid handle returns -1 (profile-aware form)"
     )
     assert_equal_int(
         Int(out_sm_us), 0, "state-machine out-param untouched on invalid handle"
