@@ -98,7 +98,7 @@ struct StreamMap(Movable):
         local_window_bidi_remote: UInt64,
         local_window_uni: UInt64,
     ):
-        self.streams = Dict[Int, UnsafePointer[Stream, MutUntrackedOrigin]](capacity=256)
+        self.streams = Dict[Int, UnsafePointer[Stream, MutUntrackedOrigin]]()
         self.is_server = is_server
 
         self.conn_fc_recv = FlowControl(conn_recv_limit, conn_recv_window, CONN_FC_MAX_WINDOW)
@@ -130,7 +130,7 @@ struct StreamMap(Movable):
         self.peer_stream_fc_limit_uni = UInt64(0)
 
         self.sendable_queue = Deque[Int]()
-        self.sendable_set = Dict[Int, Bool](capacity=256)
+        self.sendable_set = Dict[Int, Bool]()
         self.control_max_stream_data = List[Int]()
         self.control_reset = List[Int]()
         self.control_stop_sending = List[Int]()

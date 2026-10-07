@@ -261,7 +261,7 @@ struct RecvBody(Movable):
     var _terminal_consumed: Bool
 
     def __init__(out self):
-        self._frames = Deque[BodyFrame]()
+        self._frames = Deque[BodyFrame](capacity=2, min_capacity=2, shrink=False)
         self._state = _BODY_OPEN
         self._bytes_buffered = UInt(0)
         self._high_water = UInt(DEFAULT_STREAM_WINDOW_HIGH)
@@ -431,7 +431,7 @@ struct SendBody(Movable):
     var _abort_code: UInt32
 
     def __init__(out self):
-        self._frames = Deque[BodyFrame]()
+        self._frames = Deque[BodyFrame](capacity=2, min_capacity=2, shrink=False)
         self._state = _SEND_OPEN
         self._bytes_buffered = UInt(0)
         self._high_water = UInt(DEFAULT_STREAM_WINDOW_HIGH)
