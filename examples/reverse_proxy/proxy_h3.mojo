@@ -33,7 +33,7 @@
 #   state, so a forwarding handler cannot be handed a shared pointer at
 #   construction. Instead each `ForwardingHandler` ACCUMULATES captured
 #   requests in its own `_pending` list; the driver drains them per tick by
-#   walking the server's public `conn_slots[i].h3[].handler`. The backend
+#   walking the server's public `conn_slots[i].h3[].driver.handler`. The backend
 #   registry + backend-TLS config addresses live on `ProxyHandler`
 #   (`H3BackendRegistry`), at a stable heap address — not in a global.
 #

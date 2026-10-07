@@ -26,6 +26,8 @@ from navette.http.headers import Headers
 from navette.http.status import StatusCode
 from navette.http.request import Request
 from navette.h2.h2_handler_server import H2HandlerServer
+from navette.http.handler import STREAM_ERR_LOCAL_ABORT, STREAM_ERR_RST_STREAM
+from tests.http._driver_script import ScriptHandler, _bytes
 
 
 # ---------------------------------------------------------------------------
@@ -304,23 +306,23 @@ def test_basic_get_dispatch() raises:
     _ = server.drain()
 
     # --- Verify ---
-    if server.handler.got_method != "GET":
+    if server.driver.handler.got_method != "GET":
         raise Error(
-            "expected method 'GET', got '" + server.handler.got_method + "'"
+            "expected method 'GET', got '" + server.driver.handler.got_method + "'"
         )
-    if server.handler.got_target != "/":
+    if server.driver.handler.got_target != "/":
         raise Error(
-            "expected target '/', got '" + server.handler.got_target + "'"
+            "expected target '/', got '" + server.driver.handler.got_target + "'"
         )
-    if server.handler.request_count != 1:
+    if server.driver.handler.request_count != 1:
         raise Error(
             "expected request_count 1, got "
-            + String(server.handler.request_count)
+            + String(server.driver.handler.request_count)
         )
-    if server.handler.request_end_count != 1:
+    if server.driver.handler.request_end_count != 1:
         raise Error(
             "expected request_end_count 1, got "
-            + String(server.handler.request_end_count)
+            + String(server.driver.handler.request_end_count)
         )
     print("PASS test_basic_get_dispatch")
 
@@ -391,32 +393,32 @@ def test_post_with_body() raises:
     _ = server.drain()
 
     # --- Verify ---
-    if server.handler.got_method != "POST":
+    if server.driver.handler.got_method != "POST":
         raise Error(
-            "expected method 'POST', got '" + server.handler.got_method + "'"
+            "expected method 'POST', got '" + server.driver.handler.got_method + "'"
         )
-    if server.handler.got_target != "/upload":
+    if server.driver.handler.got_target != "/upload":
         raise Error(
-            "expected target '/upload', got '" + server.handler.got_target + "'"
+            "expected target '/upload', got '" + server.driver.handler.got_target + "'"
         )
-    if server.handler.request_count != 1:
+    if server.driver.handler.request_count != 1:
         raise Error(
             "expected request_count 1, got "
-            + String(server.handler.request_count)
+            + String(server.driver.handler.request_count)
         )
-    if server.handler.body_available_count < 1:
+    if server.driver.handler.body_available_count < 1:
         raise Error(
             "expected body_available_count >= 1, got "
-            + String(server.handler.body_available_count)
+            + String(server.driver.handler.body_available_count)
         )
-    if server.handler.body_data != "hello":
+    if server.driver.handler.body_data != "hello":
         raise Error(
-            "expected body_data 'hello', got '" + server.handler.body_data + "'"
+            "expected body_data 'hello', got '" + server.driver.handler.body_data + "'"
         )
-    if server.handler.request_end_count != 1:
+    if server.driver.handler.request_end_count != 1:
         raise Error(
             "expected request_end_count 1, got "
-            + String(server.handler.request_end_count)
+            + String(server.driver.handler.request_end_count)
         )
     print("PASS test_post_with_body")
 
@@ -464,16 +466,16 @@ def test_trailers() raises:
     _ = server.drain()
 
     # --- Verify ---
-    if server.handler.body_data != "data":
+    if server.driver.handler.body_data != "data":
         raise Error(
-            "expected body_data 'data', got '" + server.handler.body_data + "'"
+            "expected body_data 'data', got '" + server.driver.handler.body_data + "'"
         )
-    if not server.handler.got_trailers:
+    if not server.driver.handler.got_trailers:
         raise Error("expected handler to receive trailers")
-    if server.handler.request_end_count != 1:
+    if server.driver.handler.request_end_count != 1:
         raise Error(
             "expected request_end_count 1, got "
-            + String(server.handler.request_end_count)
+            + String(server.driver.handler.request_end_count)
         )
     print("PASS test_trailers")
 
@@ -753,10 +755,10 @@ def test_stream_reset() raises:
     _ = server.drain()
 
     # Verify request was received
-    if server.handler.request_count != 1:
+    if server.driver.handler.request_count != 1:
         raise Error(
             "expected request_count 1, got "
-            + String(server.handler.request_count)
+            + String(server.driver.handler.request_count)
         )
 
     # --- Send RST_STREAM (CANCEL = 8) ---
@@ -768,18 +770,184 @@ def test_stream_reset() raises:
     _ = server.drain()
 
     # --- Verify ---
-    if server.handler.reset_count != 1:
+    if server.driver.handler.reset_count != 1:
         raise Error(
             "expected reset_count 1, got "
-            + String(server.handler.reset_count)
+            + String(server.driver.handler.reset_count)
         )
-    if server.handler.reset_code != UInt32(8):
+    if server.driver.handler.reset_code != UInt32(8):
         raise Error(
             "expected reset_code 8, got "
-            + String(server.handler.reset_code)
+            + String(server.driver.handler.reset_code)
         )
     print("PASS test_stream_reset")
 
+
+
+# ---------------------------------------------------------------------------
+# Shared driver: 1xx, the handler-failure policy, malformed trailers
+# ---------------------------------------------------------------------------
+
+
+def _script_pair(mut client: H2Connection) raises -> H2HandlerServer[ScriptHandler]:
+    """A ScriptHandler server with the preface exchanged against `client`."""
+    var server = H2HandlerServer[ScriptHandler](handler=ScriptHandler())
+    client.initiate_connection()
+    var server_initial = server.drain()
+    server.feed(Span(client.data_to_send()))
+    server_initial.extend(Span(server.drain()))
+    _ = client.receive_data(server_initial)
+    server.feed(Span(client.data_to_send()))
+    _ = server.drain()
+    return server^
+
+
+def _send_req(mut client: H2Connection, sid: Int, method: String, path: String, end: Bool) raises:
+    var headers = List[Header]()
+    headers.append(Header(":method", method))
+    headers.append(Header(":path", path))
+    headers.append(Header(":scheme", "https"))
+    headers.append(Header(":authority", "localhost"))
+    client.send_headers(UInt32(sid), headers^, end_stream=end)
+
+
+def _exchange(mut server: H2HandlerServer[ScriptHandler], mut client: H2Connection) raises -> List[H2Event]:
+    """Deliver the client's queued frames to the server, and the server's answer back."""
+    server.feed(Span(client.data_to_send()))
+    return client.receive_data(server.drain())
+
+
+def _status(evt: H2Event) -> String:
+    for ref h in evt.headers:
+        if h.name == ":status":
+            return h.value
+    return ""
+
+
+def _header(evt: H2Event, name: String) -> String:
+    for ref h in evt.headers:
+        if h.name == name:
+            return h.value
+    return ""
+
+
+def _log(events: List[H2Event], sid: Int) -> String:
+    """One token per event on `sid`: H<status>[!] (! = END_STREAM), D<bytes>[!], E (ended), R<code>."""
+    var out = String("")
+    for ref e in events:
+        if Int(e.stream_id) != sid:
+            continue
+        if e.kind == H2_EVT_RESPONSE_RECEIVED:
+            out += "H" + _status(e) + ("!" if e.stream_ended else "") + " "
+        elif e.kind == H2_EVT_DATA_RECEIVED:
+            out += "D" + String(unsafe_from_utf8=e.data.copy()) + ("!" if e.stream_ended else "") + " "
+        elif e.kind == H2_EVT_STREAM_ENDED:
+            out += "E "
+        elif e.kind == H2_EVT_STREAM_RESET:
+            out += "R" + String(Int(e.error_code)) + " "
+    return out
+
+
+def test_informational_then_final() raises:
+    """Two 103s go out in order, without END_STREAM, before the final head; a 1xx after it raises and sends nothing."""
+    var client = H2Connection(client_side=True)
+    var server = _script_pair(client)
+    _send_req(client, 1, "GET", "/info", True)
+    var events = _exchange(server, client)
+    var log = _log(events, 1)
+    if log != "H103 H103 H200 Dok D! ":
+        raise Error("1xx then final, got: " + log)
+    var links = String("")
+    for ref e in events:
+        if e.kind == H2_EVT_RESPONSE_RECEIVED:
+            links += _header(e, "link")
+    if links != "</a></b>":
+        raise Error("1xx order, got links: " + links)
+    if not server.driver.handler.info_after_final_raised:
+        raise Error("send_informational after send_status must raise")
+    if len(server.driver.streams) != 0:
+        raise Error("stream freed")
+    print("PASS test_informational_then_final")
+
+
+def test_raise_before_headers_body_closed() raises:
+    """A raise before any head answers 500 with an empty body and END_STREAM; no reset, no on_reset."""
+    var client = H2Connection(client_side=True)
+    var server = _script_pair(client)
+    _send_req(client, 1, "GET", "/boom", True)
+    var events = _exchange(server, client)
+    var log = _log(events, 1)
+    if log != "H500! ":
+        raise Error("500 then END_STREAM, got: " + log)
+    for ref e in events:
+        if e.kind == H2_EVT_RESPONSE_RECEIVED and _header(e, "content-length") != "0":
+            raise Error("content-length: 0 expected")
+    if server.driver.handler.resets != 0 or len(server.driver.streams) != 0:
+        raise Error("no on_reset, stream freed")
+    print("PASS test_raise_before_headers_body_closed")
+
+
+def test_raise_before_headers_body_open() raises:
+    """With the request body still open the 500 is followed by RST_STREAM NO_ERROR; the connection keeps serving."""
+    var client = H2Connection(client_side=True)
+    var server = _script_pair(client)
+    _send_req(client, 1, "POST", "/boom", False)
+    var log = _log(_exchange(server, client), 1)
+    if log != "H500! R0 ":
+        raise Error("500, END_STREAM, RST_STREAM NO_ERROR, got: " + log)
+    _send_req(client, 3, "GET", "/", True)
+    var log3 = _log(_exchange(server, client), 3)
+    if log3 != "H200 Dok D! ":
+        raise Error("next stream answered, got: " + log3)
+    if server.driver.handler.resets != 0 or server.should_close():
+        raise Error("no on_reset; connection open")
+    print("PASS test_raise_before_headers_body_open")
+
+
+def test_raise_after_headers_resets_only_that_stream() raises:
+    """A raise after the head was sent resets the stream with INTERNAL_ERROR (no END_STREAM), calls on_reset(local_abort) once, and spares the other stream."""
+    var client = H2Connection(client_side=True)
+    var server = _script_pair(client)
+    _send_req(client, 1, "POST", "/late", False)
+    var log = _log(_exchange(server, client), 1)
+    if log != "H200 Dpart ":
+        raise Error("head and first chunk sent, got: " + log)
+    _send_req(client, 3, "GET", "/", True)
+    client.send_data(UInt32(1), _bytes("x"), end_stream=False)
+    var events = _exchange(server, client)
+    var log1 = _log(events, 1)
+    if log1 != "R2 ":
+        raise Error("RST_STREAM INTERNAL_ERROR only, got: " + log1)
+    var log3 = _log(events, 3)
+    if log3 != "H200 Dok D! ":
+        raise Error("other stream answered, got: " + log3)
+    ref h = server.driver.handler
+    if h.resets != 1 or h.reset_kind != STREAM_ERR_LOCAL_ABORT:
+        raise Error("on_reset(local_abort) once, got " + String(h.resets) + " kind " + String(h.reset_kind))
+    if len(server.driver.streams) != 0 or server.should_close():
+        raise Error("both streams freed; connection open")
+    print("PASS test_raise_after_headers_resets_only_that_stream")
+
+
+def test_trailers_with_pseudo_header_rejected() raises:
+    """A pseudo-header in request trailers is a malformed message: stream PROTOCOL_ERROR, trailers never delivered."""
+    var client = H2Connection(client_side=True)
+    var server = _script_pair(client)
+    _send_req(client, 1, "POST", "/", False)
+    client.send_data(UInt32(1), _bytes("data"), end_stream=False)
+    var trailers = List[Header]()
+    trailers.append(Header(":path", "/smuggled"))
+    trailers.append(Header("x-checksum", "abc"))
+    client.send_headers(UInt32(1), trailers^, end_stream=True)
+    var log = _log(_exchange(server, client), 1)
+    if log != "R1 ":
+        raise Error("RST_STREAM PROTOCOL_ERROR, got: " + log)
+    ref h = server.driver.handler
+    if h.trailers != 0 or h.resets != 1 or h.reset_kind != STREAM_ERR_RST_STREAM or h.reset_code != 1:
+        raise Error("handler sees a reset, not trailers")
+    if len(server.driver.streams) != 0 or server.should_close():
+        raise Error("stream freed; connection open")
+    print("PASS test_trailers_with_pseudo_header_rejected")
 
 def main() raises:
     test_construct_and_drain()
@@ -789,4 +957,9 @@ def main() raises:
     test_trailers()
     test_response_round_trip()
     test_stream_reset()
+    test_informational_then_final()
+    test_raise_before_headers_body_closed()
+    test_raise_before_headers_body_open()
+    test_raise_after_headers_resets_only_that_stream()
+    test_trailers_with_pseudo_header_rejected()
     print("PASS")

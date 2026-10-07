@@ -44,7 +44,8 @@ struct FieldSection(Movable):
     The five pseudo-headers this stack knows are split out; an empty
     String means absent. `headers` holds every other field in wire order,
     including unknown pseudo-headers. A repeated known pseudo-header keeps
-    its last value.
+    its last value. `pseudo` records that any pseudo-header was decoded,
+    which makes a trailer section malformed.
     """
 
     var method: String
@@ -53,6 +54,7 @@ struct FieldSection(Movable):
     var path: String
     var status: String
     var headers: Headers
+    var pseudo: Bool
 
     def __init__(
         out self,
@@ -70,6 +72,7 @@ struct FieldSection(Movable):
         self.path = path^
         self.status = status^
         self.headers = headers^
+        self.pseudo = False
 
     def into_request(deinit self) -> Request:
         """The HTTP/3 request this head describes: `host` from `:authority` goes first, and absent `:method` / `:path` read as GET and /."""
@@ -91,7 +94,9 @@ struct FieldSection(Movable):
         """Store a decoded field: a known pseudo-header into its slot, anything else into `headers` as received."""
         if not name.startswith(":"):
             self.headers.add_lowercase(name^, value^)
-        elif name == ":method":
+            return
+        self.pseudo = True
+        if name == ":method":
             self.method = value^
         elif name == ":scheme":
             self.scheme = value^

@@ -229,10 +229,10 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), True)
-    server._on_request(ev^, UInt64(1_000_001))
+    server._on_request(ev^)
 
     assert_equal_int(
-        server.handler.calls, 0,
+        server.driver.handler.calls, 0,
         String("handler must not be invoked when 425 is emitted"),
     )
     # FIN queued on the response stream confirms the 425 synthesis.
@@ -267,7 +267,7 @@ def test_h3_handler_server_filter_fires_on_0rtt_post() raises:
     # accept path. Guards against a regression where the 425 short-circuit
     # is bolted on AFTER the per-stream-ctx allocation.
     assert_false(
-        Int(stream_id) in server._streams,
+        Int(stream_id) in server.driver.streams,
         String("rejected stream must not allocate _H3StreamCtx (handler skip)"),
     )
     _ = server._h3._quic.conn_handle
@@ -301,7 +301,7 @@ def test_h3_handler_server_filter_reject_emits_stop_sending() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), False)
-    server._on_request(ev^, UInt64(1_000_001))
+    server._on_request(ev^)
 
     var key = Int(stream_id)
     assert_true(
@@ -342,18 +342,18 @@ def test_h3_handler_server_filter_accept_injects_early_data_header() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("GET"), True)
-    server._on_request(ev^, UInt64(1_000_001))
+    server._on_request(ev^)
 
     assert_equal_int(
-        server.handler.calls, 1,
+        server.driver.handler.calls, 1,
         String("handler must be invoked once on 0-RTT accept"),
     )
     assert_true(
-        server.handler.last_early_data_header == "1",
+        server.driver.handler.last_early_data_header == "1",
         String("Early-Data: 1 header must be visible to the handler"),
     )
     assert_true(
-        server.handler.last_caps_is_early_data,
+        server.driver.handler.last_caps_is_early_data,
         String("caps.is_early_data must be True on 0-RTT accept"),
     )
     _ = server._h3._quic.conn_handle
@@ -378,18 +378,18 @@ def test_h3_handler_server_filter_accept_query_on_0rtt() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("QUERY"), True)
-    server._on_request(ev^, UInt64(1_000_001))
+    server._on_request(ev^)
 
     assert_equal_int(
-        server.handler.calls, 1,
+        server.driver.handler.calls, 1,
         String("handler must be invoked once on 0-RTT QUERY accept"),
     )
     assert_true(
-        server.handler.last_early_data_header == "1",
+        server.driver.handler.last_early_data_header == "1",
         String("Early-Data: 1 header must be visible to the handler (QUERY)"),
     )
     assert_true(
-        server.handler.last_caps_is_early_data,
+        server.driver.handler.last_caps_is_early_data,
         String("caps.is_early_data must be True on 0-RTT QUERY accept"),
     )
     _ = server._h3._quic.conn_handle
@@ -422,18 +422,18 @@ def test_h3_handler_server_1rtt_request_bypasses_filter() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, APPLICATION_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), True)
-    server._on_request(ev^, UInt64(1_000_001))
+    server._on_request(ev^)
 
     assert_equal_int(
-        server.handler.calls, 1,
+        server.driver.handler.calls, 1,
         String("handler must be invoked once on 1-RTT POST"),
     )
     assert_true(
-        server.handler.last_early_data_header == "",
+        server.driver.handler.last_early_data_header == "",
         String("no Early-Data header must appear on 1-RTT requests"),
     )
     assert_false(
-        server.handler.last_caps_is_early_data,
+        server.driver.handler.last_caps_is_early_data,
         String("caps.is_early_data must be False on 1-RTT"),
     )
     _ = server._h3._quic.conn_handle
@@ -469,18 +469,18 @@ def test_h3_handler_server_zero_rtt_disabled_skips_dispatch() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), True)
-    server._on_request(ev^, UInt64(1_000_001))
+    server._on_request(ev^)
 
     assert_equal_int(
-        server.handler.calls, 1,
+        server.driver.handler.calls, 1,
         String("handler must be invoked: dispatch skipped, no 425"),
     )
     assert_false(
-        server.handler.last_caps_is_early_data,
+        server.driver.handler.last_caps_is_early_data,
         String("caps.is_early_data must be False when the gate skips dispatch"),
     )
     assert_true(
-        server.handler.last_early_data_header == "",
+        server.driver.handler.last_early_data_header == "",
         String("no Early-Data header when the gate skips dispatch"),
     )
     _ = server._h3._quic.conn_handle
@@ -518,10 +518,10 @@ def test_h3_handler_server_misconfig_fail_closed_row_preserved() raises:
     var stream_id: UInt64 = 0
     _force_stream_in_space(server, stream_id, ZERO_RTT_SPACE_IDX)
     var ev = _build_h3_event(stream_id, String("POST"), True)
-    server._on_request(ev^, UInt64(1_000_001))
+    server._on_request(ev^)
 
     assert_equal_int(
-        server.handler.calls, 0,
+        server.driver.handler.calls, 0,
         String("misconfigured 0-RTT-enabled conn must fail closed (no handler)"),
     )
     _ = server._h3._quic.conn_handle

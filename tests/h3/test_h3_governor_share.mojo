@@ -276,13 +276,13 @@ def test_handler_sheds_above_share() raises:
     for _ in range(40):
         _ = p.request()
     p.pump(5)
-    assert_true(p.srv.handler.calls == 32, "the handler runs 32 times: " + String(p.srv.handler.calls))
+    assert_true(p.srv.driver.handler.calls == 32, "the handler runs 32 times: " + String(p.srv.driver.handler.calls))
     assert_true(p.srv.h3().refused_503 == 8, "eight 503s")
 
 
 def test_detached_stream_is_long_lived() raises:
     var p = _HPair()
-    p.srv.handler.detach_next = True
+    p.srv.driver.handler.detach_next = True
     var sid = p.request()
     _ = p.request()
     p.pump(5)
@@ -294,11 +294,11 @@ def test_detached_stream_is_long_lived() raises:
     p.pump(4)
     assert_true(p.srv.h3().long_lived == 0, "its reset frees it")
     var q = _HPair()
-    q.srv.handler.detach_next, q.srv.handler.answer = True, True
+    q.srv.driver.handler.detach_next, q.srv.driver.handler.answer = True, True
     var done = q.cli.open_stream(True)
     q.cli.send_stream_data(done, Span(headers_get()), True)
     q.pump(10)
-    assert_true(q.srv.handler.calls == 1 and q.srv._streams.find(Int(done)) is None, "answered and freed")
+    assert_true(q.srv.driver.handler.calls == 1 and Int(done) not in q.srv.driver.streams, "answered and freed")
     assert_true(q.srv.h3().long_lived == 0, "a detached stream that completes normally is no longer long-lived")
 
 

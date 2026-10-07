@@ -302,8 +302,8 @@ struct H2TcpConn[H: StreamHandler](Movable):
         #    requests via StreamHandler.
         if len(plaintext) > 0:
             self.http.feed(Span(plaintext))
-            if self.http.completed_streams != self._completed_seen:
-                self._completed_seen, self._since_us = self.http.completed_streams, monotonic_us()
+            if self.http.driver.completed != self._completed_seen:
+                self._completed_seen, self._since_us = self.http.driver.completed, monotonic_us()
             var h2_out = self.http.drain()
             # Slice into TLS-record-sized chunks so the wire format is
             # nginx-like (multiple records → client can interleave
@@ -571,7 +571,7 @@ struct H2TcpServer[H: StreamHandler](Movable):
         if self._sweep_timer and self._sweep_timer.value().done():
             var now = monotonic_us()
             for ref c in self.connections:
-                var busy = len(c[].http._streams) > 0 or len(c[].http._conn._pending_data) > 0
+                var busy = len(c[].http.driver.streams) > 0 or len(c[].http._conn._pending_data) > 0
                 if now - c[]._since_us > (self.request_timeout_us if busy else self.keep_alive_timeout_us):
                     c[]._begin_close()
             try:

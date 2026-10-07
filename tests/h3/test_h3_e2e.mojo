@@ -6,7 +6,7 @@
 
 from std.collections.deque import Deque
 from std.memory import Pointer
-from std.collections import Span
+from std.collections import Dict, Span
 
 from navette.tls.lib import TlsBackend
 from navette.tls.config import QuicServerConfig, QuicClientConfig
@@ -27,7 +27,10 @@ from navette.http.body import BodyFrame
 from navette.http.method import Method
 from navette.http.version import Version
 from navette.http.session import RequestHandle
+from navette.http.handler import STREAM_ERR_LOCAL_ABORT, STREAM_ERR_RST_STREAM
+from navette.h3.error import H3_NO_ERROR, H3_INTERNAL_ERROR, H3_MESSAGE_ERROR
 from tests._test_util import assert_true, assert_equal_int, load_test_cert, load_test_ca
+from tests.http._driver_script import ScriptHandler, _bytes
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -644,6 +647,148 @@ def test_h3_frame_wire_bytes() raises:
     print("  test_h3_frame_wire_bytes: PASS")
 
 
+
+# ── Shared driver: 1xx, the handler-failure policy, malformed trailers ──
+
+
+struct _Script(Movable):
+    """H3HandlerServer[ScriptHandler] against a raw client H3Connection; `log` holds the client's events per stream."""
+
+    var tc: _TestConfigs
+    var server: H3HandlerServer[ScriptHandler]
+    var client: H3Connection
+    var now: UInt64
+    var log: Dict[Int, String]
+
+    def __init__(out self) raises:
+        var tc = _TestConfigs()
+        var params = _h3_default_params()
+        var now = UInt64(1_000_000)
+        var client_quic = QuicConnection.client(tc._tls.shared(), tc.cli_cfg, "localhost", params, now)
+        var odcid = List[Byte](client_quic.initial_dcid.as_span())
+        var cdcid = odcid.copy()
+        var server_quic = QuicConnection.server(tc._tls.shared(), tc.srv_cfg, params, Span(odcid), Span(cdcid), now)
+        self.server = H3HandlerServer[ScriptHandler](quic=server_quic^, handler=ScriptHandler())
+        self.client = H3Connection.client(client_quic^)
+        self.tc = tc^
+        self.now = _pump_server_client(self.server, self.client, now, 50)
+        self.log = Dict[Int, String]()
+
+    def request(mut self, method: String, path: String, fin: Bool) raises -> UInt64:
+        var sid = self.client.open_bidi_stream()
+        self.client.send_headers(sid, FieldSection(method=method, scheme="https", authority="localhost", path=path), fin)
+        return sid
+
+    def to_server(mut self) raises:
+        """Deliver the client's datagrams to the server only, so its staged frames are still observable."""
+        self.now += UInt64(10_000)
+        var dgs = List[List[Byte]]()
+        self.client.drain_datagrams(self.now, dgs)
+        for i in range(len(dgs)):
+            self.server.feed_datagram(Span(dgs[i]), self.now)
+
+    def stop_code(self, sid: UInt64) -> Int:
+        """The STOP_SENDING code the server has queued on `sid`, or -1."""
+        var p = self.server._h3._quic.stream_map.try_stream_ptr(Int(sid))
+        if not p or not p.value()[].needs_stop_sending:
+            return -1
+        return Int(p.value()[].stop_sending_error)
+
+    def pump(mut self, rounds: Int) raises:
+        """Exchange datagrams, then log the client's events: H<status>[<link>][/cl<content-length>], D<body>, E, R<code>."""
+        self.now = _pump_server_client(self.server, self.client, self.now, rounds)
+        while True:
+            var ev = self.client.poll_event()
+            if not ev:
+                break
+            var e = ev.take()
+            var tok: String
+            if e.kind == H3Event.HEADERS_RECEIVED:
+                var cl = e.section.headers.get("content-length")
+                tok = "H" + e.section.status + e.section.headers.get("link") + ("/cl" + cl if cl else "")
+            elif e.kind == H3Event.DATA_RECEIVED:
+                tok = "D" + String(unsafe_from_utf8=e.data.copy())
+            elif e.kind == H3Event.STREAM_ENDED:
+                tok = "E"
+            elif e.kind == H3Event.STREAM_RESET:
+                tok = "R" + String(Int(e.error_code))
+            else:
+                continue
+            var prev = self.log.find(Int(e.stream_id))
+            self.log[Int(e.stream_id)] = (prev.value() if prev else String("")) + tok + " "
+
+    def of(self, sid: UInt64) -> String:
+        var v = self.log.find(Int(sid))
+        return v.value() if v else String("")
+
+
+def test_h3_informational_then_final() raises:
+    """Two 103s reach the client in order before the final head and body."""
+    var t = _Script()
+    var sid = t.request("GET", "/info", True)
+    t.pump(20)
+    assert_true(t.of(sid) == "H103</a> H103</b> H200 Dok E ", "1xx then final, got: " + t.of(sid))
+    assert_true(t.server.driver.handler.info_after_final_raised, "a 1xx after the final status raises")
+    assert_equal_int(len(t.server.driver.streams), 0, "stream freed")
+    print("  test_h3_informational_then_final: PASS")
+
+
+def test_h3_raise_before_headers() raises:
+    """A raise before any head answers 500 with an empty body and FIN; an open request body also gets STOP_SENDING H3_NO_ERROR."""
+    var t = _Script()
+    var closed = t.request("GET", "/boom", True)
+    t.to_server()
+    assert_equal_int(t.stop_code(closed), -1, "a finished request is not stopped")
+    t.pump(20)
+    assert_true(t.of(closed) == "H500/cl0 E ", "500 then FIN, got: " + t.of(closed))
+    var open = t.request("POST", "/boom", False)
+    t.to_server()
+    assert_equal_int(t.stop_code(open), Int(H3_NO_ERROR), "STOP_SENDING H3_NO_ERROR")
+    t.pump(20)
+    assert_true(t.of(open) == "H500/cl0 E ", "500 then FIN, got: " + t.of(open))
+    var next = t.request("GET", "/", True)
+    t.pump(20)
+    assert_true(t.of(next) == "H200 Dok E ", "the connection keeps serving, got: " + t.of(next))
+    assert_equal_int(t.server.driver.handler.resets, 0, "no on_reset")
+    assert_equal_int(len(t.server.driver.streams), 0, "streams freed")
+    print("  test_h3_raise_before_headers: PASS")
+
+
+def test_h3_raise_after_headers_resets_only_that_stream() raises:
+    """A raise after the head was sent resets the stream with H3_INTERNAL_ERROR both ways (no FIN), calls on_reset(local_abort) once, and spares the other stream."""
+    var t = _Script()
+    var late = t.request("POST", "/late", False)
+    t.pump(20)
+    assert_true(t.of(late) == "H200 Dpart ", "head and first chunk sent, got: " + t.of(late))
+    var other = t.request("GET", "/", True)
+    t.client.send_data(late, Span(_bytes("x")), False)
+    t.to_server()
+    assert_equal_int(t.stop_code(late), Int(H3_INTERNAL_ERROR), "STOP_SENDING H3_INTERNAL_ERROR")
+    t.pump(20)
+    assert_true(t.of(late) == "H200 Dpart R" + String(Int(H3_INTERNAL_ERROR)) + " ", "RESET_STREAM, got: " + t.of(late))
+    assert_true(t.of(other) == "H200 Dok E ", "other stream answered, got: " + t.of(other))
+    ref h = t.server.driver.handler
+    assert_true(h.resets == 1 and h.reset_kind == STREAM_ERR_LOCAL_ABORT, "on_reset(local_abort) once")
+    assert_equal_int(len(t.server.driver.streams), 0, "streams freed")
+    print("  test_h3_raise_after_headers_resets_only_that_stream: PASS")
+
+
+def test_h3_trailers_with_pseudo_header_rejected() raises:
+    """A pseudo-header in request trailers is a malformed message: H3_MESSAGE_ERROR, trailers never delivered."""
+    var t = _Script()
+    var sid = t.request("POST", "/", False)
+    t.client.send_data(sid, Span(_bytes("data")), False)
+    var trailers = Headers()
+    trailers.add("x-checksum", "abc")
+    t.client.send_headers(sid, FieldSection(path="/smuggled", headers=trailers^), True)
+    t.pump(20)
+    assert_true(t.of(sid) == "R" + String(Int(H3_MESSAGE_ERROR)) + " ", "RESET_STREAM H3_MESSAGE_ERROR, got: " + t.of(sid))
+    ref h = t.server.driver.handler
+    assert_true(h.trailers == 0 and h.resets == 1, "the handler sees a reset, not trailers")
+    assert_true(h.reset_kind == STREAM_ERR_RST_STREAM and Int(h.reset_code) == Int(H3_MESSAGE_ERROR), "reset code")
+    assert_equal_int(len(t.server.driver.streams), 0, "stream freed")
+    print("  test_h3_trailers_with_pseudo_header_rejected: PASS")
+
 def main() raises:
     print("=== test_h3_e2e ===")
     test_h3_simple_get()
@@ -654,4 +799,8 @@ def main() raises:
     test_h3_drain_cap_is_observable()
     test_h3_drain_terminates()
     test_h3_frame_wire_bytes()
+    test_h3_informational_then_final()
+    test_h3_raise_before_headers()
+    test_h3_raise_after_headers_resets_only_that_stream()
+    test_h3_trailers_with_pseudo_header_rejected()
     print("All H3 E2E tests passed.")

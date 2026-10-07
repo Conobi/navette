@@ -66,8 +66,12 @@ from .payloads import (
 )
 from .hpack import HpackEncoder, HpackDecoder, HpackConfig
 from .header import Header
+from .pseudo_headers import response_to_h2_headers, headers_to_h2, _is_pseudo
 from navette.protect.locally_closed import LocallyClosedSet
 from navette.http.config import DEFAULT_MAX_LOCAL_RESET_STREAMS
+from navette.http.handler_driver import ResponseSink
+from navette.http.headers import Headers
+from navette.http.status import StatusCode
 
 # ---------------------------------------------------------------------------
 # SETTINGS identifiers (RFC 9113 §6.5.2)
@@ -480,7 +484,7 @@ def _append_setting(mut payload: List[Byte], id: Int, value: Int):
 # ---------------------------------------------------------------------------
 # H2Connection — sans-I/O HTTP/2 connection state machine
 # ---------------------------------------------------------------------------
-struct H2Connection(Movable):
+struct H2Connection(Movable, ResponseSink):
     var _config: H2Config
     var _state: Int
     var _client_side: Bool
@@ -901,7 +905,7 @@ struct H2Connection(Movable):
                 self._queue_frame(cont_frame)
                 offset = end
 
-    def send_data(mut self, stream_id: UInt32, data: List[Byte], *, end_stream: Bool = False) raises:
+    def send_data(mut self, stream_id: UInt32, data: Span[Byte, _], *, end_stream: Bool = False) raises:
         """Send DATA frame(s). Fragments by max_frame_size. Bytes that
         exceed the connection or stream send window are queued in
         `_pending_data` and emitted when an inbound WINDOW_UPDATE
@@ -1147,6 +1151,30 @@ struct H2Connection(Movable):
                 self._store_stream(sid, stream^)
             except:
                 pass
+
+    # --- ResponseSink: the shared handler driver writes through these --------
+
+    def send_head(mut self, sid: Int, status: StatusCode, var headers: Headers, end: Bool) raises:
+        self.send_headers(UInt32(sid), response_to_h2_headers(status, headers), end_stream=end)
+
+    def send_body(mut self, sid: Int, data: Span[Byte, _], end: Bool) raises:
+        self.send_data(UInt32(sid), data, end_stream=end)
+
+    def send_trailers(mut self, sid: Int, var trailers: Headers) raises:
+        self.send_headers(UInt32(sid), headers_to_h2(trailers), end_stream=True)
+
+    def stop_request(mut self, sid: Int):
+        """RST_STREAM NO_ERROR after a complete response (RFC 9113 Section 8.1)."""
+        try:
+            self.send_rst_stream(UInt32(sid), UInt32(H2_NO_ERROR))
+        except:
+            pass  # connection closed
+
+    def abort(mut self, sid: Int):
+        try:
+            self.send_rst_stream(UInt32(sid), UInt32(H2_INTERNAL_ERROR))
+        except:
+            pass  # connection closed
 
     def acknowledge_received_data(mut self, size: Int, stream_id: UInt32) raises:
         """Application consumed `size` bytes. Emits WINDOW_UPDATE when threshold met."""
@@ -1488,7 +1516,7 @@ struct H2Connection(Movable):
             var next_lc = STREAM_CLOSED if s.lifecycle == STREAM_HALF_CLOSED_LOCAL else STREAM_HALF_CLOSED_REMOTE
             self._set_lifecycle(s, next_lc)
             self._store_stream(stream_id, s^)
-            events.append(H2Event.trailers_received(UInt32(stream_id), decoded_headers))
+            self._deliver_trailers(events, stream_id, decoded_headers^)
         else:
             # CONTINUATION assembly for trailers
             var s = StreamState(copy=stream)
@@ -1498,6 +1526,14 @@ struct H2Connection(Movable):
             s.block_is_trailers = True
             self._streams[stream_id] = s^
             self._expecting_continuation_for = UInt32(stream_id)
+
+    def _deliver_trailers(mut self, mut events: List[H2Event], stream_id: Int, var headers: List[Header]):
+        """Emit decoded trailers; a pseudo-header among them makes the message malformed, a stream PROTOCOL_ERROR (RFC 9113 Section 8.1)."""
+        for ref h in headers:
+            if _is_pseudo(h.name):
+                self._stream_error(events, stream_id, H2_PROTOCOL_ERROR)
+                return
+        events.append(H2Event.trailers_received(UInt32(stream_id), headers))
 
     def stream_state(self, stream_id: UInt32) raises -> Int:
         """Return STREAM_* lifecycle constant. Raises for unknown streams."""
@@ -1617,7 +1653,7 @@ struct H2Connection(Movable):
                 if stream.block_is_trailers:
                     stream.block_is_trailers = False
                     self._store_stream(stream_id, stream^)
-                    events.append(H2Event.trailers_received(UInt32(stream_id), decoded_headers))
+                    self._deliver_trailers(events, stream_id, decoded_headers^)
                 elif not self._client_side:
                     self._streams[stream_id] = stream^
                     events.append(H2Event.request_received(UInt32(stream_id), decoded_headers, end_stream))

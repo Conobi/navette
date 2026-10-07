@@ -1635,7 +1635,7 @@ struct ProxyHandler(Movable):
 
         Called each tick after `flush_h3`, which is what runs the handler
         callbacks that populate `_pending`. The per-conn handler is reached
-        via the H3 server's public `conn_slots[i].h3[].handler` — there is no
+        via the H3 server's public `conn_slots[i].h3[].driver.handler` — there is no
         module-level global to bridge the factory to the driver (Mojo 1.0.0b1
         forbids globals).
 
@@ -1650,7 +1650,7 @@ struct ProxyHandler(Movable):
             # local pointer first (avoid a deep chained mutable place-expr)
             # and deref to reach the per-conn handler.
             var h3_ptr = self._h3.conn_slots[ci].h3
-            var forwards = h3_ptr[].handler.take_pending()
+            var forwards = h3_ptr[].driver.handler.take_pending()
             for fi in range(len(forwards)):
                 var fwd = forwards[fi].copy()
                 var backend_conn_id = self.h3_backends.open_backend(fwd^)

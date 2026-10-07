@@ -1,13 +1,12 @@
 # src/h3/h3_handler_server.mojo
 #
 # H3HandlerServer[H: StreamHandler] — server adapter.
-# Drives a StreamHandler from an H3Connection. Sans-I/O.
-# Mirrors src/h2/h2_handler_server.mojo patterns.
+# Drives a StreamHandler from an H3Connection through the shared handler
+# driver (as `H2HandlerServer` does). Sans-I/O.
 
-from std.collections import Dict, Optional
+from std.collections import Optional
 from std.memory import Pointer
 from std.collections import Span
-from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.quic.connection import QuicConnection
 from navette.quic.cid import dcid_to_u64
@@ -16,23 +15,16 @@ from navette.h3.connection import H3Connection, H3Event
 from navette.h3.early_data_filter_dispatch import (
     apply_early_data_filter, send_425_response, stream_is_zero_rtt,
 )
-from navette.h3.qpack import FieldSection, QpackCodecTables
-from navette.http.handler import (
-    StreamHandler,
-    Capabilities,
-    RecvBody,
-    ResponseWriter,
-    StreamError,
-    ALPN_H3,
-)
+from navette.h3.qpack import QpackCodecTables
+from navette.http.body import BodyFrame
+from navette.http.handler import StreamHandler, Capabilities
+from navette.http.handler_driver import HandlerDriver
 from navette.http.headers import Headers
 from navette.http.status import StatusCode
-from navette.http.body import BodyFrame
 from navette.tls.early_data_filter import (
     EarlyDataPredicateFn,
     IdempotentOnlyFilter,
 )
-from navette.util.ptrbox import PtrBox
 
 
 # ---------------------------------------------------------------------------
@@ -82,38 +74,15 @@ def _path_key_to_peer_addr(key: PathKey) -> String:
 
 
 # ---------------------------------------------------------------------------
-# _H3StreamCtx — per-stream context (heap-allocated, Movable)
-# ---------------------------------------------------------------------------
-
-
-struct _H3StreamCtx(Movable):
-    var recv_body:      RecvBody
-    var resp_writer:    ResponseWriter
-    var detached:       Bool
-    var request_ended:  Bool
-    var response_ended: Bool
-    var headers_sent:   Bool
-
-    def __init__(out self):
-        self.recv_body = RecvBody()
-        self.resp_writer = ResponseWriter()
-        self.detached = False
-        self.request_ended = False
-        self.response_ended = False
-        self.headers_sent = False
-
-
-# ---------------------------------------------------------------------------
 # H3HandlerServer
 # ---------------------------------------------------------------------------
 
 
 struct H3HandlerServer[H: StreamHandler](Movable):
-    """Drive a StreamHandler from an H3Connection. Sans-I/O."""
+    """Drive a StreamHandler from an H3Connection. Sans-I/O. A handler that raises fails only its own stream."""
 
     var _h3:      H3Connection
-    var handler:  Self.H
-    var _streams: Dict[Int, PtrBox[_H3StreamCtx]]
+    var driver:   HandlerDriver[Self.H]
     # Optional pointer to the RFC 8470 idempotent-only filter owned by
     # the `QuicServerConfig` that birthed this connection. Populated
     # only when 0-RTT is enabled via the IdempotentOnly / Tuned
@@ -151,31 +120,16 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         predicate_fn: Optional[EarlyDataPredicateFn] = None,
     ) raises:
         self._h3 = H3Connection.server(quic^, codec_tables)
-        self.handler = handler^
-        self._streams = Dict[Int, PtrBox[_H3StreamCtx]]()
+        self.driver = HandlerDriver[Self.H](handler^)
         self._early_data_filter_ptr = early_data_filter_ptr
         self._early_data_predicate_fn = predicate_fn
         self._raise_on_next_drain = False
-
-    def __deinit__(deinit self):
-        var keys = List[Int](capacity=len(self._streams))
-        for key in self._streams.keys():
-            keys.append(key)
-        for ref key in keys:
-            try:
-                var p = self._streams[key].ptr()
-                p.unsafe_deinit_pointee()
-                p.unsafe_free()
-            except:
-                pass
 
     # --- Transport API -------------------------------------------------------
 
     def feed_datagram(mut self, data: Span[Byte, _], now: UInt64) raises:
         self._h3.feed_datagram(data, now)
-        self._dispatch_h3_events(now)
-        if self._h3.is_established():
-            self._drain_responses(now)
+        self._serve()
 
     def feed_datagram_from_buffer(
         mut self,
@@ -186,9 +140,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
     ) raises:
         """Feed one inbound QUIC datagram from a mutable buffer (zero-copy)."""
         self._h3.feed_datagram_from_buffer(buf, buf_len, now, ecn_mark)
-        self._dispatch_h3_events(now)
-        if self._h3.is_established():
-            self._drain_responses(now)
+        self._serve()
 
     def drain_datagrams(mut self, now: UInt64, mut out: List[List[Byte]], hold: Bool = False) raises:
         """Send-until-empty drain appended to `out`, capped, or held; see `H3Connection.drain_datagrams`.
@@ -245,26 +197,32 @@ struct H3HandlerServer[H: StreamHandler](Movable):
 
     # --- Internal: event dispatch --------------------------------------------
 
-    def _dispatch_h3_events(mut self, now: UInt64) raises:
+    def _serve(mut self) raises:
+        """Hand each pending event to the driver, then send what the handlers staged (only once established)."""
         while True:
             var ev_opt = self._h3.poll_event()
             if not ev_opt:
                 break
-            var ev = ev_opt.unsafe_take()
+            var ev = ev_opt.take()
             var sid = Int(ev.stream_id)
             if ev.kind == H3Event.HEADERS_RECEIVED:
-                self._on_request(ev^, now)
+                self._on_request(ev^)
             elif ev.kind == H3Event.DATA_RECEIVED:
-                self._on_body(sid, BodyFrame.data(ev^.take_data()))
+                _ = self.driver.on_body(sid, BodyFrame.data(ev^.take_data()))
             elif ev.kind == H3Event.TRAILERS_RECEIVED:
-                self._on_body(sid, BodyFrame.trailers(ev^.take_section().take_headers()))
+                _ = self.driver.on_body(sid, BodyFrame.trailers(ev^.take_section().take_headers()))
             elif ev.kind == H3Event.STREAM_ENDED:
-                self._on_stream_ended(ev)
+                self.driver.on_end(sid)
             elif ev.kind == H3Event.STREAM_RESET:
-                self._on_stream_reset(ev)
+                # Cancel our side too, so the QUIC stream can be freed.
+                if self.driver.on_reset(sid, UInt32(ev.error_code)):
+                    self._h3.cancel_send_side(ev.stream_id)
+        if self._h3.is_established():
+            self.driver.drain(self._h3)
+        self._h3.long_lived = self.driver.detached
 
-    def _on_request(mut self, var ev: H3Event, now: UInt64) raises:
-        """Build the Request from the stream's head and invoke the handler (unless the connection sheds it)."""
+    def _on_request(mut self, var ev: H3Event) raises:
+        """Build the Request from the stream's head and open it in the driver (unless the connection sheds it or 0-RTT refuses it)."""
         var sid = ev.stream_id
         if self._h3.shed_if_over_share(sid):
             return
@@ -304,172 +262,20 @@ struct H3HandlerServer[H: StreamHandler](Movable):
                 send_425_response(sid, self._h3)
                 return
 
-        var body = RecvBody()
-        var resp = ResponseWriter()
-
         # Surface a stable connection identity (the server SCID as a u64)
         # plus the request stream id to the handler. A handler that defers
         # the response across an out-of-band round-trip (e.g. a reverse
         # proxy forwarding to a different transport) records this pair and
-        # later addresses the open stream via `inject_response`.
-        var conn_id_u64 = dcid_to_u64(self._h3._quic.local_cid.as_span())
-        # Read peer address at request dispatch time (not connection time)
-        # because QUIC connections can migrate (RFC 9000 §9).
-        var peer_key = self._h3.peer_addr_copy()
-        var peer_addr_str = _path_key_to_peer_addr(peer_key)
-        try:
-            self.handler.on_request(
-                req^,
-                body,
-                resp,
-                Capabilities.for_h3(
-                    is_early_data=stream_is_zr,
-                    stream_id=sid,
-                    conn_id=conn_id_u64,
-                    peer_addr=peer_addr_str^,
-                ),
-            )
-        except:
-            pass
-
-        var detached = body._state == 3
-        if detached:
-            self._h3.long_lived += 1
-
-        var ctx_ptr = _heap_alloc[_H3StreamCtx](1)
-        var ctx = _H3StreamCtx()
-        ctx.recv_body = body^
-        ctx.resp_writer = resp^
-        ctx.detached = detached
-        ctx_ptr.unsafe_write(ctx^)
-        self._streams[Int(sid)] = PtrBox[_H3StreamCtx](ctx_ptr)
-
-    def _on_body(mut self, sid: Int, var frame: BodyFrame) raises:
-        """Queue a DATA or trailers frame on an open stream's body, then wake the handler unless the body is detached.
-
-        Trailers never reach `_on_request`, so they cannot re-run the
-        handler or replace the stream's context.
-        """
-        if sid not in self._streams:
-            return
-        var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
-        ctx.recv_body._push(frame^)
-        if not ctx.detached:
-            try:
-                self.handler.on_body_available(ctx.recv_body, ctx.resp_writer)
-            except:
-                pass
-        ctx_ptr.unsafe_write(ctx^)
-
-    def _on_stream_ended(mut self, ev: H3Event) raises:
-        var sid = Int(ev.stream_id)
-        if sid not in self._streams:
-            return
-        var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
-        if ctx.request_ended:
-            ctx_ptr.unsafe_write(ctx^)
-            return
-        ctx.request_ended = True
-        ctx.recv_body._set_end()
-        if not ctx.detached:
-            try:
-                self.handler.on_request_end(ctx.recv_body, ctx.resp_writer)
-            except:
-                pass
-        ctx_ptr.unsafe_write(ctx^)
-
-    def _on_stream_reset(mut self, ev: H3Event) raises:
-        """Drop the request and cancel any unfinished response, so the QUIC
-        stream can be freed."""
-        var sid = Int(ev.stream_id)
-        if sid not in self._streams:
-            return
-        self._h3.cancel_send_side(ev.stream_id)
-        var ctx_ptr = self._streams[sid].ptr()
-        # Taken out of the slot so it is destroyed; only its `detached`
-        # flag is read, and nothing it owns is touched before the block ends.
-        if ctx_ptr.unsafe_take_pointee().detached:
-            self._h3.long_lived -= 1
-        var err = StreamError.rst_stream(UInt32(ev.error_code))
-        self.handler.on_reset(err)
-        _ = self._streams.pop(sid)
-        ctx_ptr.unsafe_free()
-
-    # --- Internal: response drain --------------------------------------------
-
-    def _drain_responses(mut self, now: UInt64) raises:
-        """For each open stream: send response headers then body frames."""
-        var sids = List[Int](capacity=len(self._streams))
-        for key in self._streams.keys():
-            sids.append(key)
-        for ref sid in sids:
-            if sid not in self._streams:
-                continue
-            var ctx_ptr = self._streams[sid].ptr()
-            var ctx = ctx_ptr.unsafe_take_pointee()
-            if ctx.response_ended:
-                ctx_ptr.unsafe_write(ctx^)
-                self._maybe_cleanup(sid)
-                continue
-            if not ctx.headers_sent and not ctx.resp_writer._has_status():
-                ctx_ptr.unsafe_write(ctx^)
-                continue
-            # Send response headers
-            if not ctx.headers_sent and ctx.resp_writer._has_status():
-                var status_opt = ctx.resp_writer._take_status()
-                var headers_opt = ctx.resp_writer._take_headers()
-                var status = status_opt.unsafe_take()
-                var resp_headers: Headers
-                if Bool(headers_opt):
-                    resp_headers = headers_opt.unsafe_take()
-                else:
-                    resp_headers = Headers()
-                try:
-                    self._h3.send_headers(UInt64(sid), FieldSection(status=String(Int(status.code())), headers=resp_headers^), False)
-                except:
-                    pass
-                ctx.headers_sent = True
-            # Drain body frames
-            while True:
-                var f_opt = ctx.resp_writer._pop_body_frame()
-                if not Bool(f_opt):
-                    break
-                var f = f_opt.unsafe_take()
-                if f.is_data():
-                    try:
-                        self._h3.send_data(UInt64(sid), f.data(), False)
-                    except:
-                        pass
-                elif f.is_end():
-                    try:
-                        self._h3.send_data(UInt64(sid), List[Byte](), True)
-                    except:
-                        pass
-                    ctx.response_ended = True
-                    break
-                elif f.is_trailers():
-                    try:
-                        self._h3.send_headers(UInt64(sid), FieldSection(headers=f.trailers().copy()), True)
-                    except:
-                        pass
-                    ctx.response_ended = True
-                    break
-            ctx_ptr.unsafe_write(ctx^)
-            self._maybe_cleanup(sid)
-
-    def _maybe_cleanup(mut self, sid: Int) raises:
-        """Free stream context if both sides are done."""
-        if sid not in self._streams:
-            return
-        var ctx_ptr = self._streams[sid].ptr()
-        if ctx_ptr[].request_ended and ctx_ptr[].response_ended:
-            if ctx_ptr[].detached:
-                self._h3.long_lived -= 1
-            _ = self._streams.pop(sid)
-            ctx_ptr.unsafe_deinit_pointee()
-            ctx_ptr.unsafe_free()
+        # later addresses the open stream via `inject_response`. The peer
+        # address is read per request: QUIC connections can migrate
+        # (RFC 9000 Section 9).
+        var caps = Capabilities.for_h3(
+            is_early_data=stream_is_zr,
+            stream_id=sid,
+            conn_id=dcid_to_u64(self._h3._quic.local_cid.as_span()),
+            peer_addr=_path_key_to_peer_addr(self._h3.peer_addr_copy()),
+        )
+        self.driver.on_request(Int(sid), req^, caps, False)
 
     # --- Out-of-band response injection (cross-transport wake) ---------------
 
@@ -479,7 +285,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         A reverse-proxy driver consults this before `inject_response` to
         confirm the stream survived (it could have been reset or torn down
         while the backend round-trip was in flight)."""
-        return sid in self._streams
+        return sid in self.driver.streams
 
     def inject_response(
         mut self,
@@ -496,10 +302,9 @@ struct H3HandlerServer[H: StreamHandler](Movable):
         lets an event-loop driver complete a request whose backend leg ran
         on a different transport (TCP) and woke on a different io_uring
         token — a token that carries no `StreamHandler` callback to ride in
-        on. The stream must have been left open by the handler
-        (`request_ended` True, `response_ended` False); the writer is
-        re-polled by `_drain_responses` on the next egress pass, which
-        emits `:status` + DATA + FIN over QPACK/H3.
+        on. The stream must have been left open by the handler (request
+        ended, response not); once established the response is staged
+        straight onto the stream: `:status` + DATA + FIN over QPACK/H3.
 
         A no-op (returns cleanly) if `sid` is not an open stream — the
         stream may have been reset or the connection torn down while the
@@ -516,17 +321,7 @@ struct H3HandlerServer[H: StreamHandler](Movable):
             end: When True, terminates the response (FIN). Pass True for a
                 buffered backend response (the whole body is in `body`).
         """
-        if sid not in self._streams:
-            return
-        var ctx_ptr = self._streams[sid].ptr()
-        var ctx = ctx_ptr.unsafe_take_pointee()
-        try:
-            ctx.resp_writer.send_status(status^, headers^)
-            if len(body) > 0:
-                var data = body^
-                _ = ctx.resp_writer.try_send_body(BodyFrame.data(data^))
-            if end:
-                ctx.resp_writer.end()
-        except:
-            pass
-        ctx_ptr.unsafe_write(ctx^)
+        self.driver.respond(sid, status^, headers^, body^, end)
+        if self._h3.is_established():
+            self.driver.drain(self._h3)
+        self._h3.long_lived = self.driver.detached

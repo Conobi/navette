@@ -43,6 +43,7 @@ from navette.h3.error import (
     H3_INTERNAL_ERROR,
     H3_REQUEST_CANCELLED,
     H3_NO_ERROR,
+    H3_MESSAGE_ERROR,
     QPACK_DECOMPRESSION_FAILED,
 )
 from navette.h3.qpack import (
@@ -51,7 +52,9 @@ from navette.h3.qpack import (
     FieldSection,
     QpackCodecTables,
 )
+from navette.http.handler_driver import ResponseSink
 from navette.http.headers import Headers
+from navette.http.status import StatusCode
 from navette.h3.guard_predicates import (
     H3StreamCtx,
     predicate_f31_data_before_headers,
@@ -177,6 +180,7 @@ struct H3Event(Movable):
     comptime HEADERS_RECEIVED:   UInt8 = 3
     comptime DATA_RECEIVED:      UInt8 = 4
     comptime STREAM_ENDED:       UInt8 = 5
+    # The peer reset the stream, or we did on a malformed message.
     comptime STREAM_RESET:       UInt8 = 6
     comptime GOAWAY_RECEIVED:    UInt8 = 7
     comptime CONNECTION_CLOSED:  UInt8 = 8
@@ -266,7 +270,7 @@ struct ConnTally(Copyable, Movable):
 # ---------------------------------------------------------------------------
 
 
-struct H3Connection(Movable):
+struct H3Connection(Movable, ResponseSink):
     var _quic:                       QuicConnection
     var _is_server:                  Bool
     var _stream_bufs:                Dict[Int, _H3StreamBuf]
@@ -626,6 +630,39 @@ struct H3Connection(Movable):
     def reset_stream(mut self, stream_id: UInt64, error_code: UInt64) raises:
         """Send RESET_STREAM via QUIC."""
         self._quic.reset_stream(stream_id, error_code)
+
+    def stop_sending(mut self, stream_id: UInt64, error_code: UInt64) raises:
+        """Send STOP_SENDING via QUIC."""
+        self._quic.stop_sending(stream_id, error_code)
+
+    # --- ResponseSink: the shared handler driver writes through these --------
+
+    def send_head(mut self, sid: Int, status: StatusCode, var headers: Headers, end: Bool) raises:
+        self.send_headers(UInt64(sid), FieldSection(status=String(Int(status.code())), headers=headers^), end)
+
+    def send_body(mut self, sid: Int, data: Span[Byte, _], end: Bool) raises:
+        self.send_data(UInt64(sid), data, end)
+
+    def send_trailers(mut self, sid: Int, var trailers: Headers) raises:
+        self.send_headers(UInt64(sid), FieldSection(headers=trailers^), True)
+
+    def stop_request(mut self, sid: Int):
+        try:
+            self.stop_sending(UInt64(sid), H3_NO_ERROR)
+        except:
+            pass  # the stream is already gone
+
+    def abort(mut self, sid: Int):
+        """RESET_STREAM and STOP_SENDING with H3_INTERNAL_ERROR (RFC 9114 Section 4.1.1)."""
+        self._abort_stream(UInt64(sid), H3_INTERNAL_ERROR)
+
+    def _abort_stream(mut self, stream_id: UInt64, error_code: UInt64):
+        """Abort both directions of a request stream unless already finished; a no-op for a freed stream."""
+        self._quic.reset_unfinished_stream(stream_id, error_code)
+        try:
+            self.stop_sending(stream_id, error_code)
+        except:
+            pass
 
     def cancel_send_side(mut self, stream_id: UInt64):
         """Reset our side of a request stream with H3_REQUEST_CANCELLED
@@ -1188,7 +1225,13 @@ struct H3Connection(Movable):
                 self._quic.close_app(H3_EXCESSIVE_LOAD, "field section too large", now)
                 return
             var h3ev = H3Event(H3Event.TRAILERS_RECEIVED if headers_seen else H3Event.HEADERS_RECEIVED, stream_id)
-            h3ev.section = decoded.unsafe_take()
+            h3ev.section = decoded.take()
+            if headers_seen and h3ev.section.pseudo:
+                # Pseudo-headers in trailers make the message malformed
+                # (RFC 9114 Section 4.3): a stream error, H3_MESSAGE_ERROR.
+                self._abort_stream(stream_id, H3_MESSAGE_ERROR)
+                h3ev.kind, h3ev.error_code = H3Event.STREAM_RESET, H3_MESSAGE_ERROR
+                h3ev.section = FieldSection()
             if not h3ev.section.status.startswith("1"):
                 headers_seen = True
             self._h3_events.append(h3ev^)

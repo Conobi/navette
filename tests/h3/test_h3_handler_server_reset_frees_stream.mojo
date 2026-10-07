@@ -207,10 +207,10 @@ def test_request_trailers_reach_the_open_request() raises:
     b.extend([UInt8(0x01), 0x03, 0x00, 0x00, 0xE7])  # trailers: cache-control no-cache
     p.cli.send_stream_data(sid, Span(b), True)
     p.pump(6)
-    assert_equal_int(p.srv.handler.requests, 1, "trailers do not re-run on_request")
-    assert_true(p.srv.handler.frames == "DTE", "body yields Data, Trailers, End: " + p.srv.handler.frames)
+    assert_equal_int(p.srv.driver.handler.requests, 1, "trailers do not re-run on_request")
+    assert_true(p.srv.driver.handler.frames == "DTE", "body yields Data, Trailers, End: " + p.srv.driver.handler.frames)
     assert_true(not p.srv.has_stream(Int(sid)), "finished request freed")
-    assert_equal_int(len(p.srv._streams), 0, "no stream context left behind")
+    assert_equal_int(len(p.srv.driver.streams), 0, "no stream context left behind")
     print("  test_request_trailers_reach_the_open_request: PASS")
 
 
