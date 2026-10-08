@@ -1239,15 +1239,15 @@ struct FrameCursor[origin: Origin]:
         reader.pos = self._pos
         var frame_type = varint_decode(reader)
 
-        # PADDING (0x00): consume consecutive padding bytes.
+        # PADDING (0x00): one raise-free scan; per-byte reads dominated padded Initials.
         if frame_type == FRAME_PADDING:
-            while reader.remaining() > 0:
-                var next_byte = reader.peek_u8()
-                if next_byte != UInt8(0):
+            var pos = reader.pos
+            for b in self._buf[pos:]:
+                if b != 0:
                     break
-                _ = reader.read_u8()
+                pos += 1
             self.type_id = FRAME_PADDING
-            self._pos = reader.pos
+            self._pos = pos
             self._count += 1
             return Optional[UInt64](self.type_id)
 

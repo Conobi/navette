@@ -1713,6 +1713,56 @@ def test_frame_cursor_matches_parse_frames() raises:
     print("  frame_cursor_matches_parse_frames: PASS")
 
 
+def _check_cursor_trace(
+    payload: List[Byte], types: List[UInt64], ends: List[Int], label: String
+) raises:
+    """Walk a FrameCursor and assert each frame's type_id and end offset."""
+    var cursor = FrameCursor(Span(payload))
+    for i in range(len(types)):
+        var t = cursor.next()
+        _assert_true(Bool(t), label + ": missing frame " + String(i))
+        _assert_eq(t.value(), types[i], label + ": type at " + String(i))
+        _assert_eq_int(cursor._pos, ends[i], label + ": end at " + String(i))
+    _assert_false(Bool(cursor.next()), label + ": expected exhaustion")
+    _assert_eq_int(cursor.count(), len(types), label + ": count")
+
+
+def test_frame_cursor_padding_runs() raises:
+    """Each run of 0x00 bytes is one PADDING frame ending at the next non-zero byte."""
+    comptime P = FRAME_PADDING
+    comptime G = FRAME_PING
+    _check_cursor_trace(List[Byte](), List[UInt64](), List[Int](), "empty")
+    _check_cursor_trace([0, 0, 0, 0], [P], [4], "padding only")
+    _check_cursor_trace([0], [P], [1], "single padding byte")
+    _check_cursor_trace([0, 0, 0, 1], [P, G], [3, 4], "padding then frame")
+    _check_cursor_trace([1, 0, 0, 0], [G, P], [1, 4], "frame then padding")
+    _check_cursor_trace([1, 0], [G, P], [1, 2], "single padding at end")
+    _check_cursor_trace(
+        [0, 1, 0, 0, 0x10, 0x05, 0, 1],
+        [P, G, P, FRAME_MAX_DATA, P, G],
+        [1, 2, 4, 6, 7, 8],
+        "interleaved",
+    )
+    # A non-minimal 2-byte varint 0 still decodes as PADDING.
+    _check_cursor_trace([0x40, 0, 0, 0], [P], [4], "non-minimal type")
+    var big = List[Byte](length=1200, fill=0)
+    big[0] = 0x01
+    _check_cursor_trace(big, [G, P], [1, 1200], "padded initial")
+
+    # Padding followed by a truncated ACK still raises after the PADDING frame.
+    var trunc: List[Byte] = [0, 0, 0x02]
+    var cursor = FrameCursor(Span(trunc))
+    _assert_eq(cursor.next().value(), P, "truncated: padding first")
+    _assert_eq_int(cursor._pos, 2, "truncated: padding end")
+    var raised = False
+    try:
+        _ = cursor.next()
+    except:
+        raised = True
+    _assert_true(raised, "truncated ACK after padding must raise")
+    print("  frame_cursor_padding_runs: PASS")
+
+
 def main() raises:
     print("test_quic_frame:")
 
@@ -1805,5 +1855,6 @@ def main() raises:
     test_frame_cursor_yields_all_frames()
     test_frame_cursor_empty_payload()
     test_frame_cursor_matches_parse_frames()
+    test_frame_cursor_padding_runs()
 
     print("All test_quic_frame tests passed.")
