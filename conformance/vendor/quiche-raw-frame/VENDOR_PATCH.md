@@ -2,7 +2,7 @@
 
 upstream-commit:   bbfe6205b8af2e6fadbb6d7818de463fbe123342 (cloudflare/quiche@0.24.9)
 fork-branch:       https://github.com/Conobi/quiche/tree/navette-patches-0.24
-fork-branch-tip:   6d15774b (post-Patch-4)
+fork-branch-tip:   ee0bf250 (Patches 1-5; the Patch 3 fix is its own commit, after Patch 4)
 vendor-target:     conformance/vendor/quiche-raw-frame/
 
 The fork-branch is the canonical source of truth for the patches: each commit
@@ -39,25 +39,22 @@ constructor.
 
 ## Patch 3 — `encode_pkt_reserved_bits` helper
 
-In `src/test_utils.rs`, immediately after `encode_pkt`, add a helper that wraps
-`encode_pkt` and XORs the cleartext first-byte reserved bits BEFORE HP. Used
-by scenario binaries F12 (long-header reserved-bits = 0x0c) and F14
-(short-header reserved-bit = 0x18 per RFC 9000 §17.3.1).
+In `src/test_utils.rs`, immediately after `encode_pkt`, add a helper that
+mirrors `encode_pkt` but sets the reserved bits of the cleartext first header
+byte before the packet is sealed. Used by scenario binaries F12 (long-header
+reserved bits, mask 0x0c) and F14 (short-header reserved bits, mask 0x18, per
+RFC 9000 Section 17.3.1).
 
-### Implementation note — XOR commutativity
+### Implementation note — set the bits before sealing
 
-Header protection (RFC 9001 §5.4) applies a per-packet XOR mask to the first
-header byte: `wire[0] = cleartext[0] ^ (hp_mask[0] & protection_bits)`. Since
-XOR is self-inverse and commutative, flipping reserved bits in the cleartext is
-equivalent to flipping them in the HP-protected wire byte:
-
-  `wire'[0] = wire[0] ^ reserved_mask`
-
-The receiver un-applies HP and recovers `cleartext[0] ^ reserved_mask` — the
-exact modified reserved-bits value navette's QUIC parser validates (RFC 9000
-§17.2 for long headers, §17.3.1 for short headers). This means the
-implementation is a single `buf[0] ^= reserved_mask` after calling `encode_pkt`,
-with no need to re-derive the HP mask. The function body is 3 effective lines.
+The first header byte is part of the AEAD's associated data (RFC 9001
+Section 5.3). The helper therefore writes the header, ORs `reserved_mask` into
+the first byte, then encrypts and applies header protection as `encode_pkt`
+does. Flipping the bits in the wire byte after sealing does reach the receiver
+in cleartext, since header protection is a plain XOR, but the packet then
+fails authentication and is dropped before the bits are ever checked. The
+first version of this patch did that, and F12/F14 only passed while navette
+checked reserved bits before authentication.
 
 ## Patch 4 — `encode_pkt_with_payload` helper
 
