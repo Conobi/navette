@@ -109,6 +109,23 @@ def test_max_stream_data_on_freed_peer_uni() raises:
     print("  test_max_stream_data_on_freed_peer_uni: PASS")
 
 
+def test_max_stream_data_opens_peer_bidi() raises:
+    # curl sends MAX_STREAM_DATA for its request stream before the request.
+    var c = Conns()
+    c.server._on_max_stream_data_from_cursor(UInt64(0), UInt64(1_000_000), UInt64(1))
+    assert_equal_int(_code(c.server), -1, "MAX_STREAM_DATA opens a peer bidi stream")
+    assert_true(c.server.stream_map.has_stream(0), "stream 0 opened")
+    _stream(c.server, 0, 0, 4, True)
+    assert_equal_int(_code(c.server), -1, "the request then arrives on it")
+    var d = Conns()
+    d.server._on_max_stream_data_from_cursor(UInt64(1), UInt64(1_000_000), UInt64(1))
+    assert_equal_int(_code(d.server), 0x05, "our own bidi stream we never opened")
+    var e = Conns()
+    e.server._on_max_stream_data_from_cursor(UInt64(4 * 100), UInt64(1_000_000), UInt64(1))
+    assert_equal_int(_code(e.server), 0x04, "peer bidi stream above MAX_STREAMS")
+    print("  test_max_stream_data_opens_peer_bidi: PASS")
+
+
 def test_final_size_errors() raises:
     var c = Conns()
     _stream(c.server, 0, 0, 10, True)
@@ -164,6 +181,11 @@ def main() raises:
     except e:
         failed += 1
         print("  test_max_stream_data_on_freed_peer_uni: FAIL", e)
+    try:
+        test_max_stream_data_opens_peer_bidi()
+    except e:
+        failed += 1
+        print("  test_max_stream_data_opens_peer_bidi: FAIL", e)
     try:
         test_final_size_errors()
     except e:

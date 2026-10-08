@@ -2115,6 +2115,14 @@ struct QuicConnection(Movable):
         var _freed = not p_opt and self.stream_map.was_opened(stream_id)
         if _freed and _has_send:
             return
+        # The frame opens a peer bidirectional stream like a STREAM frame
+        # would (RFC 9000 Section 3.2); curl sends it before the request.
+        if not p_opt and stream_is_bidi(stream_id) and not stream_is_local(
+            stream_id, self.is_server
+        ):
+            if not self._resolve_frame_stream(stream_id, needs_send=True):
+                return
+            p_opt = self.stream_map.try_stream_ptr(key)
         var _exists = Bool(p_opt) or _freed
         var _ctx_msd = MaxStreamDataCtx(
             stream_id=stream_id,
