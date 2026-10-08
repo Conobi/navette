@@ -9,6 +9,7 @@ rejected as aliasing.
 """
 
 from std.collections import Dict, Optional
+from std.memory import OwnedPointer
 
 from navette.http.body import BodyFrame
 from navette.http.handler import (
@@ -138,7 +139,11 @@ def _wake[H: StreamHandler](mut handler: H, mut st: DriverStream, end: Bool):
 
 
 struct DriverStream(Movable):
-    """One open request, stored by value in `HandlerDriver.streams`.
+    """One open request, boxed in `HandlerDriver.streams`.
+
+    Boxed because a Dict reserves 16 entries on its first insert: by value
+    each short connection would touch 6 KB of fresh memory (cache misses,
+    measured in cycles); boxed it is 16 x 24 B plus one record.
 
     `failure` holds a handler or send error the next `drain` resolves;
     `unacked` is H2 flow-control credit held while the body is paused.
@@ -177,14 +182,14 @@ struct HandlerDriver[H: StreamHandler](Movable):
     """
 
     var handler: Self.H
-    var streams: Dict[Int, DriverStream]
+    var streams: Dict[Int, OwnedPointer[DriverStream]]
     var ready: List[Int]
     var detached: UInt64
     var completed: Int
 
     def __init__(out self, var handler: Self.H):
         self.handler = handler^
-        self.streams = Dict[Int, DriverStream]()
+        self.streams = Dict[Int, OwnedPointer[DriverStream]]()
         self.ready = List[Int]()
         self.detached = 0
         self.completed = 0
@@ -193,8 +198,8 @@ struct HandlerDriver[H: StreamHandler](Movable):
         """Open the stream and run `on_request` (then `on_request_end` when `ended`). A repeated id is ignored."""
         if sid in self.streams:
             return
-        self.streams[sid] = DriverStream()
-        ref st = self.streams[sid]
+        self.streams[sid] = OwnedPointer(DriverStream())
+        ref st = self.streams[sid][]
         if ended:
             st.request_ended = True
             st.body._set_end()
@@ -217,7 +222,7 @@ struct HandlerDriver[H: StreamHandler](Movable):
         """
         if sid not in self.streams:
             return credit
-        ref st = self.streams[sid]
+        ref st = self.streams[sid][]
         st.unacked += credit
         if not frame.is_data() or len(frame.data()) > 0:
             st.body._push(frame^)
@@ -233,7 +238,7 @@ struct HandlerDriver[H: StreamHandler](Movable):
         """End the request body and run `on_request_end`, once."""
         if sid not in self.streams:
             return
-        ref st = self.streams[sid]
+        ref st = self.streams[sid][]
         if st.request_ended:
             return
         st.request_ended = True
@@ -245,7 +250,7 @@ struct HandlerDriver[H: StreamHandler](Movable):
         """The peer reset the stream: free it and tell the handler. False for a stream already gone."""
         if sid not in self.streams:
             return False
-        if self.streams.pop(sid).detached:
+        if self.streams.pop(sid)[].detached:
             self.detached -= 1
         self.handler.on_reset(StreamError.rst_stream(code))
         return True
@@ -254,7 +259,7 @@ struct HandlerDriver[H: StreamHandler](Movable):
         """Stage a whole response from outside a handler callback; a no-op for a stream already gone, and staging errors are dropped."""
         if sid not in self.streams:
             return
-        ref st = self.streams[sid]
+        ref st = self.streams[sid][]
         try:
             st.resp.send_status(status^, headers^)
             if len(body) > 0:
@@ -276,7 +281,7 @@ struct HandlerDriver[H: StreamHandler](Movable):
             var sid = self.ready[i]
             if sid not in self.streams:
                 continue
-            ref st = self.streams[sid]
+            ref st = self.streams[sid][]
             st.queued = False
             if not st.failure and not st.response_ended:
                 try:
@@ -292,6 +297,6 @@ struct HandlerDriver[H: StreamHandler](Movable):
             elif done:
                 self.completed += 1
             if done:
-                if self.streams.pop(sid).detached:
+                if self.streams.pop(sid)[].detached:
                     self.detached -= 1
         self.ready.clear()
