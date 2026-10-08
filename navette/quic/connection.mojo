@@ -1317,8 +1317,13 @@ struct QuicConnection(Movable):
                 self.close_transport(_v14.error_code, _v14.tag, now)
                 raise Error("reserved bits")
 
-        if self.is_server and space_idx == 1 and (self.state & CONN_ADDR_VALIDATED) == 0:
+        if self.is_server and space_idx == 1:
             self.state = self.state | CONN_ADDR_VALIDATED
+            # RFC 9001 Section 4.9.1: the client holding Handshake keys has
+            # dropped its Initial ones. Discarding ours here, not at handshake
+            # completion, also keeps a close sent while closing out of an
+            # Initial packet the client can no longer read.
+            self._discard_initial_space()
 
         var ph_frame_parse_us = self.prof.stamp()
         self._current_dcid = header.dcid.copy()
