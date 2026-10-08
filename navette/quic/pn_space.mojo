@@ -302,13 +302,15 @@ struct PacketNumberSpace(Copyable, Movable):
         ack_eliciting: Bool,
         now: UInt64 = UInt64(0),
         max_ack_delay_us: UInt64 = UInt64(25_000),
+        ce_marked: Bool = False,
     ):
         """Record receipt and decide when the ACK is owed (RFC 9000 §13.2.1).
 
         Initial/Handshake acknowledge every ack-eliciting packet at once. The
         Application space acknowledges immediately on the second ack-eliciting
-        packet since the last ACK, or on an out-of-order one (PN below the
-        largest ack-eliciting PN seen, or more than one above it); otherwise
+        packet since the last ACK, on an out-of-order one (PN below the
+        largest ack-eliciting PN seen, or more than one above it), or on one
+        that arrived ECN-CE marked, so the peer reacts to congestion sooner; otherwise
         the first such packet arms `ack_deadline = now + max_ack_delay_us`,
         which later packets never move.
         """
@@ -326,7 +328,7 @@ struct PacketNumberSpace(Copyable, Movable):
             self.ack_needed = True
             return
 
-        var immediate = self.ack_eliciting_since_last_ack >= 2
+        var immediate = self.ack_eliciting_since_last_ack >= 2 or ce_marked
         if pn_int < self.largest_rx_ack_eliciting_pn or pn_int > self.largest_rx_ack_eliciting_pn + 1:
             immediate = True
         if pn_int > self.largest_rx_ack_eliciting_pn:

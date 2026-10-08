@@ -1338,6 +1338,7 @@ struct QuicConnection(Movable):
             self.spaces[pn_space_idx].on_packet_received(
                 full_pn, ack_eliciting, now,
                 self.local_params.max_ack_delay * 1000,
+                ce_marked=ecn_mark == ECN_CE,
             )
             if self.ecn.state != ECN_STATE_DISABLED:
                 if ecn_mark == ECN_CE:

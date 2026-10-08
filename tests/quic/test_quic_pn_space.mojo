@@ -114,6 +114,15 @@ def test_ack_delayed_application() raises:
     print("    PASS test_ack_delayed_application")
 
 
+def test_ack_immediate_on_ce() raises:
+    """Application level: a lone CE-marked ack-eliciting packet is ACKed at once (RFC 9000 Section 13.2.1)."""
+    var space = PacketNumberSpace(EncryptionLevel.application())
+    space.on_packet_received(UInt64(0), True, UInt64(1000), UInt64(25_000), ce_marked=True)
+    _assert_true(space.ack_needed, "ack_needed after a CE-marked ack-eliciting packet")
+    _assert_true(not space.ack_deadline, "no delayed-ACK deadline when acknowledging at once")
+    print("    PASS test_ack_immediate_on_ce")
+
+
 def test_build_ack_frame() raises:
     """Receive PNs 0,1,3,5,6 (last at t=1000); peek at t=1800 with exponent 3
     yields largest=6, delay=100, first_range=1, ranges gap=0/ack=0 then
@@ -624,6 +633,7 @@ def main() raises:
     test_ack_range_insert()
     test_ack_immediate_handshake()
     test_ack_delayed_application()
+    test_ack_immediate_on_ce()
     test_build_ack_frame()
     test_ack_deadline_armed_once()
     test_ack_out_of_order_immediate()
