@@ -9,7 +9,7 @@ from navette.quic.frame import (
     Frame, FramePayload,
     AckFrame, CryptoFrame, StreamFrame, ResetStreamFrame,
     StopSendingFrame, MaxStreamDataFrame, MaxStreamsFrame,
-    NewConnectionIdFrame, ConnectionCloseFrame,
+    NewConnectionIdFrame, ConnectionCloseFrame, BoxedCloseFrame,
     StreamDataBlockedFrame, StreamsBlockedFrame,
     FRAME_PADDING, FRAME_PING, FRAME_ACK, FRAME_CRYPTO,
     FRAME_STREAM_BASE, FRAME_RESET_STREAM, FRAME_STOP_SENDING,
@@ -75,7 +75,7 @@ def test_factory_variant_consistency() raises:
 
     # ConnectionCloseFrame
     var cc = ConnectionCloseFrame()
-    _assert(Frame.connection_close(cc).payload.isa[ConnectionCloseFrame](), "conn_close")
+    _assert(Frame.connection_close(cc).payload.isa[BoxedCloseFrame](), "conn_close")
 
     # List[Byte]-payload frames
     var bytes = List[Byte]()

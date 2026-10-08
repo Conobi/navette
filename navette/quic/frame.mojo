@@ -5,6 +5,7 @@
 from navette.quic.codec import ByteReader, ByteWriter, varint_encode, varint_encode_at, write_u8_at, varint_decode, varint_len
 from navette.quic.cid_buf import CidBuf
 from navette.util.byte_vec import ByteVec
+from std.memory import OwnedPointer
 from std.utils import Variant
 
 # ── Frame type constants (RFC 9000 §19) ──────────────────────────────
@@ -264,6 +265,20 @@ struct ConnectionCloseFrame(Copyable, Movable):
         self.reason = other.reason.copy()
 
 
+struct BoxedCloseFrame(Copyable, Movable):
+    """Heap-boxed CONNECTION_CLOSE payload, so its inline reason buffer does
+    not inflate every Frame (the variant is as large as its largest member).
+    Closes are rare; the one allocation per emitted close is the price."""
+
+    var frame: OwnedPointer[ConnectionCloseFrame]
+
+    def __init__(out self, var frame: ConnectionCloseFrame):
+        self.frame = OwnedPointer(frame^)
+
+    def __init__(out self, *, copy: Self):
+        self.frame = OwnedPointer(ConnectionCloseFrame(other=copy.frame[]))
+
+
 # ── Tagged Frame container ────────────────────────────────────────────
 
 comptime FramePayload = Variant[
@@ -277,7 +292,7 @@ comptime FramePayload = Variant[
     MaxStreamDataFrame,    # MAX_STREAM_DATA, STREAM_DATA_BLOCKED
     MaxStreamsFrame,        # MAX_STREAMS_*, STREAMS_BLOCKED_*
     NewConnectionIdFrame,  # NEW_CONNECTION_ID
-    ConnectionCloseFrame,  # CONNECTION_CLOSE_TRANSPORT/APP
+    BoxedCloseFrame,       # CONNECTION_CLOSE_TRANSPORT/APP
     List[Byte],           # NEW_TOKEN, PATH_CHALLENGE, PATH_RESPONSE, DATAGRAM, DATAGRAM_LEN
 ]
 
@@ -380,7 +395,7 @@ struct Frame(Copyable, Movable):
     def connection_close(f: ConnectionCloseFrame) -> Frame:
         return Frame(
             FRAME_CONNECTION_CLOSE_TRANSPORT if f.is_transport else FRAME_CONNECTION_CLOSE_APP,
-            FramePayload(ConnectionCloseFrame(other=f)),
+            FramePayload(BoxedCloseFrame(ConnectionCloseFrame(other=f))),
         )
 
     @staticmethod
@@ -562,7 +577,7 @@ struct Frame(Copyable, Movable):
         if tid == FRAME_PATH_CHALLENGE or tid == FRAME_PATH_RESPONSE:
             return 1 + len(self.payload.unsafe_get[List[Byte]]())
         if tid == FRAME_CONNECTION_CLOSE_TRANSPORT or tid == FRAME_CONNECTION_CLOSE_APP:
-            ref cc = self.payload.unsafe_get[ConnectionCloseFrame]()
+            ref cc = self.payload.unsafe_get[BoxedCloseFrame]().frame[]
             var n = 1 + varint_len(cc.error_code)
             if cc.is_transport:
                 n += varint_len(cc.frame_type)
@@ -636,10 +651,10 @@ struct Frame(Copyable, Movable):
             raise "Frame is not a RETIRE_CONNECTION_ID frame"
         return self.payload.unsafe_get[UInt64]()
 
-    def as_connection_close(self) raises -> ref [self.payload] ConnectionCloseFrame:
-        if not self.payload.isa[ConnectionCloseFrame]():
+    def as_connection_close(self) raises -> ref [self.payload.unsafe_get[BoxedCloseFrame]().frame[]] ConnectionCloseFrame:
+        if not self.payload.isa[BoxedCloseFrame]():
             raise "Frame is not a CONNECTION_CLOSE frame"
-        return self.payload.unsafe_get[ConnectionCloseFrame]()
+        return self.payload.unsafe_get[BoxedCloseFrame]().frame[]
 
     def as_new_token(self) raises -> ref [self.payload] List[Byte]:
         if not self.payload.isa[List[Byte]]():
@@ -848,7 +863,7 @@ def parse_frame_with_type[origin: Origin](mut reader: ByteReader[origin], frame_
         _ = cc.reason.extend_truncated(reason_span)
         return Frame(
             FRAME_CONNECTION_CLOSE_TRANSPORT if cc.is_transport else FRAME_CONNECTION_CLOSE_APP,
-            FramePayload(cc^),
+            FramePayload(BoxedCloseFrame(cc^)),
         )
 
     # HANDSHAKE_DONE (0x1E)
