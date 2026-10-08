@@ -117,7 +117,7 @@ def main() raises:
 
         # token_hex
         var exp_token = String(expected["token_hex"])
-        var got_token = hex_encode(result[0].token)
+        var got_token = hex_encode(List[Byte](result[0].token_span()))
         assert_true(
             got_token == exp_token,
             vid + ": token mismatch: got " + got_token + " expected " + exp_token,

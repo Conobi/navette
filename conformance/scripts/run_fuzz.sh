@@ -50,7 +50,8 @@ for h in "${HARNESSES[@]}"; do
     # generators routinely produce non-UTF-8 sequences that would trip
     # String(unsafe_from_utf8) asserts inside both decoders; the relevant
     # property is parser-level agreement, not String-layer UTF-8 validation.
-    if uv run mojox run -I "$REPO_ROOT" -I "$CONFORMANCE_DIR" "tests/fuzz/test_fuzz_$h.mojo"; then
+    # Include paths (repo root, conformance/) come from [tool.mojox] flags.
+    if uv run mojox run "tests/fuzz/test_fuzz_$h.mojo"; then
         PASSED=$((PASSED + 1))
     else
         echo "FAILED: $h"

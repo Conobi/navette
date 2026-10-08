@@ -253,7 +253,8 @@ def test_ecn_probing_to_capable() raises:
             pass
 
     # Server ACK will carry ECN counts (ect0 > 0). Client processes ACK.
-    now += UInt64(10_000)
+    # A lone ack-eliciting packet is ACKed only after max_ack_delay.
+    now += (server.local_params.max_ack_delay + 1) * 1000
     var s_dg = List[List[Byte]](capacity=1)
     _ = server.send(now, s_dg)
     for i in range(len(s_dg)):
@@ -506,7 +507,8 @@ def test_ecn_bleaching_disables() raises:
 
     # Server ACK has no ECN counts; when client processes it with ect0_in_flight>0
     # but ack has_ecn=False, the bleaching check fires.
-    now += UInt64(10_000)
+    # A lone ack-eliciting packet is ACKed only after max_ack_delay.
+    now += (server.local_params.max_ack_delay + 1) * 1000
     var s_dg3 = List[List[Byte]](capacity=1)
     _ = server.send(now, s_dg3)
     for i in range(len(s_dg3)):

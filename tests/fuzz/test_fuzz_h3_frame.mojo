@@ -43,9 +43,9 @@ def _gen_frame(mut rng: SplitMix64) -> H3RawFrame:
 
 def _check_roundtrip_property(mut rng: SplitMix64) -> ObserveResult:
     var f = _gen_frame(rng)
-    var wire: List[Byte]
+    var wire = List[Byte]()
     try:
-        wire = f.encode()
+        f.encode(wire)
     except e:
         return ObserveResult(False, String("encode raised: ") + String(e))
     var span = Span(wire)

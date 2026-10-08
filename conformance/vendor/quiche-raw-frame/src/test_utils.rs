@@ -473,49 +473,100 @@ pub fn encode_pkt(
     Ok(written)
 }
 
-/// Encode a QUIC packet with reserved bits flipped in the cleartext first byte.
+/// Encode a QUIC packet with reserved bits set in the cleartext first byte.
 ///
-/// This helper wraps [`encode_pkt`] and XORs `reserved_mask` into the wire
-/// representation of the first header byte so that the receiver sees the
-/// masked bits in cleartext after header-protection removal.
+/// Mirrors [`encode_pkt`], but ORs `reserved_mask` into the first header
+/// byte before the packet is sealed. The first byte is part of the AEAD's
+/// associated data (RFC 9001 Section 5.3), so the bits must be set before
+/// sealing: flipping them in the wire byte afterwards yields a packet that
+/// fails authentication, which a receiver drops without reading the bits.
 ///
-/// # How it works
-///
-/// Header protection (RFC 9001 §5.4) applies a per-packet XOR mask to the
-/// first byte:
-///
-///   `wire[0] = cleartext[0] ^ (hp_mask[0] & protection_bits)`
-///
-/// Because XOR is its own inverse and commutative, flipping bits in the
-/// cleartext is equivalent to flipping the same bits in the wire byte:
-///
-///   `wire'[0] = wire[0] ^ reserved_mask`
-///
-/// The receiver un-applies HP and recovers `cleartext[0] ^ reserved_mask`,
-/// which is exactly the modified reserved-bits value navette's QUIC parser
-/// validates (RFC 9000 §17.2 for long headers, §17.3.1 for short headers).
-///
-/// # Parameters
-///
-/// * `conn`          — mutable reference to the quiche connection (owns keys)
-/// * `pkt_type`      — packet type determining the encryption level
-/// * `frames`        — frames to encode in the packet payload
-/// * `reserved_mask` — bitmask of reserved bits to flip (e.g. `0x0c` for
-///                     long-header bits 2–3, `0x18` for short-header bits
-///                     3–4 per RFC 9000 §17.3.1)
-/// * `buf`           — output buffer (must be large enough for the packet)
-///
-/// Returns the number of written bytes, same as [`encode_pkt`].
+/// `reserved_mask` is `0x0c` for long-header bits 2-3 (RFC 9000 Section
+/// 17.2) or `0x18` for short-header bits 3-4 (Section 17.3.1). Returns the
+/// number of written bytes, same as [`encode_pkt`].
 pub fn encode_pkt_reserved_bits(
     conn: &mut Connection, pkt_type: Type, frames: &[frame::Frame],
     reserved_mask: u8, buf: &mut [u8],
 ) -> Result<usize> {
-    let written = encode_pkt(conn, pkt_type, frames, buf)?;
-    // XOR the reserved bits into the HP-protected first byte.
-    // Since HP is a pure XOR operation, flipping bits in the cleartext first
-    // byte is equivalent to flipping them in the wire byte (the HP mask
-    // cancels out at the receiver during decrypt_hdr).
-    buf[0] ^= reserved_mask;
+    let mut b = octets::OctetsMut::with_slice(buf);
+
+    let epoch = pkt_type.to_epoch()?;
+
+    let crypto_ctx = &mut conn.crypto_ctx[epoch];
+
+    let pn = conn.next_pkt_num;
+    let pn_len = 4;
+
+    let send_path = conn.paths.get_active()?;
+    let active_dcid_seq = send_path
+        .active_dcid_seq
+        .as_ref()
+        .ok_or(Error::InvalidState)?;
+    let active_scid_seq = send_path
+        .active_scid_seq
+        .as_ref()
+        .ok_or(Error::InvalidState)?;
+
+    let hdr = Header {
+        ty: pkt_type,
+        version: conn.version,
+        dcid: ConnectionId::from_ref(
+            conn.ids.get_dcid(*active_dcid_seq)?.cid.as_ref(),
+        ),
+        scid: ConnectionId::from_ref(
+            conn.ids.get_scid(*active_scid_seq)?.cid.as_ref(),
+        ),
+        pkt_num: pn,
+        pkt_num_len: pn_len,
+        token: conn.token.clone(),
+        versions: None,
+        key_phase: conn.key_phase,
+    };
+
+    hdr.to_bytes(&mut b)?;
+
+    // Set the reserved bits in the cleartext first byte, then return to
+    // where the header ended.
+    let hdr_end = b.off();
+    b.rewind(hdr_end)?;
+    let first = b.peek_u8()?;
+    b.put_u8(first | reserved_mask)?;
+    b.skip(hdr_end - 1)?;
+
+    let payload_len = frames.iter().fold(0, |acc, x| acc + x.wire_len());
+
+    if pkt_type != Type::Short {
+        let len = pn_len + payload_len + crypto_ctx.crypto_overhead().unwrap();
+        b.put_varint(len as u64)?;
+    }
+
+    // Always encode packet number in 4 bytes, to allow encoding packets
+    // with empty payloads.
+    b.put_u32(pn as u32)?;
+
+    let payload_offset = b.off();
+
+    for frame in frames {
+        frame.to_bytes(&mut b)?;
+    }
+
+    let aead = match crypto_ctx.crypto_seal {
+        Some(ref v) => v,
+        None => return Err(Error::InvalidState),
+    };
+
+    let written = packet::encrypt_pkt(
+        &mut b,
+        pn,
+        pn_len,
+        payload_len,
+        payload_offset,
+        None,
+        aead,
+    )?;
+
+    conn.next_pkt_num += 1;
+
     Ok(written)
 }
 

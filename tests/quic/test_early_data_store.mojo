@@ -418,8 +418,8 @@ def test_default_store_field_populated_when_zero_rtt_enabled() raises:
         max_early_data=UInt32(0xFFFFFFFF),
     )
     assert_true(
-        cfg._early_data_store is not None,
-        "max_early_data != 0 must populate _early_data_store",
+        not cfg._early_data.isa[NoneType](),
+        "max_early_data != 0 must populate the early-data store",
     )
     _ = cfg._handle  # extend lifetime
     print("  test_default_store_field_populated_when_zero_rtt_enabled: PASS")
@@ -440,8 +440,8 @@ def test_no_store_field_when_zero_rtt_disabled() raises:
         max_early_data=UInt32(0),
     )
     assert_true(
-        cfg._early_data_store is None,
-        "max_early_data == 0 must leave _early_data_store None",
+        cfg._early_data.isa[NoneType](),
+        "max_early_data == 0 must leave no early-data store",
     )
     _ = cfg._handle
     print("  test_no_store_field_when_zero_rtt_disabled: PASS")

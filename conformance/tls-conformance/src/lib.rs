@@ -96,7 +96,9 @@ pub fn assert_transport_param_error_with_tag(
 ///
 /// Includes the minimum set every navette server should accept on a client
 /// Initial:
-///   * `initial_source_connection_id` (0x0f) — RFC 9000 §7.3 mandatory
+///   * `initial_source_connection_id` (0x0f) — RFC 9000 Section 7.3 mandatory; it
+///     must equal the Initial packets' SCID, which every scenario sets to
+///     eight zero bytes
 ///   * `max_idle_timeout` (0x01) = 30000 ms
 ///   * `max_udp_payload_size` (0x03) = 1452
 ///   * `initial_max_data` (0x04) = 1 MiB
@@ -118,9 +120,10 @@ pub fn server_tp_bytes_well_formed() -> Vec<u8> {
     }
 
     let mut out: Vec<u8> = Vec::new();
-    // initial_source_connection_id (0x0f) = empty Vec for a fresh client conn.
+    // initial_source_connection_id (0x0f) = the scenarios' SCID, [0u8; 8].
     encode_varint(0x0f, &mut out);
-    encode_varint(0, &mut out);
+    encode_varint(8, &mut out);
+    out.extend_from_slice(&[0u8; 8]);
     // varint-valued params.
     append_varint_param(&mut out, 0x01, 30_000);
     append_varint_param(&mut out, 0x03, 1452);

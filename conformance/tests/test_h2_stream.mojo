@@ -79,7 +79,7 @@ def _server_conn_after_preface() raises -> H2Connection:
     return server^
 
 
-def _build_hpack_headers_frame(stream_id: Int, headers: List[Header], end_headers: Bool = True, end_stream: Bool = False) -> List[Byte]:
+def _build_hpack_headers_frame(stream_id: Int, headers: List[Header], end_headers: Bool = True, end_stream: Bool = False) raises -> List[Byte]:
     """Build a HEADERS frame with HPACK-encoded header block."""
     var encoder = HpackEncoder(HpackConfig(use_huffman=False))
     var block = encoder.encode(headers)
@@ -645,8 +645,13 @@ def test_inbound_rst_stream() raises:
             assert_equal(Int(events[i].stream_id), 1, "stream_id")
             assert_equal(Int(events[i].error_code), 8, "error_code=CANCEL")
     assert_true(found, "StreamReset event emitted")
-    var state = server.stream_state(UInt32(1))
-    assert_equal(state, STREAM_CLOSED, "stream closed")
+    # A closed stream is forgotten, so its state is no longer queryable.
+    var forgotten = False
+    try:
+        _ = server.stream_state(UInt32(1))
+    except:
+        forgotten = True
+    assert_true(forgotten, "reset stream forgotten")
     assert_equal(server.open_stream_count(), 0, "0 active after RST")
 
 
@@ -684,8 +689,13 @@ def test_send_rst_stream_closes_stream() raises:
     server.send_rst_stream(UInt32(1), UInt32(8))  # CANCEL
     var wire = server.data_to_send()
     assert_true(len(wire) > 0, "RST_STREAM frame queued")
-    var state = server.stream_state(UInt32(1))
-    assert_equal(state, STREAM_CLOSED, "stream closed")
+    # A closed stream is forgotten, so its state is no longer queryable.
+    var forgotten = False
+    try:
+        _ = server.stream_state(UInt32(1))
+    except:
+        forgotten = True
+    assert_true(forgotten, "reset stream forgotten")
     assert_equal(server.open_stream_count(), 0, "0 active after RST")
 
 
