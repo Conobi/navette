@@ -37,16 +37,12 @@ comptime TP_INITIAL_SCID: UInt64 = 0x0F
 comptime TP_RETRY_SCID: UInt64 = 0x10
 # RFC 9221 §3 — peer advertises its maximum-acceptable DATAGRAM frame
 # size. 0 (or absent) means the peer does NOT support QUIC DATAGRAMs and
-# the local side MUST NOT send any. The RFC permits any value up to 65535;
-# §5 caps the effective wire size further at the QUIC packet level.
+# the local side MUST NOT send any. Any varint is valid: 65535 is only the
+# recommended value to send, and the QUIC packet size caps frames anyway.
 comptime TP_MAX_DATAGRAM_FRAME_SIZE: UInt64 = 0x20
 # RFC 9221 §3 — explicit "disabled" sentinel for max_datagram_frame_size.
 # Surfaces in both the local-default and the "peer omitted the TP" path.
 comptime MAX_DATAGRAM_FRAME_SIZE_DISABLED: UInt64 = 0
-# RFC 9221 §3 — absolute hard cap; values above this MUST be rejected as
-# a TRANSPORT_PARAMETER_ERROR. The dispatch site (parse_transport_params)
-# enforces the cap before populating the TransportParams struct.
-comptime MAX_DATAGRAM_FRAME_SIZE_CAP: UInt64 = 65535
 
 
 # ── PreferredAddress ─────────────────────────────────────────────────
@@ -306,15 +302,9 @@ def parse_transport_params[origin: Origin](
             params.retry_scid = value_bytes^
 
         elif param_id == TP_MAX_DATAGRAM_FRAME_SIZE:
-            # RFC 9221 §3 — varint, MUST NOT exceed 65535. Surfaces a
-            # malformed value as TRANSPORT_PARAMETER_ERROR so the handshake
-            # path can route the close via close_transport. The dispatch
-            # site (QuicConnection.send_datagram) honours the post-parse
-            # value as the per-frame size cap.
-            var v = _decode_varint_from_bytes(value_bytes)
-            if v > MAX_DATAGRAM_FRAME_SIZE_CAP:
-                raise "max_datagram_frame_size must be <= 65535 (RFC 9221 §3)"
-            params.max_datagram_frame_size = v
+            # RFC 9221 Section 3: any varint; quiche advertises 65536.
+            # QuicConnection.send_datagram uses it as the per-frame cap.
+            params.max_datagram_frame_size = _decode_varint_from_bytes(value_bytes)
 
         else:
             # Unknown parameter — store for forward compatibility.

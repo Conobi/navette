@@ -17,7 +17,6 @@ from navette.quic.trans_param import (
     serialize_transport_params,
     TP_MAX_DATAGRAM_FRAME_SIZE,
     MAX_DATAGRAM_FRAME_SIZE_DISABLED,
-    MAX_DATAGRAM_FRAME_SIZE_CAP,
 )
 from navette.quic.codec import ByteWriter
 from navette.util.byte_vec import ByteVec
@@ -359,8 +358,8 @@ def test_max_datagram_frame_size_zero_omitted_on_serialize() raises:
     print("PASS test_max_datagram_frame_size_zero_omitted_on_serialize")
 
 
-def test_max_datagram_frame_size_overflow_rejected() raises:
-    """Values above 65535 (RFC 9221 §3 cap) must raise at parse time.
+def test_max_datagram_frame_size_above_65535_accepted() raises:
+    """RFC 9221 sets no upper bound: quiche-based clients advertise 65536.
 
     Wire form for value 65536 (= 2^16, requires 4-byte varint):
       ID 0x20, length 0x04, value 0x80 0x01 0x00 0x00.
@@ -372,23 +371,12 @@ def test_max_datagram_frame_size_overflow_rejected() raises:
     buf.append(0x01)  # 65536 high byte
     buf.append(0x00)
     buf.append(0x00)
-    var caught = False
-    try:
-        _ = parse_transport_params(Span(buf))
-    except e:
-        caught = True
-        var msg = String(e)
-        assert_true(
-            "max_datagram_frame_size" in msg,
-            "overflow raised wrong message: " + msg,
-        )
-    assert_true(caught, "max_datagram_frame_size > 65535 must raise")
-    # Also lock in the symbolic cap.
+    var parsed = parse_transport_params(Span(buf))
     assert_true(
-        MAX_DATAGRAM_FRAME_SIZE_CAP == UInt64(65535),
-        "MAX_DATAGRAM_FRAME_SIZE_CAP must equal 65535",
+        parsed.max_datagram_frame_size == UInt64(65536),
+        "max_datagram_frame_size=65536 parsed as-is",
     )
-    print("PASS test_max_datagram_frame_size_overflow_rejected")
+    print("PASS test_max_datagram_frame_size_above_65535_accepted")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -407,5 +395,5 @@ def main() raises:
     test_max_datagram_frame_size_default_disabled()
     test_max_datagram_frame_size_roundtrip()
     test_max_datagram_frame_size_zero_omitted_on_serialize()
-    test_max_datagram_frame_size_overflow_rejected()
+    test_max_datagram_frame_size_above_65535_accepted()
     print("All trans-param validator tests passed.")
