@@ -76,6 +76,7 @@ from navette.tls import (
     TlsBackend,
     TlsClientConfig,
     TlsConnection,
+    TlsEof,
 )
 from navette.h3.h3_udp_server import H3UdpServer
 from navette.runtime.socket_helpers import tcp_v4_nonblocking
@@ -674,31 +675,46 @@ def h3_handle_backend_recv(
     ptr[].send_state.backend_recv_in_flight = False
     var backend_fd = ptr[].backend_handle.raw()
 
-    if result <= 0:
+    # A reset (result < 0) is never end-of-stream: it must not complete a
+    # truncated close-delimited body.
+    if result < 0 or (result == 0 and ptr[].phase == _H3B_TLS_HANDSHAKE):
         if not ptr[].responded:
             h3_inject_502(h3, ptr[].quic_conn_id, ptr[].h3_sid)
         registry.free_backend(backend_conn_id)
         return out^
 
-    var n = Int(result)
-    var chunk = List[Byte](capacity=n)
-    for i in range(n):
-        chunk.append(ptr[].send_state.backend_recv_buf[i])
-    ptr[].backend_tls.receive_data(Span(chunk))
+    if result == 0:
+        # Orderly backend close: record it so pending plaintext drains below.
+        ptr[].backend_tls.receive_eof()
+    else:
+        var n = Int(result)
+        var chunk = List[Byte](capacity=n)
+        for i in range(n):
+            chunk.append(ptr[].send_state.backend_recv_buf[i])
+        ptr[].backend_tls.receive_data(Span(chunk))
 
-    if ptr[].backend_tls.wants_write():
-        var ct = ptr[].backend_tls.drain_ciphertext()
-        stage_backend_send(
-            ptr[].send_state, out, backend_fd, backend_conn_id, ct^
-        )
+        if ptr[].backend_tls.wants_write():
+            var ct = ptr[].backend_tls.drain_ciphertext()
+            stage_backend_send(
+                ptr[].send_state, out, backend_fd, backend_conn_id, ct^
+            )
 
-    if ptr[].backend_tls.is_handshaking():
-        queue_backend_recv(ptr[].send_state, out, backend_fd, backend_conn_id)
-        return out^
+        if ptr[].backend_tls.is_handshaking():
+            queue_backend_recv(
+                ptr[].send_state, out, backend_fd, backend_conn_id
+            )
+            return out^
 
     var plaintext = ptr[].backend_tls.drain_plaintext()
     if len(plaintext) > 0:
         ptr[].session.feed(Span(plaintext))
+    # FIN or close_notify: a close-delimited response completes, a
+    # truncated one errors on the next run_one.
+    var backend_eof = (
+        result == 0 or ptr[].backend_tls.eof_state() == TlsEof.CLEAN
+    )
+    if backend_eof:
+        ptr[].session.feed_eof()
 
     # First post-handshake pass: flush the request bytes the session queued
     # at submit() time.
@@ -718,17 +734,27 @@ def h3_handle_backend_recv(
         return out^
 
     # Step the in-flight handle against the parsed bytes.
-    if not ptr[].handle:
+    if not ptr[].handle and not backend_eof:
         queue_backend_recv(ptr[].send_state, out, backend_fd, backend_conn_id)
         return out^
 
     var handle_opt = Optional[RequestHandle]()
     swap(handle_opt, ptr[].handle)
+    if not handle_opt:
+        # Backend closed with no request in flight.
+        h3_inject_502(h3, ptr[].quic_conn_id, ptr[].h3_sid)
+        registry.free_backend(backend_conn_id)
+        return out^
     var handle = handle_opt.take()
     ptr[].session.run_one(handle)
-    if not handle.is_complete():
+    if not handle.is_complete() and not backend_eof:
         ptr[].handle = Optional[RequestHandle](handle^)
         queue_backend_recv(ptr[].send_state, out, backend_fd, backend_conn_id)
+        return out^
+    if handle.is_errored() or not handle.is_complete():
+        # Truncated or malformed backend response.
+        h3_inject_502(h3, ptr[].quic_conn_id, ptr[].h3_sid)
+        registry.free_backend(backend_conn_id)
         return out^
 
     # Got a complete response — strip hop-by-hop, add Via, inject into H3.

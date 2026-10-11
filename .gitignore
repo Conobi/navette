@@ -93,3 +93,6 @@ dist/
 
 # Editable-install symlink (source-shadows-precompiled workaround)
 navette/navette
+
+# Generated decoder fixtures (scripts/gen_compress_fixtures.sh)
+/tests/fixtures/compress/

@@ -8,6 +8,7 @@
 #   scripts/test.sh tests/quic/test_quic_connection.mojo     # specific files
 #   scripts/test.sh tests/quic/ tests/h3/test_h3_e2e.mojo    # mixed
 #   scripts/test.sh --mojox [mojox-args...]                   # full mojox test
+#   NAVETTE_TEST_OPT=-O3 scripts/test.sh <files>              # optimized build
 
 set -euo pipefail
 
@@ -15,7 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 VENV="$PROJECT_DIR/.venv"
 MOJO="$VENV/bin/mojo"
-SITE_MOJO="$VENV/lib/python3.14/site-packages/mojo_packages"
+# Glob the venv's Python version instead of hard-coding it; "$SITE_MOJO" is the first match.
+SITE_MOJO=("$VENV"/lib/python3*/site-packages/mojo_packages)
 
 # ── Fix the source-shadows-precompiled symlink ──────────────────────────
 
@@ -75,7 +77,7 @@ for f in "${FILES[@]}"; do
     t0=$(date +%s%N)
     if HOME="" PATH="$(dirname "$MOJO"):/usr/local/bin:/usr/bin:/bin" \
         MODULAR_DEBUG=stack-trace-on-error \
-        "$MOJO" run -O0 --debug-level line-tables \
+        "$MOJO" run "${NAVETTE_TEST_OPT:--O0}" --debug-level line-tables \
         -I "$SITE_MOJO" \
         -D ASSERT=all --num-threads 8 \
         -I "$PROJECT_DIR/conformance" \

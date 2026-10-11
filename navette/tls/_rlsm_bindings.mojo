@@ -36,9 +36,10 @@ comptime rlsm_client_config_new_insecure_fn = def() abi("C") thin -> Int32
 comptime rlsm_tls_client_new_fn = def(Int32, Pointer[UInt8, MutUntrackedOrigin], Int32) abi("C") thin -> Int32
 comptime rlsm_tls_server_new_fn = def(Int32) abi("C") thin -> Int32
 comptime rlsm_tls_conn_free_fn = def(Int32) abi("C") thin -> Int32
-comptime rlsm_tls_conn_read_tls_fn = def(Int32, Pointer[UInt8, MutUntrackedOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_read_tls_fn = def(Int32, Pointer[UInt8, MutUntrackedOrigin], Int32, Pointer[Int32, MutUntrackedOrigin]) abi("C") thin -> Int32
 comptime rlsm_tls_conn_write_tls_fn = def(Int32, Pointer[UInt8, MutUntrackedOrigin], Int32) abi("C") thin -> Int32
 comptime rlsm_tls_conn_read_plaintext_fn = def(Int32, Pointer[UInt8, MutUntrackedOrigin], Int32) abi("C") thin -> Int32
+comptime rlsm_tls_conn_read_eof_fn = def(Int32, Pointer[Int32, MutUntrackedOrigin]) abi("C") thin -> Int32
 comptime rlsm_tls_conn_write_plaintext_fn = def(Int32, Pointer[UInt8, MutUntrackedOrigin], Int32) abi("C") thin -> Int32
 comptime rlsm_tls_conn_is_handshaking_fn = def(Int32) abi("C") thin -> Int32
 comptime rlsm_tls_conn_alpn_fn = def(Int32, Pointer[UInt8, MutUntrackedOrigin], Int32) abi("C") thin -> Int32
@@ -299,14 +300,16 @@ def call_rlsm_tls_conn_read_tls(
     handle: Int32,
     ciphertext_ptr: Pointer[mut=True, T=UInt8, origin=_],
     ct_len: Int32,
+    stop_out: Pointer[mut=True, T=Int32, origin=_],
 ) raises -> Int32:
-    """Feed ciphertext into the TLS state machine.
+    """Feed ciphertext until consumed, drain needed or close_notify; stop reason in stop_out (0 complete, 1 needs drain, 3 peer closed).
 
     Args:
         lib: An open handle to librustls_mojo.so.
         handle: C `i32`.
         ciphertext_ptr: C `*const u8`.
         ct_len: C `i32`.
+        stop_out: C `*mut i32`.
 
     Returns:
         C `i32`.
@@ -314,7 +317,7 @@ def call_rlsm_tls_conn_read_tls(
     Raises:
         If `rlsm_tls_conn_read_tls` is not exported by the loaded library.
     """
-    return lib.get_function[Int32]("rlsm_tls_conn_read_tls")(handle, ciphertext_ptr, ct_len)
+    return lib.get_function[Int32]("rlsm_tls_conn_read_tls")(handle, ciphertext_ptr, ct_len, stop_out)
 
 
 @always_inline
@@ -363,6 +366,28 @@ def call_rlsm_tls_conn_read_plaintext(
         If `rlsm_tls_conn_read_plaintext` is not exported by the loaded library.
     """
     return lib.get_function[Int32]("rlsm_tls_conn_read_plaintext")(handle, out_buf, buf_len)
+
+
+@always_inline
+def call_rlsm_tls_conn_read_eof(
+    ref lib: OwnedDLHandle,
+    handle: Int32,
+    stop_out: Pointer[mut=True, T=Int32, origin=_],
+) raises -> Int32:
+    """Signal transport EOF to rustls after draining; stop_out is 3 if close_notify was received, else 0.
+
+    Args:
+        lib: An open handle to librustls_mojo.so.
+        handle: C `i32`.
+        stop_out: C `*mut i32`.
+
+    Returns:
+        C `i32`.
+
+    Raises:
+        If `rlsm_tls_conn_read_eof` is not exported by the loaded library.
+    """
+    return lib.get_function[Int32]("rlsm_tls_conn_read_eof")(handle, stop_out)
 
 
 @always_inline
@@ -1692,6 +1717,25 @@ def load_rlsm_tls_conn_read_plaintext(ref lib: OwnedDLHandle) raises -> rlsm_tls
     if not sym:
         raise Error("symbol not found: rlsm_tls_conn_read_plaintext")
     return Pointer(to=sym.unsafe_value()).unsafe_bitcast[rlsm_tls_conn_read_plaintext_fn]()[]
+
+
+@always_inline
+def load_rlsm_tls_conn_read_eof(ref lib: OwnedDLHandle) raises -> rlsm_tls_conn_read_eof_fn:
+    """Resolve `rlsm_tls_conn_read_eof` to a raw C ABI function pointer.
+
+    Args:
+        lib: An open handle to librustls_mojo.so.
+
+    Returns:
+        The `rlsm_tls_conn_read_eof` entry point, valid while `lib` stays open.
+
+    Raises:
+        If `rlsm_tls_conn_read_eof` is not exported by the loaded library.
+    """
+    var sym = lib.get_symbol[NoneType]("rlsm_tls_conn_read_eof")
+    if not sym:
+        raise Error("symbol not found: rlsm_tls_conn_read_eof")
+    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[rlsm_tls_conn_read_eof_fn]()[]
 
 
 @always_inline

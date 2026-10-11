@@ -125,7 +125,7 @@ fi
 # §2.4 — libcompress-mojo FFI symbol parity (C source vs Mojo bindings)
 # ---------------------------------------------------------------------------
 echo '§2.4 libcompress FFI symbol parity (C source vs Mojo bindings vs .so)'
-c_count=$(grep -hE '^[A-Za-z_][A-Za-z0-9_ ]*\<lcm_[a-z_0-9]+\s*\(' \
+c_count=$(grep -hE '^[A-Za-z_][A-Za-z0-9_ *]*\<lcm_[a-z_0-9]+\s*\(' \
     crates/libcompress-mojo/src/*.c 2>/dev/null | wc -l)
 lcm_mojo_count=$(grep -hoE '"lcm_[a-z_0-9]+"' \
     navette/compress/_lcm_bindings.mojo 2>/dev/null | sort -u | wc -l)

@@ -741,7 +741,17 @@ def h2_handle_backend_recv(
 
     send_state.backend_recv_in_flight = False
 
-    if result <= 0:
+    if result < 0:
+        closed = True
+        return out^
+    if result == 0:
+        # Orderly backend close: feed what is left, then end the session so
+        # open streams error instead of waiting on a dead connection.
+        backend_tls.receive_eof()
+        var tail = backend_tls.drain_plaintext()
+        if len(tail) > 0:
+            state.backend_session.feed(Span(tail))
+        state.backend_session.feed_eof()
         closed = True
         return out^
 

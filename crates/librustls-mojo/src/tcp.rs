@@ -92,6 +92,23 @@ fn conn_table() -> &'static HandleTable<TlsConn> {
 // I/O wrappers
 // ---------------------------------------------------------------------------
 
+/// rustls refuses `read_tls` once more than this much plaintext is unread.
+const PLAINTEXT_LIMIT: usize = 16 * 1024;
+const STOP_COMPLETE: i32 = 0;
+const STOP_NEEDS_DRAIN: i32 = 1;
+const STOP_PEER_CLOSED: i32 = 3;
+
+/// Stop reason after `process_new_packets`: a peer close outranks a full buffer.
+fn stop_reason(io: &rustls::IoState) -> Option<i32> {
+    if io.peer_has_closed() {
+        return Some(STOP_PEER_CLOSED);
+    }
+    if io.plaintext_bytes_to_read() > PLAINTEXT_LIMIT {
+        return Some(STOP_NEEDS_DRAIN);
+    }
+    None
+}
+
 struct SliceReader<'a> {
     data: &'a [u8],
     pos: usize,
@@ -329,21 +346,24 @@ pub extern "C" fn rlsm_tls_conn_free(handle: i32) -> i32 {
     }
 }
 
-/// Feed ciphertext received from the peer into rustls.
+/// Feed ciphertext until it is consumed, the plaintext buffer must be
+/// drained, or the peer sent close_notify.
 ///
-/// After calling this, the state machine is advanced via `process_new_packets`.
-///
-/// Returns the number of ciphertext bytes consumed, or -1 on error.
+/// Writes the stop reason to `stop_out` (0 complete, 1 needs drain,
+/// 3 peer closed) and returns the bytes consumed, or -1 on error. Checks
+/// the pending plaintext on entry, so a caller that fed again without
+/// draining gets `consumed = 0` and "needs drain" instead of an error.
 #[no_mangle]
 pub extern "C" fn rlsm_tls_conn_read_tls(
     handle: i32,
     ciphertext_ptr: *const u8,
     ct_len: i32,
+    stop_out: *mut i32,
 ) -> i32 {
     clear_last_error();
 
-    if ciphertext_ptr.is_null() {
-        rlsm_err!("rlsm_tls_conn_read_tls: null ciphertext pointer"; return -1);
+    if ciphertext_ptr.is_null() || stop_out.is_null() {
+        rlsm_err!("rlsm_tls_conn_read_tls: null pointer"; return -1);
     }
     if ct_len < 0 {
         rlsm_err!("rlsm_tls_conn_read_tls: negative ct_len"; return -1);
@@ -351,32 +371,34 @@ pub extern "C" fn rlsm_tls_conn_read_tls(
 
     let data = unsafe { std::slice::from_raw_parts(ciphertext_ptr, ct_len as usize) };
 
-    match conn_table().with_mut(handle, |conn: &mut TlsConn| -> Result<i32, String> {
-        // Loop read_tls + process_new_packets until either the input slice is
-        // fully consumed or rustls' deframer makes no progress (returns 0).
-        // This pulls the partial-consumption handling into the FFI so callers
-        // get atomic semantics: a single call processes all bytes possible.
+    match conn_table().with_mut(handle, |conn: &mut TlsConn| -> Result<(i32, i32), String> {
+        let io = conn
+            .process_new_packets()
+            .map_err(|e| format!("rlsm_tls_conn_read_tls: process_new_packets failed: {e}"))?;
+        if let Some(stop) = stop_reason(&io) {
+            return Ok((0, stop));
+        }
         let mut reader = SliceReader { data, pos: 0 };
-        loop {
+        while reader.pos < reader.data.len() {
             let consumed = conn
                 .read_tls(&mut reader)
                 .map_err(|e| format!("rlsm_tls_conn_read_tls: read_tls failed: {e}"))?;
-            // Always advance the state machine after buffering bytes so the
-            // deframer can release space for the next iteration.
-            conn.process_new_packets()
+            let io = conn
+                .process_new_packets()
                 .map_err(|e| format!("rlsm_tls_conn_read_tls: process_new_packets failed: {e}"))?;
-            if consumed == 0 {
-                // Either the SliceReader is exhausted or the deframer is full
-                // and could not make progress — bail out.
-                break;
+            if let Some(stop) = stop_reason(&io) {
+                return Ok((reader.pos as i32, stop));
             }
-            if reader.pos >= reader.data.len() {
+            if consumed == 0 {
                 break;
             }
         }
-        Ok(reader.pos as i32)
+        Ok((reader.pos as i32, STOP_COMPLETE))
     }) {
-        Some(Ok(n)) => n,
+        Some(Ok((n, stop))) => {
+            unsafe { *stop_out = stop; }
+            n
+        }
         Some(Err(msg)) => {
             set_last_error(msg);
             -1
@@ -429,7 +451,7 @@ pub extern "C" fn rlsm_tls_conn_write_tls(
 /// Read decrypted application data from the connection.
 ///
 /// Returns the number of bytes written into `out_buf`, 0 if no data is
-/// currently available, or -1 on error.
+/// available (including after a clean or unclean end of stream), or -1 on error.
 #[no_mangle]
 pub extern "C" fn rlsm_tls_conn_read_plaintext(
     handle: i32,
@@ -451,6 +473,7 @@ pub extern "C" fn rlsm_tls_conn_read_plaintext(
         match conn.read_plaintext(buf) {
             Ok(n) => Ok(n as i32),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(0),
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
             Err(e) => Err(format!("rlsm_tls_conn_read_plaintext: reader failed: {e}")),
         }
     }) {
@@ -461,6 +484,40 @@ pub extern "C" fn rlsm_tls_conn_read_plaintext(
         }
         None => {
             rlsm_err!("rlsm_tls_conn_read_plaintext: invalid connection handle"; return -1);
+        }
+    }
+}
+
+/// Tell rustls the transport reached EOF. Drain plaintext first: rustls
+/// refuses EOF while its plaintext buffer is full.
+///
+/// Writes 3 to `stop_out` if close_notify had been received, else 0.
+/// Returns 0, or -1 on error.
+#[no_mangle]
+pub extern "C" fn rlsm_tls_conn_read_eof(handle: i32, stop_out: *mut i32) -> i32 {
+    clear_last_error();
+    if stop_out.is_null() {
+        rlsm_err!("rlsm_tls_conn_read_eof: null stop_out"; return -1);
+    }
+    match conn_table().with_mut(handle, |conn: &mut TlsConn| -> Result<i32, String> {
+        let mut empty = SliceReader { data: &[], pos: 0 };
+        conn.read_tls(&mut empty)
+            .map_err(|e| format!("rlsm_tls_conn_read_eof: read_tls failed: {e}"))?;
+        let io = conn
+            .process_new_packets()
+            .map_err(|e| format!("rlsm_tls_conn_read_eof: process_new_packets failed: {e}"))?;
+        Ok(if io.peer_has_closed() { STOP_PEER_CLOSED } else { STOP_COMPLETE })
+    }) {
+        Some(Ok(stop)) => {
+            unsafe { *stop_out = stop; }
+            0
+        }
+        Some(Err(msg)) => {
+            set_last_error(msg);
+            -1
+        }
+        None => {
+            rlsm_err!("rlsm_tls_conn_read_eof: invalid connection handle"; return -1);
         }
     }
 }
@@ -486,9 +543,9 @@ pub extern "C" fn rlsm_tls_conn_write_plaintext(
     let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) };
 
     match conn_table().with_mut(handle, |conn: &mut TlsConn| -> Result<i32, String> {
-        // Loop write_plaintext until all bytes are consumed or the writer
-        // refuses further input (returns 0). This gives callers atomic
-        // "all or fail" semantics for plaintext writes.
+        // Loop write_plaintext until all bytes are consumed or rustls's send
+        // buffer is full (returns 0). The count may be short; callers resend
+        // the rest after draining ciphertext.
         let mut total: usize = 0;
         while total < data.len() {
             let n = conn

@@ -47,6 +47,18 @@ struct ClientConnection(Movable):
     def next_response(mut self, var request_method: Method) -> Optional[Response]:
         return self._inner.next_response(request_method^)
 
+    def receive_eof(mut self):
+        self._inner.receive_eof()
+
+    def peer_closed(self) -> Bool:
+        return self._inner.peer_closed()
+
+    def has_error(self) -> Bool:
+        return self._inner.has_error()
+
+    def error_message(self) -> String:
+        return self._inner.error_message()
+
     # --- State queries ---
 
     def should_close(self) -> Bool:

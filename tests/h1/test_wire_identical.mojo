@@ -141,7 +141,9 @@ def _expected_wire(
     _gheaders(out, headers)
     if use_chunked:
         _gframing(out, String("transfer-encoding"), String("chunked"))
-    elif body_len > 0 and not headers.has("content-length"):
+    elif not headers.has("content-length") and (
+        body_len > 0 or not headers.has("transfer-encoding")
+    ):
         _gframing(out, String("content-length"), String(body_len))
     _gcrlf(out)
     if use_chunked:

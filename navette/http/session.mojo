@@ -48,6 +48,10 @@ struct RequestHandle(Movable):
     def is_errored(self) -> Bool:
         return self._state == _HANDLE_ERRORED
 
+    def error(self) -> Optional[StreamError]:
+        """Why the request failed; empty unless `is_errored()`."""
+        return self._error.copy()
+
     def try_take_response(mut self) -> Optional[Response]:
         if not Bool(self._response):
             return Optional[Response]()

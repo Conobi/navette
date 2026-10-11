@@ -29,8 +29,7 @@ from navette.h1.parser import (
     try_parse_request,
     try_parse_response,
     ParseResult,
-    _iequals,
-    _icontains,
+    _connection_tokens,
 )
 from navette.h1.serializer import (
     serialize_request_into,
@@ -97,11 +96,11 @@ struct H1Connection(Movable):
     var _last_scanned: Int
     var _inbound_cursor: Int
     var _messages_parsed: Int
-    var _version_seen: Bool
-    var _is_http10: Bool
     # Server-side: the method of the most recently parsed request that has
     # not yet been responded to. Drives HEAD body suppression at send time.
     var _pending_method: Optional[Method]
+    var _peer_closed: Bool
+    var _error_message: String
 
     # --- Construction ---
 
@@ -115,9 +114,9 @@ struct H1Connection(Movable):
         self._last_scanned = 0
         self._inbound_cursor = 0
         self._messages_parsed = 0
-        self._version_seen = False
-        self._is_http10 = False
         self._pending_method = Optional[Method]()
+        self._peer_closed = False
+        self._error_message = String("")
 
     def __init__(out self, *, deinit move: Self):
         """Move constructor."""
@@ -129,9 +128,9 @@ struct H1Connection(Movable):
         self._last_scanned = move._last_scanned
         self._inbound_cursor = move._inbound_cursor
         self._messages_parsed = move._messages_parsed
-        self._version_seen = move._version_seen
-        self._is_http10 = move._is_http10
         self._pending_method = move._pending_method^
+        self._peer_closed = move._peer_closed
+        self._error_message = move._error_message^
 
     # --- Inbound API ---
 
@@ -141,8 +140,10 @@ struct H1Connection(Movable):
         Raises if the unconsumed inbound buffer would exceed the configured
         cap (``max_body_size + max_headers_total``). This bounds the worst
         case memory a peer can force us to buffer when bytes never form a
-        complete message.
+        complete message. Raises after ``receive_eof``.
         """
+        if self._peer_closed:
+            raise "receive_data: data after EOF"
         var cap = self._config.max_body_size + self._config.max_headers_total
         var pending = len(self._inbound_buf) - self._inbound_cursor
         if pending + len(data) > cap:
@@ -167,6 +168,7 @@ struct H1Connection(Movable):
         )
 
         if result.error.byte_length() > 0:
+            self._error_message = result.error
             self._phase = PHASE_ERROR
             return Optional[Request]()
 
@@ -181,15 +183,7 @@ struct H1Connection(Movable):
 
         var req = result.request.take()
 
-        # Version tracking — first message wins.
-        if not self._version_seen:
-            self._version_seen = True
-            if req.version.is_http_1_0():
-                self._is_http10 = True
-                self._keep_alive = False
-
-        # Connection header may flip keep-alive in either direction.
-        self._update_keep_alive(req.headers)
+        self._update_keep_alive(req.headers, req.version.is_http_1_0())
 
         # Track the in-flight method so the matching response can suppress
         # the body when the request was HEAD.
@@ -222,9 +216,11 @@ struct H1Connection(Movable):
             self._last_scanned,
             method_for_parser^,
             self._config,
+            peer_closed=self._peer_closed,
         )
 
         if result.error:
+            self._error_message = result.error
             self._phase = PHASE_ERROR
             return Optional[Response]()
 
@@ -256,14 +252,7 @@ struct H1Connection(Movable):
             self._messages_parsed += 1
             return Optional[Response](resp^)
 
-        # Version tracking on first message.
-        if not self._version_seen:
-            self._version_seen = True
-            if resp.version.is_http_1_0():
-                self._is_http10 = True
-                self._keep_alive = False
-
-        self._update_keep_alive(resp.headers)
+        self._update_keep_alive(resp.headers, resp.version.is_http_1_0())
 
         if not self._keep_alive:
             self._phase = PHASE_MUST_CLOSE
@@ -291,7 +280,12 @@ struct H1Connection(Movable):
         var status_int = Int(response.status.code())
 
         var pre_len = len(self._outbound_buf)
-        serialize_response_into(self._outbound_buf, response^)
+        serialize_response_into(
+            self._outbound_buf,
+            response^,
+            skip_zero_length=head_in_flight
+            or (connect_in_flight and status_int >= 200 and status_int <= 299),
+        )
 
         if head_in_flight:
             self._truncate_outbound_to_headers(pre_len)
@@ -368,6 +362,30 @@ struct H1Connection(Movable):
         """True if the outbound buffer has bytes pending."""
         return len(self._outbound_buf) > 0
 
+    # --- End of stream ---
+
+    def receive_eof(mut self):
+        """Record the transport's end-of-stream (idempotent).
+
+        Lets a close-delimited response complete and turns a truncated one
+        into a parse error. Feed every received byte first: `receive_data`
+        afterwards raises "data after EOF". On a server it only records the
+        flag (requests are never close-delimited).
+        """
+        self._peer_closed = True
+
+    def peer_closed(self) -> Bool:
+        """True once `receive_eof` was called."""
+        return self._peer_closed
+
+    def has_error(self) -> Bool:
+        """True once a malformed message moved the connection to the error phase."""
+        return self._phase == PHASE_ERROR
+
+    def error_message(self) -> String:
+        """The parse error that moved the connection to the error phase, or empty."""
+        return self._error_message
+
     # --- Internal helpers ---
 
     def _compact_inbound(mut self):
@@ -391,19 +409,11 @@ struct H1Connection(Movable):
         _compact_forward(self._inbound_buf, self._inbound_cursor)
         self._inbound_cursor = 0
 
-    def _update_keep_alive(mut self, headers: Headers):
-        """Apply the Connection header to the keep-alive flag."""
-        var n = len(headers)
-        for i in range(n):
-            var name = headers.name_at(i)
-            if _iequals(name, "connection"):
-                var value = headers.value_at(i)
-                if _icontains(value, "close"):
-                    self._keep_alive = False
-                    return
-                if _icontains(value, "keep-alive"):
-                    self._keep_alive = True
-                    return
+    def _update_keep_alive(mut self, headers: Headers, http10: Bool):
+        """Decide persistence from this message alone (RFC 9112 Section 9.3):
+        close in any Connection field ends it; HTTP/1.0 needs keep-alive."""
+        var tokens = _connection_tokens(headers)
+        self._keep_alive = not tokens[0] and (tokens[1] or not http10)
 
     def _truncate_outbound_to_headers(mut self, region_start: Int):
         """Truncate the outbound buffer at the first CRLF CRLF after region_start.

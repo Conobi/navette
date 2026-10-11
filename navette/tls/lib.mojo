@@ -51,6 +51,7 @@ from navette.tls._rlsm_bindings import (
     call_rlsm_tls_client_new,
     call_rlsm_tls_conn_alpn,
     call_rlsm_tls_conn_free,
+    call_rlsm_tls_conn_read_eof,
     call_rlsm_tls_server_new,
     # Loaders + C ABI types for cached hot-path function pointers.
     # Resolved once into `_HotFns` at library load to avoid a `dlsym`
@@ -342,15 +343,21 @@ struct RustlsLibrary(Movable):
         handle: Int32,
         ciphertext: Pointer[mut=True, T=UInt8, origin=_],
         ct_len: Int32,
+        stop_out: Pointer[mut=True, T=Int32, origin=_],
     ) raises -> Int32:
-        """Feed received ciphertext into the rustls state machine.
-
-        Advances the state machine via process_new_packets() on the Rust side.
-        Returns the number of bytes consumed, or -1 on error.
-        """
+        """Feed ciphertext; returns bytes consumed or -1, stop reason in `stop_out`."""
         return self._hot.tls_conn_read_tls(
             handle,
             ciphertext.unsafe_origin_cast[MutUntrackedOrigin](), ct_len,
+            stop_out.unsafe_origin_cast[MutUntrackedOrigin](),
+        )
+
+    def tls_conn_read_eof(
+        self, handle: Int32, stop_out: Pointer[mut=True, T=Int32, origin=_],
+    ) raises -> Int32:
+        """Signal transport EOF; returns 0 or -1, stop reason in `stop_out`."""
+        return call_rlsm_tls_conn_read_eof(
+            self._handle, handle, stop_out.unsafe_origin_cast[MutUntrackedOrigin](),
         )
 
     @always_inline

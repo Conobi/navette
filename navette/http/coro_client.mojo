@@ -39,13 +39,9 @@ struct HttpCoroClient(Movable):
     def __init__(
         out self,
         *,
-        max_conns_h1: Int = 6,
-        max_conns_mux: Int = 1,
         idle_timeout_ms: UInt64 = UInt64(90_000),
     ):
         self._client = HttpClient.with_config(
-            max_conns_h1=max_conns_h1,
-            max_conns_mux=max_conns_mux,
             idle_timeout_ms=idle_timeout_ms,
         )
         self._alt_svc = AltSvcCache()
@@ -66,7 +62,8 @@ struct HttpCoroClient(Movable):
         evaporate when the next `attach_session` overwrites it.
 
         Raises if no session is pooled for `origin`. The heap allocation
-        backing the slot is freed; the returned value is move-only.
+        backing the slot is freed; the returned value is move-only. Handles
+        still routed to it error with `connection_closed` when polled.
         """
         if origin not in self._client._pool:
             raise Error("HttpCoroClient.detach_session: no session for origin")
@@ -81,18 +78,10 @@ struct HttpCoroClient(Movable):
             keep.append(SessionSlotPtr(copy=slots[i]))
         if len(keep) > 0:
             self._client._pool[Origin(copy=origin)] = keep^
+        self._client._drop_routes(Int(ptr.addr))
         var slot_p = ptr.ptr()
         var moved = slot_p.unsafe_take_pointee()
         slot_p.unsafe_free()
-        # Drop any handle-routing entries that pointed at the freed slot
-        # so a future attach_session reusing the address cannot misroute.
-        var stale_addr = Int(ptr.addr)
-        var hids = List[Int]()
-        for kv in self._client._handle_slot.items():
-            if kv.value == stale_addr:
-                hids.append(kv.key)
-        for ref hid in hids:
-            _ = self._client._handle_slot.pop(hid)
         return moved^
 
     # --- Transport API (caller drives I/O) ---
@@ -103,6 +92,13 @@ struct HttpCoroClient(Movable):
             ref slots = self._client._pool[origin]
             if len(slots) > 0:
                 slots[0].ptr()[].feed(data)
+
+    def feed_eof(mut self, origin: Origin) raises:
+        """Forward the transport's end-of-stream for `origin` (drain plaintext first)."""
+        if origin in self._client._pool:
+            ref slots = self._client._pool[origin]
+            if len(slots) > 0:
+                slots[0].ptr()[].feed_eof()
 
     def drain(mut self, origin: Origin) raises -> List[Byte]:
         """Drain outbound bytes to send to network. Delegates to drain_into."""

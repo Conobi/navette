@@ -175,6 +175,19 @@ def _iequals(a: String, b: String) -> Bool:
     return True
 
 
+def _connection_tokens(headers: Headers) -> Tuple[Bool, Bool]:
+    """(close, keep-alive): whether any Connection field lists that token,
+    ASCII case-insensitively."""
+    var close = False
+    var keep_alive = False
+    for value in headers.get_all("connection"):
+        for token in value.split(","):
+            var t = String(String(token).strip(" \t"))
+            close = close or _iequals(t, "close")
+            keep_alive = keep_alive or _iequals(t, "keep-alive")
+    return (close, keep_alive)
+
+
 def _icontains(haystack: String, needle: String) -> Bool:
     """Return True if ``needle`` occurs in ``haystack`` (ASCII case-insensitive)."""
     var h = haystack.as_bytes()
@@ -579,6 +592,14 @@ def _scan_back_pos(buf_len: Int, cursor: Int) -> Int:
     return cursor
 
 
+def _only_crlf(buf: List[Byte], start: Int) -> Bool:
+    """True if ``buf[start:]`` holds only CR/LF (RFC 9112 Section 2.2 leading empty lines)."""
+    for i in range(start, len(buf)):
+        if buf[i] != 13 and buf[i] != 10:
+            return False
+    return True
+
+
 # --- Public ParseResult ---
 
 
@@ -918,12 +939,15 @@ def try_parse_response(
     last_scanned: Int,
     request_method: Method,
     config: ParseConfig,
+    peer_closed: Bool = False,
 ) -> ParseResult:
     """Try to parse a complete response from ``buf[cursor:]``.
 
     Implements the 9-step body length determination algorithm from RFC 9112
     Section 6. ``request_method`` is the method of the matching in-flight
     request and is required for HEAD / CONNECT framing decisions.
+    ``peer_closed`` means ``buf`` holds the whole stream: a close-delimited
+    body completes only then, and a truncated message becomes an error.
     """
     var result = ParseResult()
     var buf_len = len(buf)
@@ -931,6 +955,8 @@ def try_parse_response(
     if cursor >= buf_len:
         result.new_last_scanned = last_scanned
         return result^
+    if peer_closed and _only_crlf(buf, cursor):
+        return result^  # Only leading empty lines: nothing received.
 
     # Locate end of header block (incremental scan).
     var header_end: Int
@@ -944,6 +970,8 @@ def try_parse_response(
         result.new_last_scanned = _scan_back_pos(buf_len, cursor)
         if buf_len - cursor > config.max_headers_total:
             result.error = String("header block exceeds maximum size")
+        elif peer_closed:
+            result.error = String("response truncated in headers")
         return result^
 
     # --- Status line ---
@@ -1147,6 +1175,9 @@ def try_parse_response(
             var chunk_err = chunk_result[3]
             if chunk_err:
                 if _is_incomplete_chunk_error(chunk_err):
+                    if peer_closed:
+                        result.error = String("chunked body truncated")
+                        return result^
                     result.new_last_scanned = header_end
                     return result^
                 result.error = chunk_err^
@@ -1182,9 +1213,12 @@ def try_parse_response(
             if not config.strictness.allow_non_chunked_te:
                 result.error = String("Transfer-Encoding without chunked as final encoding")
                 return result^
-            # Rule 4 (response side): non-chunked TE -- treat as close-delimited.
-            # In M2's fully-buffered model the caller hands us the entire wire,
-            # so we consume everything that remains.
+            # Rule 4 (response side): non-chunked TE -- close-delimited.
+            # Complete only once the peer closed; return before copying so
+            # small feeds stay linear.
+            if not peer_closed:
+                result.new_last_scanned = header_end
+                return result^
             var body_close = List[BodyFrame]()
             var body_bytes = List[Byte]()
             var ri = body_start
@@ -1229,6 +1263,11 @@ def try_parse_response(
 
         var remaining = buf_len - body_start
         if remaining < cl_int:
+            if peer_closed:
+                result.error = (
+                    "body truncated: expected " + String(cl_int) + ", got " + String(remaining)
+                )
+                return result^
             result.new_last_scanned = header_end
             return result^
 
@@ -1254,6 +1293,11 @@ def try_parse_response(
         return result^
 
     # Rule 9: response with neither TE nor CL -- close-delimited.
+    # Complete only once the peer closed; return before copying so small
+    # feeds stay linear.
+    if not peer_closed:
+        result.new_last_scanned = header_end
+        return result^
     var body_def = List[BodyFrame]()
     var body_bytes_def = List[Byte]()
     var ri = body_start

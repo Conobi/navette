@@ -494,6 +494,35 @@ def test_connect_upgrade() raises:
     print("PASS: test_connect_upgrade")
 
 
+def test_empty_body_content_length_by_method() raises:
+    """An empty 200 gets content-length: 0, except when answering HEAD or CONNECT."""
+    var reqs: List[String] = [
+        "GET / HTTP/1.1\r\nHost: a\r\n\r\n",
+        "HEAD / HTTP/1.1\r\nHost: a\r\n\r\n",
+        "CONNECT a:443 HTTP/1.1\r\nHost: a:443\r\n\r\n",
+    ]
+    var expect_cl: List[Bool] = [True, False, False]
+    for i in range(len(reqs)):
+        var conn = H1Connection(ParseConfig())
+        var w = _str_to_bytes(reqs[i])
+        conn.receive_data(Span(w))
+        assert_true(conn.next_request().__bool__(), "request " + String(i))
+        var resp = Response(
+            status=StatusCode(200),
+            reason=String("OK"),
+            version=Version.http_1_1(),
+            headers=Headers(),
+            body=List[BodyFrame](),
+        )
+        conn.send_response(resp^)
+        var out_str = _bytes_to_string(conn.drain())
+        assert_true(
+            _str_contains(out_str, "content-length") == expect_cl[i],
+            "content-length presence for request " + String(i) + ": " + out_str,
+        )
+    print("PASS: test_empty_body_content_length_by_method")
+
+
 def test_101_switching_protocols() raises:
     """A client receiving 101 transitions into the UPGRADED phase."""
     var conn = H1Connection(ParseConfig())
@@ -641,6 +670,7 @@ def main() raises:
     test_chunked_body()
     test_response_parsing()
     test_head_response_no_body()
+    test_empty_body_content_length_by_method()
     test_1xx_informational()
     test_send_informational()
     test_send_request()

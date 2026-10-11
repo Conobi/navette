@@ -112,6 +112,13 @@ struct SessionSlot(Movable):
         else:
             self.h3.value().feed_datagram(data, UInt64(0))
 
+    def feed_eof(mut self) raises:
+        """Forward the transport's end-of-stream; H3 has its own close signalling."""
+        if self.kind == SLOT_H1:
+            self.h1.value().feed_eof()
+        elif self.kind == SLOT_H2:
+            self.h2.value().feed_eof()
+
     def drain(mut self) raises -> List[Byte]:
         """Drain outbound bytes for the active session. Delegates to drain_into."""
         var out = List[Byte]()
@@ -188,6 +195,15 @@ struct SessionSlot(Movable):
         if self.kind == SLOT_H2:
             return Capabilities.for_h2()
         return Capabilities.for_h3()
+
+    def is_closed(self) -> Bool:
+        """True once the session takes no new requests; see `H1Session.is_closed`
+        and `H2Session.is_closed`. Never for H3 (QUIC close is not tracked)."""
+        if self.kind == SLOT_H1:
+            return self.h1.value().is_closed()
+        elif self.kind == SLOT_H2:
+            return self.h2.value().is_closed()
+        return False
 
     def is_idle(self) -> Bool:
         return self.idle_since != UInt64(0)

@@ -28,12 +28,14 @@ from std.memory import Pointer
 
 comptime lcm_last_error_fn = def(Pointer[UInt8, MutUntrackedOrigin], Int32) abi("C") thin -> Int32
 comptime lcm_gzip_init_fn = def(UInt64, UInt64, UInt32) abi("C") thin -> Pointer[NoneType, MutUntrackedOrigin]
-comptime lcm_gzip_feed_fn = def(Pointer[NoneType, MutUntrackedOrigin], Pointer[UInt8, MutUntrackedOrigin], Int, Pointer[UInt8, MutUntrackedOrigin], Int) abi("C") thin -> Int64
-comptime lcm_gzip_finish_fn = def(Pointer[NoneType, MutUntrackedOrigin], Pointer[UInt8, MutUntrackedOrigin], Int) abi("C") thin -> Int64
+comptime lcm_gzip_step_fn = def(Pointer[NoneType, MutUntrackedOrigin], Pointer[UInt8, MutUntrackedOrigin], Int, Pointer[UInt, MutUntrackedOrigin], Pointer[UInt8, MutUntrackedOrigin], Int, Pointer[UInt, MutUntrackedOrigin]) abi("C") thin -> Int32
+comptime lcm_gzip_finish_step_fn = def(Pointer[NoneType, MutUntrackedOrigin], Pointer[UInt8, MutUntrackedOrigin], Int, Pointer[UInt, MutUntrackedOrigin]) abi("C") thin -> Int32
+comptime lcm_gzip_trailing_seen_fn = def(Pointer[NoneType, MutUntrackedOrigin]) abi("C") thin -> Int32
 comptime lcm_gzip_free_fn = def(Pointer[NoneType, MutUntrackedOrigin]) abi("C") thin -> NoneType
 comptime lcm_br_init_fn = def(UInt64, UInt64, UInt32) abi("C") thin -> Pointer[NoneType, MutUntrackedOrigin]
-comptime lcm_br_feed_fn = def(Pointer[NoneType, MutUntrackedOrigin], Pointer[UInt8, MutUntrackedOrigin], Int, Pointer[UInt8, MutUntrackedOrigin], Int) abi("C") thin -> Int64
-comptime lcm_br_finish_fn = def(Pointer[NoneType, MutUntrackedOrigin], Pointer[UInt8, MutUntrackedOrigin], Int) abi("C") thin -> Int64
+comptime lcm_br_step_fn = def(Pointer[NoneType, MutUntrackedOrigin], Pointer[UInt8, MutUntrackedOrigin], Int, Pointer[UInt, MutUntrackedOrigin], Pointer[UInt8, MutUntrackedOrigin], Int, Pointer[UInt, MutUntrackedOrigin]) abi("C") thin -> Int32
+comptime lcm_br_finish_step_fn = def(Pointer[NoneType, MutUntrackedOrigin], Pointer[UInt8, MutUntrackedOrigin], Int, Pointer[UInt, MutUntrackedOrigin]) abi("C") thin -> Int32
+comptime lcm_br_trailing_seen_fn = def(Pointer[NoneType, MutUntrackedOrigin]) abi("C") thin -> Int32
 comptime lcm_br_free_fn = def(Pointer[NoneType, MutUntrackedOrigin]) abi("C") thin -> NoneType
 
 # -- Typed call wrappers ---------------------------------------------------
@@ -85,55 +87,81 @@ def call_lcm_gzip_init(
 
 
 @always_inline
-def call_lcm_gzip_feed(
+def call_lcm_gzip_step(
     ref lib: OwnedDLHandle,
     state: Pointer[mut=True, T=NoneType, origin=_],
     in_ptr: Pointer[mut=True, T=UInt8, origin=_],
     in_len: Int,
+    in_consumed: Pointer[mut=True, T=UInt, origin=_],
     out_ptr: Pointer[mut=True, T=UInt8, origin=_],
     out_cap: Int,
-) raises -> Int64:
-    """Feed compressed bytes; write up to out_cap decompressed bytes. Returns bytes written (>=0) or -1 (error) / -2 (input cap) / -3 (output cap) / -4 (ratio cap).
+    out_written: Pointer[mut=True, T=UInt, origin=_],
+) raises -> Int32:
+    """Decode up to out_cap bytes; writes bytes consumed/produced. Returns 0 need input, 1 need output, 2 done (provisional), or -1 decode / -2 input cap / -3 output cap / -4 ratio / -6 after finish / -7 failed.
 
     Args:
         lib: An open handle to libcompress_mojo.so.
         state: C `*mut GzipState`.
         in_ptr: C `*const u8`.
         in_len: C `usize`.
+        in_consumed: C `*mut usize`.
         out_ptr: C `*mut u8`.
         out_cap: C `usize`.
+        out_written: C `*mut usize`.
 
     Returns:
-        C `i64`.
+        C `i32`.
 
     Raises:
-        If `lcm_gzip_feed` is not exported by the loaded library.
+        If `lcm_gzip_step` is not exported by the loaded library.
     """
-    return lib.get_function[Int64]("lcm_gzip_feed")(state, in_ptr, in_len, out_ptr, out_cap)
+    return lib.get_function[Int32]("lcm_gzip_step")(state, in_ptr, in_len, in_consumed, out_ptr, out_cap, out_written)
 
 
 @always_inline
-def call_lcm_gzip_finish(
+def call_lcm_gzip_finish_step(
     ref lib: OwnedDLHandle,
     state: Pointer[mut=True, T=NoneType, origin=_],
     out_ptr: Pointer[mut=True, T=UInt8, origin=_],
     out_cap: Int,
-) raises -> Int64:
-    """Drain remaining decompressed bytes. Repeatable until it returns 0.
+    out_written: Pointer[mut=True, T=UInt, origin=_],
+) raises -> Int32:
+    """Drain pending output with no more input. Returns 2 done, 1 need output, or -5 truncated / other negative errors.
 
     Args:
         lib: An open handle to libcompress_mojo.so.
         state: C `*mut GzipState`.
         out_ptr: C `*mut u8`.
         out_cap: C `usize`.
+        out_written: C `*mut usize`.
 
     Returns:
-        C `i64`.
+        C `i32`.
 
     Raises:
-        If `lcm_gzip_finish` is not exported by the loaded library.
+        If `lcm_gzip_finish_step` is not exported by the loaded library.
     """
-    return lib.get_function[Int64]("lcm_gzip_finish")(state, out_ptr, out_cap)
+    return lib.get_function[Int32]("lcm_gzip_finish_step")(state, out_ptr, out_cap, out_written)
+
+
+@always_inline
+def call_lcm_gzip_trailing_seen(
+    ref lib: OwnedDLHandle,
+    state: Pointer[mut=True, T=NoneType, origin=_],
+) raises -> Int32:
+    """1 if bytes after a complete stream were discarded, else 0.
+
+    Args:
+        lib: An open handle to libcompress_mojo.so.
+        state: C `*const GzipState`.
+
+    Returns:
+        C `i32`.
+
+    Raises:
+        If `lcm_gzip_trailing_seen` is not exported by the loaded library.
+    """
+    return lib.get_function[Int32]("lcm_gzip_trailing_seen")(state)
 
 
 @always_inline
@@ -178,55 +206,81 @@ def call_lcm_br_init(
 
 
 @always_inline
-def call_lcm_br_feed(
+def call_lcm_br_step(
     ref lib: OwnedDLHandle,
     state: Pointer[mut=True, T=NoneType, origin=_],
     in_ptr: Pointer[mut=True, T=UInt8, origin=_],
     in_len: Int,
+    in_consumed: Pointer[mut=True, T=UInt, origin=_],
     out_ptr: Pointer[mut=True, T=UInt8, origin=_],
     out_cap: Int,
-) raises -> Int64:
-    """Feed compressed bytes; write up to out_cap decompressed bytes. Same return contract as lcm_gzip_feed.
+    out_written: Pointer[mut=True, T=UInt, origin=_],
+) raises -> Int32:
+    """Decode up to out_cap bytes; writes bytes consumed/produced. Returns 0 need input, 1 need output, 2 done (provisional), or -1 decode / -2 input cap / -3 output cap / -4 ratio / -6 after finish / -7 failed.
 
     Args:
         lib: An open handle to libcompress_mojo.so.
         state: C `*mut BrotliState`.
         in_ptr: C `*const u8`.
         in_len: C `usize`.
+        in_consumed: C `*mut usize`.
         out_ptr: C `*mut u8`.
         out_cap: C `usize`.
+        out_written: C `*mut usize`.
 
     Returns:
-        C `i64`.
+        C `i32`.
 
     Raises:
-        If `lcm_br_feed` is not exported by the loaded library.
+        If `lcm_br_step` is not exported by the loaded library.
     """
-    return lib.get_function[Int64]("lcm_br_feed")(state, in_ptr, in_len, out_ptr, out_cap)
+    return lib.get_function[Int32]("lcm_br_step")(state, in_ptr, in_len, in_consumed, out_ptr, out_cap, out_written)
 
 
 @always_inline
-def call_lcm_br_finish(
+def call_lcm_br_finish_step(
     ref lib: OwnedDLHandle,
     state: Pointer[mut=True, T=NoneType, origin=_],
     out_ptr: Pointer[mut=True, T=UInt8, origin=_],
     out_cap: Int,
-) raises -> Int64:
-    """Drain remaining decompressed bytes. Repeatable until it returns 0.
+    out_written: Pointer[mut=True, T=UInt, origin=_],
+) raises -> Int32:
+    """Drain pending output with no more input. Returns 2 done, 1 need output, or -5 truncated / other negative errors.
 
     Args:
         lib: An open handle to libcompress_mojo.so.
         state: C `*mut BrotliState`.
         out_ptr: C `*mut u8`.
         out_cap: C `usize`.
+        out_written: C `*mut usize`.
 
     Returns:
-        C `i64`.
+        C `i32`.
 
     Raises:
-        If `lcm_br_finish` is not exported by the loaded library.
+        If `lcm_br_finish_step` is not exported by the loaded library.
     """
-    return lib.get_function[Int64]("lcm_br_finish")(state, out_ptr, out_cap)
+    return lib.get_function[Int32]("lcm_br_finish_step")(state, out_ptr, out_cap, out_written)
+
+
+@always_inline
+def call_lcm_br_trailing_seen(
+    ref lib: OwnedDLHandle,
+    state: Pointer[mut=True, T=NoneType, origin=_],
+) raises -> Int32:
+    """1 if bytes after a complete stream were discarded, else 0.
+
+    Args:
+        lib: An open handle to libcompress_mojo.so.
+        state: C `*const BrotliState`.
+
+    Returns:
+        C `i32`.
+
+    Raises:
+        If `lcm_br_trailing_seen` is not exported by the loaded library.
+    """
+    return lib.get_function[Int32]("lcm_br_trailing_seen")(state)
 
 
 @always_inline
@@ -293,41 +347,60 @@ def load_lcm_gzip_init(ref lib: OwnedDLHandle) raises -> lcm_gzip_init_fn:
 
 
 @always_inline
-def load_lcm_gzip_feed(ref lib: OwnedDLHandle) raises -> lcm_gzip_feed_fn:
-    """Resolve `lcm_gzip_feed` to a raw C ABI function pointer.
+def load_lcm_gzip_step(ref lib: OwnedDLHandle) raises -> lcm_gzip_step_fn:
+    """Resolve `lcm_gzip_step` to a raw C ABI function pointer.
 
     Args:
         lib: An open handle to libcompress_mojo.so.
 
     Returns:
-        The `lcm_gzip_feed` entry point, valid while `lib` stays open.
+        The `lcm_gzip_step` entry point, valid while `lib` stays open.
 
     Raises:
-        If `lcm_gzip_feed` is not exported by the loaded library.
+        If `lcm_gzip_step` is not exported by the loaded library.
     """
-    var sym = lib.get_symbol[NoneType]("lcm_gzip_feed")
+    var sym = lib.get_symbol[NoneType]("lcm_gzip_step")
     if not sym:
-        raise Error("symbol not found: lcm_gzip_feed")
-    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[lcm_gzip_feed_fn]()[]
+        raise Error("symbol not found: lcm_gzip_step")
+    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[lcm_gzip_step_fn]()[]
 
 
 @always_inline
-def load_lcm_gzip_finish(ref lib: OwnedDLHandle) raises -> lcm_gzip_finish_fn:
-    """Resolve `lcm_gzip_finish` to a raw C ABI function pointer.
+def load_lcm_gzip_finish_step(ref lib: OwnedDLHandle) raises -> lcm_gzip_finish_step_fn:
+    """Resolve `lcm_gzip_finish_step` to a raw C ABI function pointer.
 
     Args:
         lib: An open handle to libcompress_mojo.so.
 
     Returns:
-        The `lcm_gzip_finish` entry point, valid while `lib` stays open.
+        The `lcm_gzip_finish_step` entry point, valid while `lib` stays open.
 
     Raises:
-        If `lcm_gzip_finish` is not exported by the loaded library.
+        If `lcm_gzip_finish_step` is not exported by the loaded library.
     """
-    var sym = lib.get_symbol[NoneType]("lcm_gzip_finish")
+    var sym = lib.get_symbol[NoneType]("lcm_gzip_finish_step")
     if not sym:
-        raise Error("symbol not found: lcm_gzip_finish")
-    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[lcm_gzip_finish_fn]()[]
+        raise Error("symbol not found: lcm_gzip_finish_step")
+    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[lcm_gzip_finish_step_fn]()[]
+
+
+@always_inline
+def load_lcm_gzip_trailing_seen(ref lib: OwnedDLHandle) raises -> lcm_gzip_trailing_seen_fn:
+    """Resolve `lcm_gzip_trailing_seen` to a raw C ABI function pointer.
+
+    Args:
+        lib: An open handle to libcompress_mojo.so.
+
+    Returns:
+        The `lcm_gzip_trailing_seen` entry point, valid while `lib` stays open.
+
+    Raises:
+        If `lcm_gzip_trailing_seen` is not exported by the loaded library.
+    """
+    var sym = lib.get_symbol[NoneType]("lcm_gzip_trailing_seen")
+    if not sym:
+        raise Error("symbol not found: lcm_gzip_trailing_seen")
+    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[lcm_gzip_trailing_seen_fn]()[]
 
 
 @always_inline
@@ -369,41 +442,60 @@ def load_lcm_br_init(ref lib: OwnedDLHandle) raises -> lcm_br_init_fn:
 
 
 @always_inline
-def load_lcm_br_feed(ref lib: OwnedDLHandle) raises -> lcm_br_feed_fn:
-    """Resolve `lcm_br_feed` to a raw C ABI function pointer.
+def load_lcm_br_step(ref lib: OwnedDLHandle) raises -> lcm_br_step_fn:
+    """Resolve `lcm_br_step` to a raw C ABI function pointer.
 
     Args:
         lib: An open handle to libcompress_mojo.so.
 
     Returns:
-        The `lcm_br_feed` entry point, valid while `lib` stays open.
+        The `lcm_br_step` entry point, valid while `lib` stays open.
 
     Raises:
-        If `lcm_br_feed` is not exported by the loaded library.
+        If `lcm_br_step` is not exported by the loaded library.
     """
-    var sym = lib.get_symbol[NoneType]("lcm_br_feed")
+    var sym = lib.get_symbol[NoneType]("lcm_br_step")
     if not sym:
-        raise Error("symbol not found: lcm_br_feed")
-    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[lcm_br_feed_fn]()[]
+        raise Error("symbol not found: lcm_br_step")
+    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[lcm_br_step_fn]()[]
 
 
 @always_inline
-def load_lcm_br_finish(ref lib: OwnedDLHandle) raises -> lcm_br_finish_fn:
-    """Resolve `lcm_br_finish` to a raw C ABI function pointer.
+def load_lcm_br_finish_step(ref lib: OwnedDLHandle) raises -> lcm_br_finish_step_fn:
+    """Resolve `lcm_br_finish_step` to a raw C ABI function pointer.
 
     Args:
         lib: An open handle to libcompress_mojo.so.
 
     Returns:
-        The `lcm_br_finish` entry point, valid while `lib` stays open.
+        The `lcm_br_finish_step` entry point, valid while `lib` stays open.
 
     Raises:
-        If `lcm_br_finish` is not exported by the loaded library.
+        If `lcm_br_finish_step` is not exported by the loaded library.
     """
-    var sym = lib.get_symbol[NoneType]("lcm_br_finish")
+    var sym = lib.get_symbol[NoneType]("lcm_br_finish_step")
     if not sym:
-        raise Error("symbol not found: lcm_br_finish")
-    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[lcm_br_finish_fn]()[]
+        raise Error("symbol not found: lcm_br_finish_step")
+    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[lcm_br_finish_step_fn]()[]
+
+
+@always_inline
+def load_lcm_br_trailing_seen(ref lib: OwnedDLHandle) raises -> lcm_br_trailing_seen_fn:
+    """Resolve `lcm_br_trailing_seen` to a raw C ABI function pointer.
+
+    Args:
+        lib: An open handle to libcompress_mojo.so.
+
+    Returns:
+        The `lcm_br_trailing_seen` entry point, valid while `lib` stays open.
+
+    Raises:
+        If `lcm_br_trailing_seen` is not exported by the loaded library.
+    """
+    var sym = lib.get_symbol[NoneType]("lcm_br_trailing_seen")
+    if not sym:
+        raise Error("symbol not found: lcm_br_trailing_seen")
+    return Pointer(to=sym.unsafe_value()).unsafe_bitcast[lcm_br_trailing_seen_fn]()[]
 
 
 @always_inline

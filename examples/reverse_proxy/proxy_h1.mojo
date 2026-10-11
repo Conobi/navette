@@ -29,7 +29,7 @@ from navette.http import (
     Version,
 )
 from navette.http.session import RequestHandle
-from navette.tls import TlsConnection
+from navette.tls import TlsConnection, TlsEof
 
 from bouclette.handle import OwnedHandle
 
@@ -327,7 +327,9 @@ def h1_handle_backend_recv(
 
     send_state.backend_recv_in_flight = False
 
-    if result <= 0:
+    # A reset (result < 0) is never end-of-stream: it must not complete a
+    # truncated close-delimited body.
+    if result < 0 or (result == 0 and phase == PHASE_BACKEND_TLS_HANDSHAKE):
         h1_send_error_and_close(
             state,
             send_state,
@@ -343,25 +345,34 @@ def h1_handle_backend_recv(
         )
         return out^
 
-    var n = Int(result)
-    var chunk = List[Byte](capacity=n)
-    for i in range(n):
-        chunk.append(send_state.backend_recv_buf[i])
-    backend_tls.receive_data(Span(chunk))
+    if result == 0:
+        # Orderly backend close: record it so pending plaintext drains below.
+        backend_tls.receive_eof()
+    else:
+        var n = Int(result)
+        var chunk = List[Byte](capacity=n)
+        for i in range(n):
+            chunk.append(send_state.backend_recv_buf[i])
+        backend_tls.receive_data(Span(chunk))
 
-    if backend_tls.wants_write():
-        var ct = backend_tls.drain_ciphertext()
-        stage_backend_send(send_state, out, backend_fd, conn_id, ct^)
+        if backend_tls.wants_write():
+            var ct = backend_tls.drain_ciphertext()
+            stage_backend_send(send_state, out, backend_fd, conn_id, ct^)
 
-    if backend_tls.is_handshaking():
-        queue_backend_recv(send_state, out, backend_fd, conn_id)
-        return out^
+        if backend_tls.is_handshaking():
+            queue_backend_recv(send_state, out, backend_fd, conn_id)
+            return out^
 
     # Backend TLS handshake is done — drain decrypted data into the
     # backend H1 session (for response parsing).
     var plaintext = backend_tls.drain_plaintext()
     if len(plaintext) > 0:
         state.backend_session.feed(Span(plaintext))
+    # FIN or close_notify: a close-delimited response completes, a
+    # truncated one errors on the next run_one.
+    var backend_eof = result == 0 or backend_tls.eof_state() == TlsEof.CLEAN
+    if backend_eof:
+        state.backend_session.feed_eof()
 
     # If we just finished the handshake and haven't flushed the request
     # yet, do it now. The bytes were already queued in H1Session._outbuf
@@ -381,6 +392,21 @@ def h1_handle_backend_recv(
     # Try to extract a complete response by stepping the session against
     # the in-flight handle. H1Session tracks the request method internally.
     if not state.backend_request_handle:
+        if backend_eof:
+            h1_send_error_and_close(
+                state,
+                send_state,
+                client_tls,
+                phase,
+                closed,
+                out,
+                client_fd,
+                conn_id,
+                502,
+                "Bad Gateway",
+                "backend closed",
+            )
+            return out^
         queue_backend_recv(send_state, out, backend_fd, conn_id)
         return out^
 
@@ -391,16 +417,37 @@ def h1_handle_backend_recv(
     swap(handle_opt, state.backend_request_handle)
     var handle = handle_opt.take()
     state.backend_session.run_one(handle)
-    if not handle.is_complete():
+    if not handle.is_complete() and not backend_eof:
         # Response not ready yet; restore the handle and ask for more bytes.
         state.backend_request_handle = Optional[RequestHandle](handle^)
         queue_backend_recv(send_state, out, backend_fd, conn_id)
+        return out^
+    if handle.is_errored() or not handle.is_complete():
+        # Truncated or malformed backend response.
+        h1_send_error_and_close(
+            state,
+            send_state,
+            client_tls,
+            phase,
+            closed,
+            out,
+            client_fd,
+            conn_id,
+            502,
+            "Bad Gateway",
+            "backend response incomplete",
+        )
         return out^
 
     # Got a full response — extract it from the handle, rewrite, hand to
     # the client-side H1 engine.
     var response = handle^.take_response()
     rewrite_response_headers(response, _VIA_H1)
+    if backend_eof:
+        # The backend session is closed: close the client side after this
+        # response instead of accepting a request it could not forward.
+        response.headers.add("connection", "close")
+        phase = PHASE_DONE
     state.client_http.send_response(response^)
 
     # Drain client-side H1 serialization, feed to TLS, queue SEND.

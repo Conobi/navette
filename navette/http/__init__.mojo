@@ -12,5 +12,5 @@ from .url import ParsedUrl, parse_url
 from .session_slot import SessionSlot, SessionSlotPtr, SLOT_H1, SLOT_H2, SLOT_H3
 from .client import HttpClient
 from .coro_client import HttpCoroClient
-from .decode import ContentDecoder, ContentEncoding
+from .decode import ContentDecoder, ContentEncoding, DecodeStatus, DecodeStep
 from .header_table_index import StaticTableIndex

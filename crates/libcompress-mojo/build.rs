@@ -25,6 +25,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/last_error.c");
     println!("cargo:rerun-if-changed=src/zlib_wrapper.c");
     println!("cargo:rerun-if-changed=src/brotli_wrapper.c");
+    println!("cargo:rerun-if-changed=src/caps.h");
     println!("cargo:rerun-if-changed=build.rs");
 
     let zlib = probe_or_die(

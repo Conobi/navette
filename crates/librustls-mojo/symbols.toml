@@ -137,11 +137,11 @@ mojo_ret  = "Int32"
 
 [[symbol]]
 name = "rlsm_tls_conn_read_tls"
-description = "Feed ciphertext into the TLS state machine."
-rust_args = ["i32", "*const u8", "i32"]
-rust_args_names = ["handle", "ciphertext_ptr", "ct_len"]
+description = "Feed ciphertext until consumed, drain needed or close_notify; stop reason in stop_out (0 complete, 1 needs drain, 3 peer closed)."
+rust_args = ["i32", "*const u8", "i32", "*mut i32"]
+rust_args_names = ["handle", "ciphertext_ptr", "ct_len", "stop_out"]
 rust_ret  = "i32"
-mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32", "UnsafePointer[Int32]"]
 mojo_ret  = "Int32"
 
 [[symbol]]
@@ -160,6 +160,15 @@ rust_args = ["i32", "*mut u8", "i32"]
 rust_args_names = ["handle", "out_buf", "buf_len"]
 rust_ret  = "i32"
 mojo_args = ["Int32", "UnsafePointer[UInt8]", "Int32"]
+mojo_ret  = "Int32"
+
+[[symbol]]
+name = "rlsm_tls_conn_read_eof"
+description = "Signal transport EOF to rustls after draining; stop_out is 3 if close_notify was received, else 0."
+rust_args = ["i32", "*mut i32"]
+rust_args_names = ["handle", "stop_out"]
+rust_ret  = "i32"
+mojo_args = ["Int32", "UnsafePointer[Int32]"]
 mojo_ret  = "Int32"
 
 [[symbol]]

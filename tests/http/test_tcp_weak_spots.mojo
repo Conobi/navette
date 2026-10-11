@@ -154,15 +154,9 @@ def _recv_now(fd: OwnedHandle) raises -> Tuple[List[Byte], Bool]:
 
 
 def _tls_in(mut tls: TlsConnection, data: List[Byte]) raises -> List[Byte]:
-    """Decrypts in 4 KiB slices: rustls refuses ciphertext once its plaintext buffer is full."""
-    var plain = List[Byte]()
-    var off = 0
-    while off < len(data):
-        var end = min(off + 4096, len(data))
-        tls.receive_data(Span(data)[off:end])
-        plain.extend(Span(tls.drain_plaintext()))
-        off = end
-    return plain^
+    """Decrypt a whole recv buffer in one call."""
+    tls.receive_data(Span(data))
+    return tls.drain_plaintext()
 
 
 def _tls_flush(fd: OwnedHandle, mut tls: TlsConnection, var plain: List[Byte]) raises:

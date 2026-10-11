@@ -37,6 +37,44 @@ comptime _CIPHERTEXT_DRAIN_BUF_SIZE = 18432
 comptime _ALPN_BUF_SIZE = 256
 
 
+@fieldwise_init
+struct TlsStepStatus(Equatable, ImplicitlyCopyable):
+    """Why a TLS step stopped. Receive statuses equal the shim's `stop_out` codes."""
+
+    var _value: UInt8
+
+    comptime COMPLETE = TlsStepStatus(0)  # all input consumed / accepted
+    comptime NEEDS_DRAIN = TlsStepStatus(1)  # > 16 KiB plaintext pending: drain first
+    comptime NEEDS_FLUSH = TlsStepStatus(2)  # send: rustls full, ciphertext moved out; call again
+    comptime PEER_CLOSED = TlsStepStatus(3)  # close_notify received; later input ignored
+
+    def __eq__(self, other: Self) -> Bool:
+        return self._value == other._value
+
+
+@fieldwise_init
+struct TlsStep(ImplicitlyCopyable):
+    """Bytes taken before stopping; any ciphertext produced is already in
+    ciphertext-out."""
+
+    var consumed: Int
+    var status: TlsStepStatus
+
+
+@fieldwise_init
+struct TlsEof(Equatable, ImplicitlyCopyable):
+    """How the peer's stream ended."""
+
+    var _value: UInt8
+
+    comptime NONE = TlsEof(0)
+    comptime CLEAN = TlsEof(1)  # close_notify received
+    comptime UNCLEAN = TlsEof(2)  # `receive_eof` without close_notify
+
+    def __eq__(self, other: Self) -> Bool:
+        return self._value == other._value
+
+
 struct TlsConnection(Movable):
     """Sans-I/O TLS connection wrapping a rustls connection handle.
 
@@ -50,6 +88,9 @@ struct TlsConnection(Movable):
     var _ct_drain_buf: Pointer[UInt8, MutUntrackedOrigin]
     var _pt_drain_buf: Pointer[UInt8, MutUntrackedOrigin]
     var _handshake_complete: Bool
+    var _pt_stash: List[Byte]  # plaintext pulled out of rustls so it accepts more
+    var _eof_received: Bool
+    var _peer_closed: Bool
 
     # -- Private constructor (used by factory methods) ------------------------
 
@@ -69,6 +110,9 @@ struct TlsConnection(Movable):
         self._ct_drain_buf = _ct_drain_buf
         self._pt_drain_buf = _pt_drain_buf
         self._handshake_complete = _handshake_complete
+        self._pt_stash = List[Byte]()
+        self._eof_received = False
+        self._peer_closed = False
 
     # -- Move / Destroy --------------------------------------------------------
 
@@ -149,7 +193,6 @@ struct TlsConnection(Movable):
                     handle, init_ct_buf, Int32(_CIPHERTEXT_DRAIN_BUF_SIZE)
                 )
                 if dn < 0:
-                    init_ct_buf.unsafe_free()
                     raise "rlsm_tls_conn_write_tls failed: " + rlib[].last_error()
                 if dn == 0:
                     break
@@ -196,62 +239,37 @@ struct TlsConnection(Movable):
     # -- Inbound: ciphertext -> plaintext --------------------------------------
 
     def receive_data(mut self, ciphertext: Span[Byte, _]) raises:
-        """Feed received ciphertext into the TLS state machine.
+        """Feed all of `ciphertext`, moving plaintext rustls cannot hold to a stash.
 
-        Any handshake replies / encrypted alerts that rustls produces in
-        response are automatically drained into the internal
-        ciphertext-out buffer so the caller can pick them up with
-        `drain_ciphertext()`.
-
-        The Rust FFI loops `read_tls` + `process_new_packets` internally
-        until either the input is fully consumed or rustls' deframer cannot
-        make progress, so a single FFI call is sufficient here.
+        Stops early only at close_notify (later bytes are ignored, RFC 8446
+        Section 6.1). The stash grows until the next drain; callers that need
+        bounded memory use `receive_data_step`. Handshake replies and alerts
+        land in ciphertext-out. Raises "data after EOF" after `receive_eof`.
         """
-        var n = len(ciphertext)
-        if n == 0:
-            return
-
-        var rc = self._lib.inner_ptr()[].tls_conn_read_tls(
-            self._handle,
-            ciphertext.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin(),
-            Int32(n),
-        )
-
-        if rc < 0:
-            raise (
-                "rlsm_tls_conn_read_tls failed: "
-                + self._lib.inner_ptr()[].last_error()
-            )
-
-        self._drain_write_tls()
-
-        if not self._handshake_complete:
-            var hs = self._lib.inner_ptr()[].tls_conn_is_handshaking(self._handle)
-            if hs == Int32(0):
-                self._handshake_complete = True
+        if self._eof_received:
+            raise "TlsConnection.receive_data: data after EOF"
+        var off = 0
+        while off < len(ciphertext):
+            var step = self.receive_data_step(ciphertext[off:])
+            off += step.consumed
+            if step.status == TlsStepStatus.PEER_CLOSED:
+                return
+            var stashed = 0
+            if step.status == TlsStepStatus.NEEDS_DRAIN:
+                stashed = self._stash_plaintext()
+            if step.consumed == 0 and stashed == 0:
+                raise "TlsConnection.receive_data: no progress"
 
     def drain_plaintext_into(mut self, mut sink: List[Byte]) raises:
-        """Append any decrypted plaintext available after `receive_data` into `sink`.
+        """Append all decrypted plaintext (stash first, then rustls) into `sink`.
 
-        Loops `rlsm_tls_conn_read_plaintext` until it returns 0 (no more
-        decrypted data right now). Leaves `sink` untouched during the
-        handshake or whenever the peer has not yet sent any application
-        data. Raises on FFI errors so close_notify / fatal alerts surface
-        rather than being indistinguishable from "no data yet".
+        A clean close, "no data yet" and an unclean EOF all end the drain
+        without raising; `eof_state()` tells them apart.
         """
-        while True:
-            var n = self._lib.inner_ptr()[].tls_conn_read_plaintext(
-                self._handle, self._pt_drain_buf, Int32(_IO_BUF_SIZE)
-            )
-            if n < 0:
-                raise (
-                    "rlsm_tls_conn_read_plaintext failed: "
-                    + self._lib.inner_ptr()[].last_error()
-                )
-            if n == 0:
-                break
-            for i in range(Int(n)):
-                sink.append(self._pt_drain_buf[unsafe_offset=i])
+        if len(self._pt_stash) > 0:
+            sink.extend(Span(self._pt_stash))
+            self._pt_stash.clear()
+        self._read_rustls_plaintext(sink)
 
     def drain_plaintext(mut self) raises -> List[Byte]:
         """Return any decrypted plaintext available after `receive_data`.
@@ -263,28 +281,116 @@ struct TlsConnection(Movable):
         self.drain_plaintext_into(result)
         return result^
 
+    def receive_data_step(mut self, ciphertext: Span[Byte, _]) raises -> TlsStep:
+        """Feed ciphertext until done or rustls needs the caller; never raises
+        for backpressure.
+
+        Status priority, independent of `consumed == len`: PEER_CLOSED >
+        NEEDS_DRAIN > COMPLETE. With more than 16 KiB of plaintext pending on
+        entry, returns `consumed=0, NEEDS_DRAIN` without feeding rustls. On a
+        fatal error, any alert rustls queued is moved to ciphertext-out before
+        raising. Raises "data after EOF" after `receive_eof`.
+        """
+        if self._eof_received:
+            raise "TlsConnection.receive_data: data after EOF"
+        if len(ciphertext) == 0:
+            return TlsStep(consumed=0, status=TlsStepStatus.COMPLETE)
+        var stop = Int32(0)
+        var rc = self._lib.inner_ptr()[].tls_conn_read_tls(
+            self._handle,
+            ciphertext.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin(),
+            Int32(len(ciphertext)),
+            Pointer(to=stop),
+        )
+        if rc < 0:
+            var err = self._lib.inner_ptr()[].last_error()
+            try:
+                self._drain_write_tls()
+            except:
+                pass
+            raise "rlsm_tls_conn_read_tls failed: " + err
+        self._drain_write_tls()
+        self._refresh_handshake()
+        var status = TlsStepStatus(UInt8(stop))
+        if status == TlsStepStatus.PEER_CLOSED:
+            self._peer_closed = True
+        return TlsStep(consumed=Int(rc), status=status)
+
+    def receive_eof(mut self) raises:
+        """Record the transport's end-of-stream (idempotent).
+
+        Pending plaintext stays drainable. Afterwards `receive_data` and
+        `receive_data_step` raise "data after EOF". Call only after feeding
+        everything the transport delivered.
+        """
+        if self._eof_received:
+            return
+        # rustls refuses EOF while its plaintext buffer is full.
+        _ = self._stash_plaintext()
+        var stop = Int32(0)
+        if self._lib.inner_ptr()[].tls_conn_read_eof(self._handle, Pointer(to=stop)) < 0:
+            var err = self._lib.inner_ptr()[].last_error()
+            try:
+                self._drain_write_tls()
+            except:
+                pass
+            raise "rlsm_tls_conn_read_eof failed: " + err
+        self._eof_received = True
+        if TlsStepStatus(UInt8(stop)) == TlsStepStatus.PEER_CLOSED:
+            self._peer_closed = True
+        self._drain_write_tls()
+
+    def eof_state(self) -> TlsEof:
+        """CLEAN once close_notify was seen, else UNCLEAN after `receive_eof`,
+        else NONE. Unclean EOF never raises from the drain; check it here."""
+        if self._peer_closed:
+            return TlsEof.CLEAN
+        if self._eof_received:
+            return TlsEof.UNCLEAN
+        return TlsEof.NONE
+
     # -- Outbound: plaintext -> ciphertext -------------------------------------
 
     def send_data(mut self, plaintext: Span[Byte, _]) raises:
-        """Encrypt plaintext. The resulting ciphertext is buffered
-        internally; retrieve it with `drain_ciphertext`.
-        """
-        var n = len(plaintext)
-        if n == 0:
-            return
+        """Encrypt all of `plaintext` into ciphertext-out (`drain_ciphertext`).
 
+        Raises if rustls stops accepting without producing ciphertext (its
+        pre-handshake buffer is full); bytes accepted before that may already
+        be ciphertext, so the connection is then unusable.
+        """
+        var off = 0
+        while off < len(plaintext):
+            var before = len(self._ciphertext_out)
+            var step = self.send_data_step(plaintext[off:])
+            off += step.consumed
+            if step.consumed == 0 and len(self._ciphertext_out) == before:
+                raise "TLS send made no progress (pre-handshake buffer full?)"
+
+    def send_data_step(mut self, plaintext: Span[Byte, _]) raises -> TlsStep:
+        """Offer plaintext; `consumed` is what rustls accepted.
+
+        Produced ciphertext is moved to ciphertext-out within the call.
+        COMPLETE iff everything was accepted, else NEEDS_FLUSH. While
+        handshaking with the 64 KiB pre-handshake buffer full, returns
+        `consumed=0, NEEDS_FLUSH`.
+        """
+        if len(plaintext) == 0:
+            return TlsStep(consumed=0, status=TlsStepStatus.COMPLETE)
         var rc = self._lib.inner_ptr()[].tls_conn_write_plaintext(
             self._handle,
             plaintext.unsafe_ptr().unsafe_mut_cast[True]().as_unsafe_any_origin(),
-            Int32(n),
+            Int32(len(plaintext)),
         )
         if rc < 0:
             raise (
                 "rlsm_tls_conn_write_plaintext failed: "
                 + self._lib.inner_ptr()[].last_error()
             )
-
         self._drain_write_tls()
+        var n = Int(rc)
+        if n == len(plaintext):
+            return TlsStep(consumed=n, status=TlsStepStatus.COMPLETE)
+        return TlsStep(consumed=n, status=TlsStepStatus.NEEDS_FLUSH)
 
     def drain_ciphertext_into(mut self, mut sink: List[Byte]):
         """Append all buffered ciphertext into `sink` and clear it in place.
@@ -346,6 +452,38 @@ struct TlsConnection(Movable):
 
     # -- Internal --------------------------------------------------------------
 
+    def _read_rustls_plaintext(mut self, mut sink: List[Byte]) raises:
+        """Move everything rustls has decrypted into `sink`."""
+        while True:
+            var n = self._lib.inner_ptr()[].tls_conn_read_plaintext(
+                self._handle, self._pt_drain_buf, Int32(_IO_BUF_SIZE)
+            )
+            if n < 0:
+                raise (
+                    "rlsm_tls_conn_read_plaintext failed: "
+                    + self._lib.inner_ptr()[].last_error()
+                )
+            if n == 0:
+                return
+            sink.extend(Span(unsafe_ptr=self._pt_drain_buf, length=Int(n)))
+
+    def _stash_plaintext(mut self) raises -> Int:
+        """Move rustls's plaintext to the stash; returns the bytes moved."""
+        var stash = self._pt_stash^
+        self._pt_stash = List[Byte]()
+        var before = len(stash)
+        try:
+            self._read_rustls_plaintext(stash)
+        finally:
+            self._pt_stash = stash^
+        return len(self._pt_stash) - before
+
+    def _refresh_handshake(mut self) raises:
+        """Latch handshake completion from rustls."""
+        if not self._handshake_complete:
+            if self._lib.inner_ptr()[].tls_conn_is_handshaking(self._handle) == Int32(0):
+                self._handshake_complete = True
+
     def _drain_write_tls(mut self) raises:
         """Drain all pending ciphertext from rustls into `_ciphertext_out`."""
         while True:
@@ -361,6 +499,5 @@ struct TlsConnection(Movable):
                 )
             if n == 0:
                 break
-            for i in range(Int(n)):
-                self._ciphertext_out.append(self._ct_drain_buf[unsafe_offset=i])
+            self._ciphertext_out.extend(Span(unsafe_ptr=self._ct_drain_buf, length=Int(n)))
 

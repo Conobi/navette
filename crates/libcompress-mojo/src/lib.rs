@@ -32,15 +32,17 @@ mod tests {
 
     extern "C" {
         fn lcm_gzip_init(input_cap: u64, output_cap: u64, ratio_x100: u32) -> *mut c_void;
-        fn lcm_gzip_feed(s: *mut c_void, in_ptr: *const u8, in_len: usize,
-                         out_ptr: *mut u8, out_cap: usize) -> i64;
-        fn lcm_gzip_finish(s: *mut c_void, out_ptr: *mut u8, out_cap: usize) -> i64;
+        fn lcm_gzip_step(s: *mut c_void, in_ptr: *const u8, in_len: usize, in_consumed: *mut usize,
+                         out_ptr: *mut u8, out_cap: usize, out_written: *mut usize) -> i32;
+        fn lcm_gzip_finish_step(s: *mut c_void, out_ptr: *mut u8, out_cap: usize,
+                                out_written: *mut usize) -> i32;
         fn lcm_gzip_free(s: *mut c_void);
 
         fn lcm_br_init(input_cap: u64, output_cap: u64, ratio_x100: u32) -> *mut c_void;
-        fn lcm_br_feed(s: *mut c_void, in_ptr: *const u8, in_len: usize,
-                       out_ptr: *mut u8, out_cap: usize) -> i64;
-        fn lcm_br_finish(s: *mut c_void, out_ptr: *mut u8, out_cap: usize) -> i64;
+        fn lcm_br_step(s: *mut c_void, in_ptr: *const u8, in_len: usize, in_consumed: *mut usize,
+                       out_ptr: *mut u8, out_cap: usize, out_written: *mut usize) -> i32;
+        fn lcm_br_finish_step(s: *mut c_void, out_ptr: *mut u8, out_cap: usize,
+                              out_written: *mut usize) -> i32;
         fn lcm_br_free(s: *mut c_void);
 
         fn lcm_last_error(out_buf: *mut u8, buf_len: c_int) -> c_int;
@@ -60,14 +62,13 @@ mod tests {
         unsafe {
             let s = lcm_gzip_init(1 << 20, 1 << 20, 0);
             assert!(!s.is_null());
-            let mut out = [0u8; 64];
-            let n = lcm_gzip_feed(s, GZIP_HELLO.as_ptr(), GZIP_HELLO.len(),
-                                  out.as_mut_ptr(), out.len());
-            assert!(n >= 0, "feed: {} ({:?})", n, last_error_string());
-            let tail = lcm_gzip_finish(s, out.as_mut_ptr().add(n as usize),
-                                       out.len() - n as usize);
-            assert!(tail >= 0, "finish: {} ({:?})", tail, last_error_string());
-            assert_eq!(&out[..(n + tail) as usize], b"hello world");
+            let (mut out, mut used, mut n, mut tail) = ([0u8; 64], 0usize, 0usize, 0usize);
+            let rc = lcm_gzip_step(s, GZIP_HELLO.as_ptr(), GZIP_HELLO.len(), &mut used,
+                                  out.as_mut_ptr(), out.len(), &mut n);
+            assert_eq!((rc, used), (2, GZIP_HELLO.len()), "step: {:?}", last_error_string());
+            let rc = lcm_gzip_finish_step(s, out.as_mut_ptr().add(n), out.len() - n, &mut tail);
+            assert_eq!(rc, 2, "finish: {:?}", last_error_string());
+            assert_eq!(&out[..n + tail], b"hello world");
             lcm_gzip_free(s);
         }
     }
@@ -77,14 +78,13 @@ mod tests {
         unsafe {
             let s = lcm_br_init(1 << 20, 1 << 20, 0);
             assert!(!s.is_null());
-            let mut out = [0u8; 64];
-            let n = lcm_br_feed(s, BROTLI_HELLO.as_ptr(), BROTLI_HELLO.len(),
-                                out.as_mut_ptr(), out.len());
-            assert!(n >= 0, "feed: {} ({:?})", n, last_error_string());
-            let tail = lcm_br_finish(s, out.as_mut_ptr().add(n as usize),
-                                     out.len() - n as usize);
-            assert!(tail >= 0, "finish: {} ({:?})", tail, last_error_string());
-            assert_eq!(&out[..(n + tail) as usize], b"hello world");
+            let (mut out, mut used, mut n, mut tail) = ([0u8; 64], 0usize, 0usize, 0usize);
+            let rc = lcm_br_step(s, BROTLI_HELLO.as_ptr(), BROTLI_HELLO.len(), &mut used,
+                                  out.as_mut_ptr(), out.len(), &mut n);
+            assert_eq!((rc, used), (2, BROTLI_HELLO.len()), "step: {:?}", last_error_string());
+            let rc = lcm_br_finish_step(s, out.as_mut_ptr().add(n), out.len() - n, &mut tail);
+            assert_eq!(rc, 2, "finish: {:?}", last_error_string());
+            assert_eq!(&out[..n + tail], b"hello world");
             lcm_br_free(s);
         }
     }
@@ -94,10 +94,10 @@ mod tests {
         unsafe {
             let s = lcm_gzip_init(8, 1 << 20, 0);
             assert!(!s.is_null());
-            let mut out = [0u8; 64];
-            let n = lcm_gzip_feed(s, GZIP_HELLO.as_ptr(), GZIP_HELLO.len(),
-                                  out.as_mut_ptr(), out.len());
-            assert_eq!(n, -2, "expected -2 (input cap), got {}", n);
+            let (mut out, mut used, mut n) = ([0u8; 64], 0usize, 0usize);
+            let rc = lcm_gzip_step(s, GZIP_HELLO.as_ptr(), GZIP_HELLO.len(), &mut used,
+                                  out.as_mut_ptr(), out.len(), &mut n);
+            assert_eq!(rc, -2, "expected -2 (input cap), got {}", rc);
             assert!(last_error_string().contains("input cap"));
             lcm_gzip_free(s);
         }
@@ -108,10 +108,10 @@ mod tests {
         unsafe {
             let s = lcm_br_init(4, 1 << 20, 0);
             assert!(!s.is_null());
-            let mut out = [0u8; 64];
-            let n = lcm_br_feed(s, BROTLI_HELLO.as_ptr(), BROTLI_HELLO.len(),
-                                out.as_mut_ptr(), out.len());
-            assert_eq!(n, -2, "expected -2 (input cap), got {}", n);
+            let (mut out, mut used, mut n) = ([0u8; 64], 0usize, 0usize);
+            let rc = lcm_br_step(s, BROTLI_HELLO.as_ptr(), BROTLI_HELLO.len(), &mut used,
+                                  out.as_mut_ptr(), out.len(), &mut n);
+            assert_eq!(rc, -2, "expected -2 (input cap), got {}", rc);
             lcm_br_free(s);
         }
     }

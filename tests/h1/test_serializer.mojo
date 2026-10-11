@@ -7,6 +7,7 @@ from navette.http.request import RequestBody
 from navette.h1.serializer import (
     serialize_request,
     serialize_response,
+    serialize_response_into,
     serialize_informational,
 )
 from tests._test_util import assert_true, assert_equal_int, assert_equal_str
@@ -133,7 +134,7 @@ def test_serialize_empty_reason() raises:
     var wire = serialize_response(resp)
     _assert_bytes_eq(
         wire,
-        "HTTP/1.1 200 \r\n\r\n",
+        "HTTP/1.1 200 \r\ncontent-length: 0\r\n\r\n",
         "test_serialize_empty_reason",
     )
 
@@ -243,7 +244,7 @@ def test_serialize_multiple_headers_same_name() raises:
     var wire = serialize_response(resp)
     _assert_bytes_eq(
         wire,
-        "HTTP/1.1 200 OK\r\nset-cookie: a=1\r\nset-cookie: b=2\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nset-cookie: a=1\r\nset-cookie: b=2\r\ncontent-length: 0\r\n\r\n",
         "test_serialize_multiple_headers_same_name",
     )
 
@@ -252,23 +253,46 @@ def test_fastpath_200_and_guards() raises:
     # 200 / 1.1 / empty reason -> fast path, byte-identical to empty-reason golden.
     var r200 = Response(status=StatusCode(200), reason="",
                         version=Version.http_1_1(), headers=Headers())
-    _assert_bytes_eq(serialize_response(r200), "HTTP/1.1 200 \r\n\r\n",
+    _assert_bytes_eq(serialize_response(r200), "HTTP/1.1 200 \r\ncontent-length: 0\r\n\r\n",
                      "fastpath-200")
     # 201 / 1.1 / empty -> general path (not 200).
     var r201 = Response(status=StatusCode(201), reason="",
                         version=Version.http_1_1(), headers=Headers())
-    _assert_bytes_eq(serialize_response(r201), "HTTP/1.1 201 \r\n\r\n",
+    _assert_bytes_eq(serialize_response(r201), "HTTP/1.1 201 \r\ncontent-length: 0\r\n\r\n",
                      "fastpath-201-general")
     # 200 / 1.1 / non-empty reason -> general path (reason not empty).
     var rok = Response(status=StatusCode(200), reason="OK",
                        version=Version.http_1_1(), headers=Headers())
-    _assert_bytes_eq(serialize_response(rok), "HTTP/1.1 200 OK\r\n\r\n",
+    _assert_bytes_eq(serialize_response(rok), "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n",
                      "fastpath-custom-reason-general")
     # 200 / 1.0 / empty -> general path (not 1.1).
     var r10 = Response(status=StatusCode(200), reason="",
                        version=Version.http_1_0(), headers=Headers())
-    _assert_bytes_eq(serialize_response(r10), "HTTP/1.0 200 \r\n\r\n",
+    _assert_bytes_eq(serialize_response(r10), "HTTP/1.0 200 \r\ncontent-length: 0\r\n\r\n",
                      "fastpath-http10-general")
+
+
+def test_empty_body_framing() raises:
+    """An empty body gets content-length: 0 unless HEAD/CONNECT or user TE."""
+    var plain = Response(status=StatusCode(200), reason="OK",
+                         version=Version.http_1_1(), headers=Headers())
+    var skipped = List[Byte]()
+    serialize_response_into(skipped, plain, skip_zero_length=True)
+    _assert_bytes_eq(skipped, "HTTP/1.1 200 OK\r\n\r\n", "skip_zero_length")
+    var te = Headers()
+    te.add("Transfer-Encoding", "gzip")
+    var with_te = Response(status=StatusCode(200), reason="OK",
+                           version=Version.http_1_1(), headers=te^)
+    _assert_bytes_eq(serialize_response(with_te),
+                     "HTTP/1.1 200 OK\r\ntransfer-encoding: gzip\r\n\r\n",
+                     "user TE: no content-length")
+    var codes: List[Int] = [100, 103, 204, 304]
+    for i in range(len(codes)):
+        var r = Response(status=StatusCode(codes[i]), reason="X",
+                         version=Version.http_1_1(), headers=Headers())
+        _assert_bytes_eq(serialize_response(r),
+                         "HTTP/1.1 " + String(codes[i]) + " X\r\n\r\n",
+                         "bodyless " + String(codes[i]))
 
 
 def main() raises:
@@ -283,4 +307,5 @@ def main() raises:
     test_serialize_http10_request()
     test_serialize_multiple_headers_same_name()
     test_fastpath_200_and_guards()
-    print("test_serializer: all 11 tests passed")
+    test_empty_body_framing()
+    print("test_serializer: all 12 tests passed")

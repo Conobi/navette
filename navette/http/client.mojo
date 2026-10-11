@@ -9,6 +9,8 @@ from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.http.alt_svc import Origin
 from navette.http.session_slot import SessionSlot, SessionSlotPtr, SLOT_H1, SLOT_H2, SLOT_H3
 from navette.http.session import RequestHandle
+from navette.http.body import BodyFrame
+from navette.http.handler import StreamError
 from navette.http.request import Request, RequestBody
 from navette.http.response import Response
 from navette.http.method import Method
@@ -45,13 +47,26 @@ def _str_starts_with(s: String, prefix: String) -> Bool:
     return True
 
 
+@fieldwise_init
+struct _Route(Copyable, Movable):
+    """Where a client handle lives: its slot and the session's own handle id."""
+
+    var slot_addr: Int
+    var session_id: UInt64
+
+
 struct HttpClient(Movable):
-    """Sans-I/O unified HTTP client with connection pooling."""
+    """Sans-I/O unified HTTP client with connection pooling.
+
+    Handles carry client-wide ids, never reused, routed to (slot, session
+    handle id); sessions number their handles independently. Each origin
+    holds at most one live session: closed ones are evicted on `submit`
+    and `attach_session`, and attaching behind a live one raises.
+    """
 
     var _pool: Dict[Origin, List[SessionSlotPtr]]
-    var _handle_slot: Dict[Int, Int]  # handle_id → slot addr (for run_one routing)
-    var _max_conns_h1: Int
-    var _max_conns_mux: Int
+    var _routes: Dict[Int, _Route]
+    var _next_id: UInt64
     var _idle_timeout_ms: UInt64
     var _max_redirects: Int
     var _retry_idempotent: Bool
@@ -59,16 +74,13 @@ struct HttpClient(Movable):
     def __init__(
         out self,
         *,
-        max_conns_h1: Int = 6,
-        max_conns_mux: Int = 1,
         idle_timeout_ms: UInt64 = UInt64(90_000),
         max_redirects: Int = 10,
         retry_idempotent: Bool = True,
     ):
         self._pool = Dict[Origin, List[SessionSlotPtr]]()
-        self._handle_slot = Dict[Int, Int]()
-        self._max_conns_h1 = max_conns_h1
-        self._max_conns_mux = max_conns_mux
+        self._routes = Dict[Int, _Route]()
+        self._next_id = UInt64(0)
         self._idle_timeout_ms = idle_timeout_ms
         self._max_redirects = max_redirects
         self._retry_idempotent = retry_idempotent
@@ -88,15 +100,11 @@ struct HttpClient(Movable):
 
     @staticmethod
     def with_config(
-        max_conns_h1: Int = 6,
-        max_conns_mux: Int = 1,
         idle_timeout_ms: UInt64 = UInt64(90_000),
         max_redirects: Int = 10,
         retry_idempotent: Bool = True,
     ) -> Self:
         return Self(
-            max_conns_h1=max_conns_h1,
-            max_conns_mux=max_conns_mux,
             idle_timeout_ms=idle_timeout_ms,
             max_redirects=max_redirects,
             retry_idempotent=retry_idempotent,
@@ -105,15 +113,14 @@ struct HttpClient(Movable):
     # --- Pool management ---
 
     def attach_session(mut self, var origin: Origin, var slot: SessionSlot) raises:
-        """Insert a session. Raises if per-host limit exceeded."""
-        var max_conns = self._max_conns_h1
-        if slot.kind == SLOT_H2 or slot.kind == SLOT_H3:
-            max_conns = self._max_conns_mux
+        """Insert the origin's session after evicting closed ones.
 
-        if origin in self._pool:
-            ref existing = self._pool[origin]
-            if len(existing) >= max_conns:
-                raise Error("HttpClient: max connections reached for origin")
+        Raises if the origin still has a live session: one slot per origin,
+        since `submit` and the transport API only reach the first.
+        """
+        self._evict_closed(origin)
+        if origin in self._pool and len(self._pool[origin]) > 0:
+            raise Error("HttpClient: origin already has a live connection; detach it first")
 
         var ptr = _heap_alloc[SessionSlot](1)
         ptr.unsafe_write(slot^)
@@ -137,6 +144,7 @@ struct HttpClient(Movable):
                 for ref slot in slots:
                     var p = slot.ptr()
                     if p[].is_idle() and (now - p[].idle_since) > self._idle_timeout_ms:
+                        self._drop_routes(Int(slot.addr))
                         p.unsafe_deinit_pointee()
                         p.unsafe_free()
                     else:
@@ -144,6 +152,40 @@ struct HttpClient(Movable):
                 self._pool[Origin(copy=origin)] = keep^
             except:
                 pass
+
+    def _drop_routes(mut self, slot_addr: Int):
+        """Forget every handle routed to a slot leaving the pool.
+
+        Those handles error with `connection_closed` on their next `run_one`
+        (an unknown id is never reused, so no tombstone is kept); poll them
+        before evicting or detaching to keep a response already received.
+        """
+        var hids = List[Int]()
+        for kv in self._routes.items():
+            if kv.value.slot_addr == slot_addr:
+                hids.append(kv.key)
+        for hid in hids:
+            try:
+                _ = self._routes.pop(hid)
+            except:
+                pass
+
+    def _evict_closed(mut self, origin: Origin):
+        """Free `origin`'s closed slots so the caller attaches a fresh one."""
+        try:
+            ref slots = self._pool[origin]
+            var keep = List[SessionSlotPtr]()
+            for ref slot in slots:
+                var p = slot.ptr()
+                if not p[].is_closed():
+                    keep.append(SessionSlotPtr(copy=slot))
+                    continue
+                self._drop_routes(Int(slot.addr))
+                p.unsafe_deinit_pointee()
+                p.unsafe_free()
+            self._pool[Origin(copy=origin)] = keep^
+        except:
+            pass
 
     def close_all(deinit self):
         """Consume client, freeing all pooled sessions."""
@@ -156,52 +198,73 @@ struct HttpClient(Movable):
     # resolution internally. M6c's HttpCoroClient will also resolve internally.
 
     def submit(mut self, var origin: Origin, var req: Request) raises -> RequestHandle:
-        """Submit request to a pooled session for origin.
-        Prefers idle slots; for H1 (non-multiplexed) avoids active slots."""
+        """Submit request to the origin's first pooled slot, after evicting
+        closed ones.
+
+        Only the first slot is used because the transport API
+        (`HttpCoroClient.feed`/`drain`/...) only reaches the first slot; a
+        busy H1 slot raises before writing anything.
+        """
+        self._evict_closed(origin)
         if origin not in self._pool:
             raise Error("HttpClient: no available connection for origin")
         ref slots = self._pool[origin^]
         if len(slots) == 0:
             raise Error("HttpClient: no available connection for origin")
-        # Prefer an idle slot (important for H1 which can't multiplex)
-        for i in range(len(slots)):
-            if slots[i].ptr()[].is_idle():
-                slots[i].ptr()[].mark_active()
-                var handle = slots[i].ptr()[].submit(req^)
-                self._handle_slot[Int(handle.id())] = Int(slots[i].addr)
-                return handle^
-        # No idle slot — use first slot (H2/H3 can multiplex; H1 will raise
-        # internally if it already has an in-flight request)
         var p = slots[0].ptr()
         var handle = p[].submit(req^)
-        self._handle_slot[Int(handle.id())] = Int(slots[0].addr)
+        self._next_id += UInt64(1)
+        self._routes[Int(self._next_id)] = _Route(
+            slot_addr=Int(slots[0].addr), session_id=handle.id()
+        )
+        handle._id = self._next_id
         return handle^
 
+    def feed_body(mut self, handle: RequestHandle, var frame: BodyFrame) raises:
+        """Send a frame of `handle`'s streamed request body.
+
+        Raises if this client no longer routes `handle` (finished, or its
+        slot was evicted or detached): there is no request left to feed. An
+        H2 stream whose response completes before its body ends is left
+        half-closed (no RST_STREAM is sent).
+        """
+        var route = self._routes.find(Int(handle.id()))
+        if not route:
+            raise Error("HttpClient.feed_body: unknown or finished handle")
+        var p = Pointer[SessionSlot, MutUntrackedOrigin](
+            unsafe_from_address=route.value().slot_addr
+        )
+        p[].feed_body(route.value().session_id, frame^)
+
     def run_one(mut self, var origin: Origin, mut handle: RequestHandle) raises:
-        """Advance a handle on the session that owns it.
-        Auto-marks the slot idle when H1 response completes."""
-        var hid = Int(handle.id())
-        # Route to the correct slot via handle mapping
-        if hid in self._handle_slot:
-            var addr = self._handle_slot[hid]
-            var p = Pointer[SessionSlot, MutUntrackedOrigin](
-                unsafe_from_address=addr
-            )
-            p[].run_one(handle)
-            # Auto mark idle when H1 response completes (H1 is not multiplexed)
-            if handle.is_complete() and p[].capabilities().alpn == 0:
-                p[].mark_idle(UInt64(1))
-            if handle.is_complete():
-                _ = self._handle_slot.pop(hid)
+        """Advance a handle on the slot that owns it; a no-op once complete.
+
+        `handle` must come from this client's `submit` (ids are only unique
+        per client). One whose slot was evicted or detached errors with
+        `connection_closed`.
+        Marks an H1 slot idle when its response completes.
+        """
+        if handle.is_complete():
             return
-        # Fallback: use first slot (legacy path)
-        if origin not in self._pool:
-            raise Error("HttpClient: no connection for origin")
-        ref slots = self._pool[origin^]
-        if len(slots) == 0:
-            raise Error("HttpClient: no connection for origin")
-        var p = slots[0].ptr()
-        p[].run_one(handle)
+        var client_id = handle.id()
+        var route = self._routes.find(Int(client_id))
+        if not route:
+            handle._set_error(StreamError.connection_closed())
+            return
+        var p = Pointer[SessionSlot, MutUntrackedOrigin](
+            unsafe_from_address=route.value().slot_addr
+        )
+        handle._id = route.value().session_id
+        try:
+            p[].run_one(handle)
+        except e:
+            handle._id = client_id
+            raise e^
+        handle._id = client_id
+        if handle.is_complete():
+            if p[].capabilities().alpn == 0:
+                p[].mark_idle(UInt64(1))
+            _ = self._routes.pop(Int(client_id))
 
     # --- Convenience API ---
 

@@ -41,6 +41,8 @@ def test_handle_error_state() raises:
     h._set_error(StreamError.peer_closed())
     assert_true(h.is_errored(), "errored")
     assert_true(h.is_complete(), "errored_is_complete")
+    assert_equal_int(h.error().value().kind, StreamError.peer_closed().kind, "error() exposes the error")
+    assert_false(Bool(RequestHandle(id=UInt64(5)).error()), "no error on a pending handle")
 
 
 struct StubSession(Session):

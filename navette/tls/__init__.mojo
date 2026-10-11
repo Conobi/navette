@@ -3,7 +3,7 @@
 # Re-exports for the TLS layer.
 from .lib import SharedLibrary, TlsBackend
 from .config import TlsClientConfig, TlsServerConfig
-from .connection import TlsConnection
+from .connection import TlsConnection, TlsStep, TlsStepStatus, TlsEof
 
 # Public 0-RTT acceptance configuration surface.
 #

@@ -216,26 +216,24 @@ def test_client_loopback_roundtrip() raises:
     assert_equal_int(Int(resp.status.code()), 200, "status 200")
 
 
-def test_client_max_conns_h1() raises:
-    """Cannot exceed max H1 connections per origin."""
-    var client = HttpClient.with_config(max_conns_h1=2)
+def test_client_one_live_h1_session() raises:
+    """An origin holds one live H1 session; a second attach raises."""
+    var client = HttpClient.default()
     var origin = Origin(scheme="https", host="limited.test", port=UInt16(443))
     var s1 = H1Session()
     client.attach_session(Origin(copy=origin), SessionSlot.from_h1(s1^))
     var s2 = H1Session()
-    client.attach_session(Origin(copy=origin), SessionSlot.from_h1(s2^))
-    var s3 = H1Session()
     var raised = False
     try:
-        client.attach_session(Origin(copy=origin), SessionSlot.from_h1(s3^))
-    except:
-        raised = True
-    assert_true(raised, "should reject 3rd H1 session")
+        client.attach_session(Origin(copy=origin), SessionSlot.from_h1(s2^))
+    except e:
+        raised = "already has a live connection" in String(e)
+    assert_true(raised, "should reject a 2nd live H1 session")
 
 
-def test_client_max_conns_mux() raises:
-    """H2 origins enforce max_conns_mux (default 1)."""
-    var client = HttpClient.with_config(max_conns_mux=1)
+def test_client_one_live_h2_session() raises:
+    """H2 origins also hold one live session."""
+    var client = HttpClient.default()
     var origin = Origin(scheme="https", host="mux.test", port=UInt16(443))
     var s1 = H2Session()
     client.attach_session(Origin(copy=origin), SessionSlot.from_h2(s1^))
@@ -343,8 +341,8 @@ def main() raises:
     test_client_idle_eviction_expired()
     test_client_get_convenience()
     test_client_loopback_roundtrip()
-    test_client_max_conns_h1()
-    test_client_max_conns_mux()
+    test_client_one_live_h1_session()
+    test_client_one_live_h2_session()
     test_client_multiple_origins()
     test_is_redirect()
     test_is_idempotent()

@@ -44,9 +44,9 @@ struct DecoderLimits:
                   `feed` calls before the wrapper returns -2.
     - output_cap: total decompressed bytes that may be emitted before
                   the wrapper returns -3.
-    - ratio_x100: max output/input ratio × 100; check kicks in once
-                  cumulative input ≥ 1024 (no divide-by-zero for tiny
-                  prefixes). Returns -4 on violation.
+    - ratio_x100: max output/input ratio × 100, checked from the first
+                  byte against max(input, 1 KiB), so a sub-1 KiB bomb
+                  still fails. Returns -4 on violation.
     """
 
     var input_cap: UInt64

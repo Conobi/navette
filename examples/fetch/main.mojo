@@ -64,7 +64,7 @@ from std.pathlib import Path
 
 from bouclette.handle import OwnedHandle
 
-from navette.tls import TlsBackend, TlsClientConfig, TlsConnection
+from navette.tls import TlsBackend, TlsClientConfig, TlsConnection, TlsEof
 from navette.tls.config import QuicClientConfig
 from navette.tls.lib import librustls_supports_insecure
 from navette.http import Method, Version, Headers, Request
@@ -262,7 +262,11 @@ def _send_all(fd: Int32, data: List[Byte]) raises:
         remaining = next^
 
 
-def _recv_some(fd: Int32) raises -> List[Byte]:
+def _recv_some(fd: Int32) raises -> Tuple[List[Byte], Bool]:
+    """Bytes read and whether the peer closed (recv returned 0).
+
+    A reset (recv < 0) raises: it must never complete a truncated body.
+    """
     var buf = _heap_alloc[UInt8](_RECV_BUF)
     var rc = external_call["recv", Int](fd, buf, _RECV_BUF, Int32(0))
     var result = List[Byte]()
@@ -272,7 +276,7 @@ def _recv_some(fd: Int32) raises -> List[Byte]:
     buf.free()
     if rc < 0:
         raise "recv() returned " + String(rc)
-    return result^
+    return (result^, rc == 0)
 
 
 # ---------------------------------------------------------------------------
@@ -286,13 +290,17 @@ def _tls_send(fd: Int32, mut tls: TlsConnection) raises:
         _send_all(fd, ct)
 
 
-def _tls_recv(fd: Int32, mut tls: TlsConnection) raises -> List[Byte]:
-    var raw = _recv_some(fd)
-    if len(raw) == 0:
-        return List[Byte]()
-    tls.receive_data(Span(raw))
-    _tls_send(fd, tls)
-    return tls.drain_plaintext()
+def _tls_recv(fd: Int32, mut tls: TlsConnection) raises -> Tuple[List[Byte], Bool]:
+    """Plaintext read and whether the stream ended (TCP EOF or close_notify)."""
+    var got = _recv_some(fd)
+    if got[1]:
+        tls.receive_eof()
+        return (tls.drain_plaintext(), True)
+    if len(got[0]) > 0:
+        tls.receive_data(Span(got[0]))
+        _tls_send(fd, tls)
+    var pt = tls.drain_plaintext()
+    return (pt^, tls.eof_state() == TlsEof.CLEAN)
 
 
 # ---------------------------------------------------------------------------
@@ -828,9 +836,16 @@ def _request_via_plain_tcp(
         client.run_one(Origin(copy=origin), handle)
         if handle.is_complete():
             break
-        var data = _recv_some(sock.raw())
-        if len(data) > 0:
-            client.feed_datagram(Span(data), Origin(copy=origin), UInt64(0))
+        var got = _recv_some(sock.raw())
+        if len(got[0]) > 0:
+            client.feed_datagram(Span(got[0]), Origin(copy=origin), UInt64(0))
+        if got[1]:
+            # Peer closed: a close-delimited body completes, a truncated one errors.
+            client.feed_eof(Origin(copy=origin))
+            client.run_one(Origin(copy=origin), handle)
+            break
+    if handle.is_errored():
+        raise "request failed: connection closed before a complete response"
     if not handle.is_complete():
         raise "response not received (timeout)"
     var resp = handle^.take_response()
@@ -877,7 +892,8 @@ def _request_via_tcp(
 
     _tls_send(sock.raw(), tls)
     while tls.is_handshaking():
-        _ = _tls_recv(sock.raw(), tls)
+        if _tls_recv(sock.raw(), tls)[1]:
+            raise "connection closed during TLS handshake"
     _tls_send(sock.raw(), tls)
     var t_tls = _monotonic_ms()
 
@@ -922,11 +938,16 @@ def _request_via_tcp(
         if handle.is_errored():
             raise "request failed: stream error"
 
-        var plaintext = _tls_recv(sock.raw(), tls)
-        if len(plaintext) > 0:
+        var got = _tls_recv(sock.raw(), tls)
+        if len(got[0]) > 0:
             client.feed_datagram(
-                Span(plaintext), Origin(copy=origin), UInt64(0),
+                Span(got[0]), Origin(copy=origin), UInt64(0),
             )
+        if got[1]:
+            # Peer closed (FIN or close_notify): finish or error the response.
+            client.feed_eof(Origin(copy=origin))
+            client.run_one(Origin(copy=origin), handle)
+            break
 
     if handle.is_errored():
         raise "request failed: stream error"

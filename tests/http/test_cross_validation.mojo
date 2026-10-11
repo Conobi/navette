@@ -487,7 +487,7 @@ def _cross_response_file(path: String, mut stats: CrossStats) raises:
 
         var method_obj = Method.custom(request_method_str)
         var prod_result = try_parse_response(
-            wire, 0, 0, method_obj^, ParseConfig()
+            wire, 0, 0, method_obj^, ParseConfig(), peer_closed=True
         )
 
         if prod_result.error:

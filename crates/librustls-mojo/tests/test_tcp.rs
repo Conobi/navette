@@ -14,7 +14,7 @@ mod tcp_tests {
         fn rlsm_tls_client_new(config_handle: i32, sn_ptr: *const u8, sn_len: i32) -> i32;
         fn rlsm_tls_server_new(config_handle: i32) -> i32;
         fn rlsm_tls_conn_free(handle: i32) -> i32;
-        fn rlsm_tls_conn_read_tls(handle: i32, ct_ptr: *const u8, ct_len: i32) -> i32;
+        fn rlsm_tls_conn_read_tls(handle: i32, ct_ptr: *const u8, ct_len: i32, stop_out: *mut i32) -> i32;
         fn rlsm_tls_conn_write_tls(handle: i32, out_buf: *mut u8, buf_len: i32) -> i32;
         fn rlsm_tls_conn_read_plaintext(handle: i32, out_buf: *mut u8, buf_len: i32) -> i32;
         fn rlsm_tls_conn_write_plaintext(handle: i32, data_ptr: *const u8, data_len: i32) -> i32;
@@ -50,8 +50,9 @@ mod tcp_tests {
         if written == 0 {
             return 0;
         }
+        let mut stop = 0i32;
         let consumed = unsafe {
-            rlsm_tls_conn_read_tls(dst, buf.as_ptr(), written)
+            rlsm_tls_conn_read_tls(dst, buf.as_ptr(), written, &mut stop)
         };
         assert!(consumed >= 0, "read_tls failed: {}", last_error_str());
         written as usize
@@ -165,7 +166,8 @@ mod tcp_tests {
 
     #[test]
     fn read_tls_null_pointer_returns_minus_one() {
-        let ret = unsafe { rlsm_tls_conn_read_tls(1, std::ptr::null(), 10) };
+        let mut stop = 0i32;
+        let ret = unsafe { rlsm_tls_conn_read_tls(1, std::ptr::null(), 10, &mut stop) };
         assert_eq!(ret, -1);
     }
 

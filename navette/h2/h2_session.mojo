@@ -79,6 +79,7 @@ struct H2Session(Session):
     var _next_handle_id: UInt64
     var _stream_ctxs: Dict[Int, PtrBox[_ClientCtx]]
     var _handle_to_stream: Dict[Int, Int]
+    var _peer_closed: Bool
 
     # --- Constructors -------------------------------------------------------
 
@@ -93,6 +94,7 @@ struct H2Session(Session):
         self._next_handle_id = UInt64(0)
         self._stream_ctxs = Dict[Int, PtrBox[_ClientCtx]]()
         self._handle_to_stream = Dict[Int, Int]()
+        self._peer_closed = False
         self._flush_outbound()
 
     def __init__(out self, *, var config: H2Config) raises:
@@ -103,6 +105,7 @@ struct H2Session(Session):
         self._next_handle_id = UInt64(0)
         self._stream_ctxs = Dict[Int, PtrBox[_ClientCtx]]()
         self._handle_to_stream = Dict[Int, Int]()
+        self._peer_closed = False
         self._flush_outbound()
 
     def __deinit__(deinit self):
@@ -121,6 +124,8 @@ struct H2Session(Session):
     # --- Session trait API ---------------------------------------------------
 
     def submit(mut self, var req: Request) raises -> RequestHandle:
+        if self._peer_closed:
+            raise Error("H2Session.submit: session closed")
         self._next_handle_id += UInt64(1)
         var handle_id = self._next_handle_id
         var stream_id = self._conn.next_stream_id()
@@ -169,17 +174,13 @@ struct H2Session(Session):
         # Handle error-before-response: RST_STREAM arrived before any
         # RESPONSE_RECEIVED, so status_code is still -1.
         if ctx_ptr[].errored and not handle.is_complete():
-            handle._set_error(
-                StreamError.rst_stream(ctx_ptr[].error_code)
-            )
-            # Cleanup
-            ctx_ptr.unsafe_deinit_pointee()
-            ctx_ptr.unsafe_free()
-            try:
-                _ = self._stream_ctxs.pop(stream_id)
-                _ = self._handle_to_stream.pop(hid)
-            except:
-                pass
+            handle._set_error(StreamError.rst_stream(ctx_ptr[].error_code))
+            self._drop_stream(stream_id, hid, ctx_ptr)
+            return
+
+        if self._peer_closed and not ctx_ptr[].complete:
+            handle._set_error(StreamError.connection_closed())
+            self._drop_stream(stream_id, hid, ctx_ptr)
             return
 
         # Only deliver response when the stream is complete (all data
@@ -202,15 +203,12 @@ struct H2Session(Session):
             ctx.headers = Headers()
             handle._set_response(resp^)
             handle._mark_complete()
-            # Cleanup — free heap allocation and remove from Dicts
             ctx_ptr.unsafe_write(ctx^)
-            ctx_ptr.unsafe_deinit_pointee()
-            ctx_ptr.unsafe_free()
-            try:
-                _ = self._stream_ctxs.pop(stream_id)
-                _ = self._handle_to_stream.pop(hid)
-            except:
-                pass
+            self._drop_stream(stream_id, hid, ctx_ptr)
+
+    def is_closed(self) -> Bool:
+        """True once `feed_eof` was called. A received GOAWAY is not covered."""
+        return self._peer_closed
 
     def capabilities(self) -> Capabilities:
         return Capabilities.for_h2()
@@ -269,13 +267,39 @@ struct H2Session(Session):
     # --- Transport bridging API ---------------------------------------------
 
     def feed(mut self, data: Span[Byte, _]) raises:
-        """Feed inbound transport bytes, dispatch events."""
+        """Feed inbound transport bytes, dispatch events. Raises after `feed_eof`."""
+        if self._peer_closed:
+            raise Error("H2Session.feed: data after EOF")
         var data_list = List[Byte]()
         for ref byte in data:
             data_list.append(byte)
         var events = self._conn.receive_data(data_list)
         self._dispatch_client_events(events)
         self._flush_outbound()
+
+    def feed_eof(mut self):
+        """Signal the transport's end-of-stream, after feeding every byte.
+
+        Every open stream without END_STREAM errors with `connection_closed`.
+        Afterwards `feed` raises "data after EOF" and `submit` raises
+        "session closed".
+        """
+        self._peer_closed = True
+
+    def _drop_stream(
+        mut self,
+        stream_id: Int,
+        hid: Int,
+        ctx_ptr: Pointer[_ClientCtx, MutUntrackedOrigin],
+    ):
+        """Free a stream's client context and forget its ids."""
+        ctx_ptr.unsafe_deinit_pointee()
+        ctx_ptr.unsafe_free()
+        try:
+            _ = self._stream_ctxs.pop(stream_id)
+            _ = self._handle_to_stream.pop(hid)
+        except:
+            pass
 
     def drain(mut self) -> List[Byte]:
         """Drain queued outbound bytes for the transport to write. Delegates to drain_into."""

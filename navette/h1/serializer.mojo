@@ -11,7 +11,10 @@
 #     is appended (overriding any user-provided value).
 #   * Otherwise, if the body has any Data bytes, a `content-length` header
 #     is appended with the total byte count.
-#   * Otherwise, no framing header is added.
+#   * Otherwise a response gets `content-length: 0` (so a keep-alive peer
+#     is not left waiting for a close-delimited body), unless the caller
+#     answers HEAD / CONNECT or the user supplied Transfer-Encoding;
+#     requests get no framing header.
 #   * 1xx and 204 responses MUST NOT include a body, Content-Length, or
 #     Transfer-Encoding (only the user-provided headers are emitted).
 #   * 304 MAY include a user-provided Content-Length but MUST NOT carry a
@@ -279,8 +282,13 @@ def serialize_request(request: Request) raises -> List[Byte]:
     return buf^
 
 
-def serialize_response_into(mut buf: List[Byte], response: Response):
+def serialize_response_into(
+    mut buf: List[Byte], response: Response, skip_zero_length: Bool = False
+):
     """Serialize a Response into HTTP/1.1 wire bytes, appended to ``buf``.
+
+    ``skip_zero_length`` suppresses the ``content-length: 0`` added to an
+    empty body; set it when answering HEAD or a 2xx to CONNECT.
 
     The SP after the status code is always emitted, even when the reason
     phrase is empty (RFC 9112 Section 4). 1xx and 204 responses MUST NOT
@@ -328,7 +336,10 @@ def serialize_response_into(mut buf: List[Byte], response: Response):
     _serialize_headers(buf, response.headers)
     if use_chunked:
         _append_framing_header(buf, String("transfer-encoding"), String("chunked"))
-    elif body_len > 0 and not response.headers.has("content-length"):
+    elif not response.headers.has("content-length") and (
+        body_len > 0
+        or not (skip_zero_length or response.headers.has("transfer-encoding"))
+    ):
         _append_framing_header_int(buf, String("content-length"), body_len)
 
     _append_crlf(buf)

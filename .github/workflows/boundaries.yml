@@ -1,0 +1,156 @@
+# Partial-progress boundary suites.
+#
+# Runs only the test binaries that drive the byte boundaries between navette
+# and rustls, zlib/brotli and the H1/H2 parsers (split sweeps, size edges,
+# truncation, end of stream), plus the shim crates' own cargo tests. The full
+# suite (~20 min, 165 targets) stays a local gate.
+#
+# Notes
+# -----
+#   * `uv sync` builds navette's precompiled package, and its pre-build hooks
+#     run scripts/build_{rustls,compress}.sh again; cargo reuses the target
+#     dirs, so the second pass only re-runs the already-built cargo tests.
+#   * The C shim is compiled with -Werror here only (CFLAGS on that step);
+#     local builds keep warnings as warnings.
+#   * Clippy is report-only: the rustls shim does not pass clippy's
+#     deny-by-default lints today (not_unsafe_ptr_arg_deref, crate-wide).
+#   * 10 MiB decoder cases are local-only (NAVETTE_TEST_LARGE stays unset).
+
+name: boundaries
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "navette/tls/**"
+      - "navette/http/**"
+      - "navette/h1/**"
+      - "navette/h2/**"
+      - "navette/compress/**"
+      - "crates/**"
+      - "tests/**"
+      - "scripts/test.sh"
+      - "scripts/build_rustls.sh"
+      - "scripts/build_compress.sh"
+      - "scripts/gen_compress_fixtures.sh"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/boundaries.yml"
+  pull_request:
+    paths:
+      - "navette/tls/**"
+      - "navette/http/**"
+      - "navette/h1/**"
+      - "navette/h2/**"
+      - "navette/compress/**"
+      - "crates/**"
+      - "tests/**"
+      - "scripts/test.sh"
+      - "scripts/build_rustls.sh"
+      - "scripts/build_compress.sh"
+      - "scripts/gen_compress_fixtures.sh"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/boundaries.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boundaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boundaries:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config zlib1g-dev libbrotli-dev brotli
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          # Same interpreter as local development venvs.
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and target dirs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            crates/librustls-mojo -> target
+            crates/libcompress-mojo -> target
+
+      - name: Cache Mojo compile outputs
+        # scripts/test.sh runs mojo with HOME="", so the compiler cache lands
+        # in .cache/modular under the checkout. A partial restore still
+        # helps: entries for unchanged modules are reused.
+        uses: actions/cache@v4
+        with:
+          path: .cache/modular
+          key: mojo-${{ runner.os }}-${{ hashFiles('navette/**', 'tests/**', 'uv.lock') }}
+          restore-keys: mojo-${{ runner.os }}-
+
+      - name: Build rustls shim (runs its cargo tests)
+        run: scripts/build_rustls.sh
+
+      - name: Build compress shim with warnings as errors (runs its cargo tests)
+        env:
+          CFLAGS: -Werror
+        run: scripts/build_compress.sh
+
+      - name: Clippy (report only)
+        continue-on-error: true
+        run: |
+          cargo clippy --manifest-path crates/librustls-mojo/Cargo.toml --features insecure
+          cargo clippy --manifest-path crates/libcompress-mojo/Cargo.toml
+
+      - name: Sync environment
+        run: uv sync
+
+      - name: Generate compressed fixtures
+        run: scripts/gen_compress_fixtures.sh
+
+      - name: Boundary suites
+        run: >-
+          scripts/test.sh
+          tests/util/test_split_harness.mojo
+          tests/tls/test_tls_boundaries_existing_api.mojo
+          tests/tls/test_tls_boundaries.mojo
+          tests/http/test_decode_boundaries_existing_api.mojo
+          tests/http/test_decode_boundaries.mojo
+          tests/h1/test_h1_close_delimited_existing_api.mojo
+          tests/h1/test_h1_eof.mojo
+          tests/h2/test_h2_boundaries.mojo
+          tests/tls/test_tls_connection.mojo
+          tests/http/test_decode.mojo
+          tests/http/test_compress_limits.mojo
+          tests/http/test_cross_validation.mojo
+
+      - name: FFI boundary suites, optimized build
+        # Release builds can miscompile FFI out-parameters that -O0 handles
+        # (a decoder once returned zero bytes only when optimized).
+        env:
+          NAVETTE_TEST_OPT: -O3
+        run: >-
+          scripts/test.sh
+          tests/tls/test_tls_boundaries_existing_api.mojo
+          tests/tls/test_tls_boundaries.mojo
+          tests/http/test_decode_boundaries_existing_api.mojo
+          tests/http/test_decode_boundaries.mojo
