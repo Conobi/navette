@@ -4,7 +4,7 @@
 # (integrity tag, Appendix A.4 test vector).
 
 from std.memory import Pointer
-from std.collections import InlineArray, Span
+from std.collections import Array, Span
 
 from navette.util.owned_alloc import Owned
 from navette.util.secure_random import fill_random
@@ -54,10 +54,10 @@ comptime RETRY_REJECT_EXPIRED: Int = 6
 comptime RETRY_REJECT_UNDERSIZED: Int = 7
 
 # RFC 9001 Section 5.8: the fixed QUIC v1 Retry integrity key and nonce.
-comptime RETRY_INTEGRITY_KEY: InlineArray[UInt8, 16] = [
+comptime RETRY_INTEGRITY_KEY: Array[UInt8, 16] = [
     0xBE, 0x0C, 0x69, 0x0B, 0x9F, 0x66, 0x57, 0x5A, 0x1D, 0x76, 0x6B, 0x54, 0xE3, 0x68, 0xC8, 0x4E
 ]
-comptime RETRY_INTEGRITY_NONCE: InlineArray[UInt8, 12] = [
+comptime RETRY_INTEGRITY_NONCE: Array[UInt8, 12] = [
     0x46, 0x15, 0x99, 0xD3, 0x5D, 0x63, 0x2B, 0xF2, 0x23, 0x98, 0x25, 0xBB
 ]
 comptime _NONCE_LEN: Int = 12
@@ -78,27 +78,27 @@ struct RetryTokenScratch(Movable):
     the token type byte, so a token of another type can never open.
     """
 
-    var key: InlineArray[UInt8, 16]
-    var nonce: InlineArray[UInt8, _NONCE_LEN]
-    var aad: InlineArray[UInt8, _AAD_LEN]
-    var pt: InlineArray[UInt8, _MAX_PT_LEN]
-    var ct: InlineArray[UInt8, _MAX_PT_LEN + _TAG_LEN]
-    var out_len: InlineArray[Int32, 1]
+    var key: Array[UInt8, 16]
+    var nonce: Array[UInt8, _NONCE_LEN]
+    var aad: Array[UInt8, _AAD_LEN]
+    var pt: Array[UInt8, _MAX_PT_LEN]
+    var ct: Array[UInt8, _MAX_PT_LEN + _TAG_LEN]
+    var out_len: Array[Int32, 1]
 
     def __init__(out self):
-        self.key = InlineArray[UInt8, 16](fill=UInt8(0))
-        self.nonce = InlineArray[UInt8, _NONCE_LEN](fill=UInt8(0))
-        self.aad = InlineArray[UInt8, _AAD_LEN](fill=UInt8(0))
+        self.key = Array[UInt8, 16](fill=UInt8(0))
+        self.nonce = Array[UInt8, _NONCE_LEN](fill=UInt8(0))
+        self.aad = Array[UInt8, _AAD_LEN](fill=UInt8(0))
         var label = StringSlice(_AAD_LABEL).as_bytes()
         for i in range(_AAD_LEN - 1):
             self.aad[i] = label[i]
         self.aad[_AAD_LEN - 1] = RETRY_TOKEN_TYPE
-        self.pt = InlineArray[UInt8, _MAX_PT_LEN](fill=UInt8(0))
-        self.ct = InlineArray[UInt8, _MAX_PT_LEN + _TAG_LEN](fill=UInt8(0))
-        self.out_len = InlineArray[Int32, 1](fill=Int32(0))
+        self.pt = Array[UInt8, _MAX_PT_LEN](fill=UInt8(0))
+        self.ct = Array[UInt8, _MAX_PT_LEN + _TAG_LEN](fill=UInt8(0))
+        self.out_len = Array[Int32, 1](fill=Int32(0))
 
 
-def _write_peer_addr(sockaddr: Span[Byte, _], mut dst: InlineArray[UInt8, _MAX_PT_LEN], off: Int) -> Bool:
+def _write_peer_addr(sockaddr: Span[Byte, _], mut dst: Array[UInt8, _MAX_PT_LEN], off: Int) -> Bool:
     """Write the `_ADDR_LEN`-byte normalised peer address at `dst[off:]`; False, writing nothing, when `sockaddr` holds no parsable IP.
 
     `flowinfo` and `scope_id` are not read, and an IPv4 peer is written
@@ -202,7 +202,7 @@ def _open_retry_token(
         return RETRY_REJECT_UNDERSIZED
     if len(token) > RETRY_TOKEN_MAX_LEN:
         return RETRY_REJECT_OVERSIZED
-    var expected = InlineArray[UInt8, _MAX_PT_LEN](uninitialized=True)
+    var expected = Array[UInt8, _MAX_PT_LEN](uninitialized=True)
     if not _write_peer_addr(peer_sockaddr, expected, 0):
         return RETRY_REJECT_ADDRESS
     var ct_len = len(token) - 1 - _NONCE_LEN

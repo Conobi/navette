@@ -118,8 +118,8 @@ struct _BackendWork(Copyable, Movable):
         self.client_stream_id = move.client_stream_id
         self.request_addr = move.request_addr
 
-    def request_ptr(self) -> UnsafePointer[Request, MutAnyOrigin]:
-        return UnsafePointer[Request, MutAnyOrigin](
+    def request_ptr(self) -> Pointer[Request, MutAnyOrigin]:
+        return Pointer[Request, MutAnyOrigin](
             unsafe_from_address=Int(self.request_addr)
         )
 
@@ -172,7 +172,7 @@ struct ProxyShared(Movable):
         round-trip)."""
         for i in range(len(self.pending_backend)):
             var p = self.pending_backend[i].request_ptr()
-            p.destroy_pointee()
+            p.unsafe_deinit_pointee()
             p.free()
         var resp_keys = List[Int]()
         for key in self.completed_responses.keys():
@@ -180,10 +180,10 @@ struct ProxyShared(Movable):
         for i in range(len(resp_keys)):
             try:
                 var addr = self.completed_responses[resp_keys[i]]
-                var p = UnsafePointer[Response, MutAnyOrigin](
+                var p = Pointer[Response, MutAnyOrigin](
                     unsafe_from_address=Int(addr)
                 )
-                p.destroy_pointee()
+                p.unsafe_deinit_pointee()
                 p.free()
             except:
                 pass
@@ -209,7 +209,7 @@ def proxy_h2_stream_body(mut yielder: H2StreamingYielder) raises -> None:
     # Recover the ctx from the coroutine's typed state, then the ProxyShared
     # pointer the adapter stashed in ctx.extra_data.
     var ctx_ptr = yielder.state()[]
-    var proxy_ptr = UnsafePointer[ProxyShared, MutAnyOrigin](
+    var proxy_ptr = Pointer[ProxyShared, MutAnyOrigin](
         unsafe_from_address=Int(ctx_ptr[].extra_data)
     )
     var stream_id = Int(ctx_ptr[].stream_id)
@@ -235,7 +235,7 @@ def proxy_h2_stream_body(mut yielder: H2StreamingYielder) raises -> None:
 
     # --- Step 2: build the backend Request and queue it ---
     # Read the request fields directly through ctx_ptr (borrowing the heap
-    # pointee) rather than take_pointee()/init_pointee_move() round-tripping
+    # pointee) rather than take_pointee()/unsafe_write() round-tripping
     # the whole H2StreamingCtx. The ctx must survive intact for Step 3, and
     # b2's stricter move-checker rejects consuming a value back into the same
     # slot it was taken from. Borrowing the fields leaves the ctx in place.
@@ -256,7 +256,7 @@ def proxy_h2_stream_body(mut yielder: H2StreamingYielder) raises -> None:
     rewrite_request_headers(request, "127.0.0.1", "localhost", _VIA_H2)
 
     var req_heap = _heap_alloc[Request](1).as_unsafe_any_origin()
-    req_heap.init_pointee_move(request^)
+    req_heap.unsafe_write(request^)
 
     var work = _BackendWork(
         client_stream_id=stream_id,
@@ -290,7 +290,7 @@ def proxy_h2_stream_body(mut yielder: H2StreamingYielder) raises -> None:
             )
             _ = ctx_err.resp_writer.try_send_body(BodyFrame.data(err_body^))
             ctx_err.resp_writer.end()
-            ctx_ptr.init_pointee_move(ctx_err^)
+            ctx_ptr.unsafe_write(ctx_err^)
             return
         # Driver woke us without a response — likely stream cleanup during
         # teardown. Drop.
@@ -298,7 +298,7 @@ def proxy_h2_stream_body(mut yielder: H2StreamingYielder) raises -> None:
 
     var resp_addr = proxy_ptr[].completed_responses[stream_id]
     _ = proxy_ptr[].completed_responses.pop(stream_id)
-    var resp_ptr = UnsafePointer[Response, MutAnyOrigin](
+    var resp_ptr = Pointer[Response, MutAnyOrigin](
         unsafe_from_address=Int(resp_addr)
     )
     var response = resp_ptr.take_pointee()
@@ -344,7 +344,7 @@ def proxy_h2_stream_body(mut yielder: H2StreamingYielder) raises -> None:
     if len(resp_body) > 0:
         _ = ctx3.resp_writer.try_send_body(BodyFrame.data(resp_body^))
     ctx3.resp_writer.end()
-    ctx_ptr.init_pointee_move(ctx3^)
+    ctx_ptr.unsafe_write(ctx3^)
 
 
 # ---------------------------------------------------------------------------
@@ -401,14 +401,14 @@ struct H2ProxyState(Movable):
         for i in range(len(hkeys)):
             try:
                 var addr = self.backend_handles[hkeys[i]]
-                var p = UnsafePointer[RequestHandle, MutAnyOrigin](
+                var p = Pointer[RequestHandle, MutAnyOrigin](
                     unsafe_from_address=Int(addr)
                 )
-                p.destroy_pointee()
+                p.unsafe_deinit_pointee()
                 p.free()
             except:
                 pass
-        self.shared_ptr.destroy_pointee()
+        self.shared_ptr.unsafe_deinit_pointee()
         self.shared_ptr.free()
 
 
@@ -420,8 +420,8 @@ def h2_proxy_state_new() raises -> H2ProxyState:
     proxy_h2_stream_body, and pairs it with a default H2Session.
     """
     var shared_ptr = _heap_alloc[ProxyShared](1).as_unsafe_any_origin()
-    shared_ptr.init_pointee_move(ProxyShared())
-    var noneptr = UnsafePointer[NoneType, MutUntrackedOrigin](
+    shared_ptr.unsafe_write(ProxyShared())
+    var noneptr = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(shared_ptr)
     )
     var server = H2StreamingServer(
@@ -454,7 +454,7 @@ def _process_pending_backend(
     var shared = state.shared_ptr
     while len(shared[].pending_backend) > 0:
         var work = shared[].pending_backend.pop(0)
-        var req_ptr = UnsafePointer[Request, MutAnyOrigin](
+        var req_ptr = Pointer[Request, MutAnyOrigin](
             unsafe_from_address=Int(work.request_addr)
         )
         var req = req_ptr.take_pointee()
@@ -463,7 +463,7 @@ def _process_pending_backend(
         var handle_id = Int(handle.id())
         shared[].handle_to_stream[handle_id] = work.client_stream_id
         var h_ptr = _heap_alloc[RequestHandle](1).as_unsafe_any_origin()
-        h_ptr.init_pointee_move(handle^)
+        h_ptr.unsafe_write(handle^)
         state.backend_handles[handle_id] = UInt64(Int(h_ptr))
 
     var out_bytes = state.backend_session.drain()
@@ -496,7 +496,7 @@ def _deliver_backend_responses(
         if hid not in state.backend_handles:
             continue
         var h_addr = state.backend_handles[hid]
-        var h_ptr = UnsafePointer[RequestHandle, MutAnyOrigin](
+        var h_ptr = Pointer[RequestHandle, MutAnyOrigin](
             unsafe_from_address=Int(h_addr)
         )
         state.backend_session.run_one(h_ptr[])
@@ -515,7 +515,7 @@ def _deliver_backend_responses(
 
         var response = handle^.take_response()
         var resp_heap = _heap_alloc[Response](1).as_unsafe_any_origin()
-        resp_heap.init_pointee_move(response^)
+        resp_heap.unsafe_write(response^)
         shared[].completed_responses[client_stream_id] = UInt64(
             Int(resp_heap)
         )
@@ -642,7 +642,7 @@ def _fail_open_streams_502(
     while len(shared[].pending_backend) > 0:
         var work = shared[].pending_backend.pop(0)
         var req_ptr = work.request_ptr()
-        req_ptr.destroy_pointee()
+        req_ptr.unsafe_deinit_pointee()
         req_ptr.free()
         failed_ids.append(work.client_stream_id)
 

@@ -8,7 +8,7 @@
 # Each config holds a SharedLibrary (ref-counted) so the underlying
 # RustlsLibrary stays alive as long as any config or connection exists.
 # Destructors call `rlsm_config_free`.
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from navette.util.owned_alloc import Owned
 from std.collections import Span
 from std.utils import Variant
@@ -460,25 +460,25 @@ struct QuicServerConfig(Movable):
         """Return the max_early_data value set at construction."""
         return self._max_early_data
 
-    def early_data_store(self) -> Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]]:
+    def early_data_store(self) -> Optional[Pointer[InMemoryEarlyDataStore, MutAnyOrigin]]:
         """Return a pointer to the early-data store, if any.
 
         Covers both FilterStrategy and PredicateStrategy branches,
         preventing callers from forgetting one.
         """
         if self._early_data.isa[FilterStrategy]():
-            return Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](
-                rebind[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](
-                    UnsafePointer(to=self._early_data.unsafe_get[FilterStrategy]().store)
+            return Optional[Pointer[InMemoryEarlyDataStore, MutAnyOrigin]](
+                rebind[Pointer[InMemoryEarlyDataStore, MutAnyOrigin]](
+                    Pointer(to=self._early_data.unsafe_get[FilterStrategy]().store)
                 )
             )
         if self._early_data.isa[PredicateStrategy]():
-            return Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](
-                rebind[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](
-                    UnsafePointer(to=self._early_data.unsafe_get[PredicateStrategy]().store)
+            return Optional[Pointer[InMemoryEarlyDataStore, MutAnyOrigin]](
+                rebind[Pointer[InMemoryEarlyDataStore, MutAnyOrigin]](
+                    Pointer(to=self._early_data.unsafe_get[PredicateStrategy]().store)
                 )
             )
-        return Optional[UnsafePointer[InMemoryEarlyDataStore, MutAnyOrigin]](None)
+        return Optional[Pointer[InMemoryEarlyDataStore, MutAnyOrigin]](None)
 
 
 struct QuicClientConfig(Movable):

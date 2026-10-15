@@ -20,7 +20,7 @@ WatchLoop futures for accept, recv, and send.
     │
     │  All I/O (accept, recv, send) via WatchLoop futures
     │
-    └─ connections: List[UnsafePointer[H1TcpConn[H]]]
+    └─ connections: List[Pointer[H1TcpConn[H]]]
          └─ per conn: Socket, H1HandlerServer[H],
                      buffers, flags, owned RecvFuture/SendFuture
 ```
@@ -33,7 +33,7 @@ use `H2TcpServer` which wraps TLS+H2 with the same proactor model.
 # Per-conn handler factory
 
 Same model as `H2TcpServer` and `H3UdpServer`: pass a
-`make_handler: fn () raises -> H` to `__init__`. Server calls
+`make_handler: def () raises -> H` to `__init__`. Server calls
 the factory once per accepted TCP connection.
 
 # Integration

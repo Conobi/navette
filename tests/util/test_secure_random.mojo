@@ -9,7 +9,7 @@ comptime _EAGAIN = 11
 comptime _ENOSYS = 38
 
 
-def _all(buf: InlineArray[UInt8, 64], v: UInt8) -> Bool:
+def _all(buf: Array[UInt8, 64], v: UInt8) -> Bool:
     for i in range(64):
         if buf[i] != v:
             return False
@@ -54,8 +54,8 @@ def _over_report(p: Pointer[UInt8, MutAnyOrigin], n: Int) -> Int:
 
 
 def test_real_draws_fill_and_differ() raises:
-    var a = InlineArray[UInt8, 64](fill=UInt8(0))
-    var b = InlineArray[UInt8, 64](fill=UInt8(0))
+    var a = Array[UInt8, 64](fill=UInt8(0))
+    var b = Array[UInt8, 64](fill=UInt8(0))
     fill_random(Span(a))
     fill_random(Span(b))
     assert_true(not _all(a, 0), "a draw is not all zero")
@@ -68,21 +68,21 @@ def test_real_draws_fill_and_differ() raises:
 
 
 def test_short_reads_fill_every_byte() raises:
-    var buf = InlineArray[UInt8, 64](fill=UInt8(0))
+    var buf = Array[UInt8, 64](fill=UInt8(0))
     _fill_random_with[_short_reads](Span(buf))
     assert_true(_all(buf, 0xAB), "short reads are retried until every byte is filled")
     print("PASS: test_short_reads_fill_every_byte")
 
 
 def test_eintr_is_retried() raises:
-    var buf = InlineArray[UInt8, 64](fill=UInt8(0))
+    var buf = Array[UInt8, 64](fill=UInt8(0))
     _fill_random_with[_eintr_then_fill](Span(buf))
     assert_true(_all(buf, 0xAB), "EINTR is retried")
     print("PASS: test_eintr_is_retried")
 
 
 def _expect_raise[f: _GetrandomFn](name: String) raises:
-    var buf = InlineArray[UInt8, 64](fill=UInt8(0))
+    var buf = Array[UInt8, 64](fill=UInt8(0))
     var raised = False
     try:
         _fill_random_with[f](Span(buf))

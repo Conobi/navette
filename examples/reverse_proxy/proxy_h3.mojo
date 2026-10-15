@@ -152,8 +152,8 @@ struct _PendingForward(Copyable, Movable):
         self.h3_sid = move.h3_sid
         self.request_addr = move.request_addr
 
-    def request_ptr(self) -> UnsafePointer[Request, MutAnyOrigin]:
-        return UnsafePointer[Request, MutAnyOrigin](
+    def request_ptr(self) -> Pointer[Request, MutAnyOrigin]:
+        return Pointer[Request, MutAnyOrigin](
             unsafe_from_address=Int(self.request_addr)
         )
 
@@ -283,7 +283,7 @@ struct ForwardingHandler(StreamHandler):
         )
 
         var req_heap = _heap_alloc[Request](1)
-        req_heap.init_pointee_move(request^)
+        req_heap.unsafe_write(request^)
 
         self._pending.append(
             _PendingForward(
@@ -312,7 +312,7 @@ struct ForwardingHandler(StreamHandler):
         mid-flight (connection torn down between flush and drain)."""
         for i in range(len(self._pending)):
             var p = self._pending[i].request_ptr()
-            p.destroy_pointee()
+            p.unsafe_deinit_pointee()
             p.free()
 
 
@@ -342,7 +342,7 @@ struct H3BackendConn(Movable):
     demux on injection, so a torn-down connection can never receive a stray
     response.
 
-    Heap-allocated and addressed via `UnsafePointer` so recv/send buffers
+    Heap-allocated and addressed via `Pointer` so recv/send buffers
     inside `send_state` stay put while io_uring ops are in flight.
     """
 
@@ -445,10 +445,10 @@ struct H3BackendRegistry(Movable):
         for i in range(len(keys)):
             try:
                 var addr = self.backends[keys[i]]
-                var p = UnsafePointer[H3BackendConn, MutAnyOrigin](
+                var p = Pointer[H3BackendConn, MutAnyOrigin](
                     unsafe_from_address=Int(addr)
                 )
-                p.destroy_pointee()
+                p.unsafe_deinit_pointee()
                 p.free()
             except:
                 pass
@@ -457,20 +457,20 @@ struct H3BackendRegistry(Movable):
 
     def backend_ptr(
         self, backend_conn_id: UInt64
-    ) -> UnsafePointer[H3BackendConn, MutAnyOrigin]:
+    ) -> Pointer[H3BackendConn, MutAnyOrigin]:
         """Resolve a synthetic backend_conn_id to its heap `H3BackendConn`
         pointer, or a null pointer if absent (stale completion)."""
         if backend_conn_id not in self.backends:
-            return UnsafePointer[H3BackendConn, MutAnyOrigin](
+            return Pointer[H3BackendConn, MutAnyOrigin](
                 unsafe_from_address=Int(0)
             )
         try:
             var addr = self.backends[backend_conn_id]
-            return UnsafePointer[H3BackendConn, MutAnyOrigin](
+            return Pointer[H3BackendConn, MutAnyOrigin](
                 unsafe_from_address=Int(addr)
             )
         except:
-            return UnsafePointer[H3BackendConn, MutAnyOrigin](
+            return Pointer[H3BackendConn, MutAnyOrigin](
                 unsafe_from_address=Int(0)
             )
 
@@ -489,7 +489,7 @@ struct H3BackendRegistry(Movable):
             _ = self.backends.pop(backend_conn_id)
         except:
             pass
-        ptr.destroy_pointee()
+        ptr.unsafe_deinit_pointee()
         ptr.free()
 
     def open_backend(mut self, var fwd: _PendingForward) raises -> UInt64:
@@ -508,10 +508,10 @@ struct H3BackendRegistry(Movable):
         )
 
         var backend_handle = tcp_v4_nonblocking()
-        var tls_shared_ptr = UnsafePointer[TlsBackend, MutAnyOrigin](
+        var tls_shared_ptr = Pointer[TlsBackend, MutAnyOrigin](
             unsafe_from_address=Int(self.tls_shared_addr)
         )
-        var h1_cfg_ptr = UnsafePointer[TlsClientConfig, MutAnyOrigin](
+        var h1_cfg_ptr = Pointer[TlsClientConfig, MutAnyOrigin](
             unsafe_from_address=Int(self.h1_client_config_addr)
         )
         var backend_tls = TlsConnection.new_client(
@@ -538,7 +538,7 @@ struct H3BackendRegistry(Movable):
         bconn.handle = Optional[RequestHandle](handle^)
 
         var bptr = _heap_alloc[H3BackendConn](1)
-        bptr.init_pointee_move(bconn^)
+        bptr.unsafe_write(bconn^)
         self.backends[backend_conn_id] = UInt64(Int(bptr))
         return backend_conn_id
 

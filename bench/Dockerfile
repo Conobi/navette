@@ -50,8 +50,8 @@ dependencies = [
     # Track the root pyproject.toml: mojox 0.2.0 predates the Mojo 1.0.0
     # toolchain and cannot drive the pinned compiler.
     "mojox>=0.5",
-    "mojo-compiler==1.0.0",
-    "mojo-compiler-mojo-libs==1.0.0",
+    "mojo-compiler==1.1.0",
+    "mojo-compiler-mojo-libs==1.1.0",
 ]
 
 [tool.uv]

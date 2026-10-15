@@ -5,7 +5,7 @@
 # _H3StreamBuf — per-stream byte accumulator.
 
 from std.collections import Dict, Optional
-from std.memory import Pointer, UnsafePointer
+from std.memory import Pointer
 from std.collections import Span
 from std.bit import count_trailing_zeros
 
@@ -113,7 +113,7 @@ def _write_frame(
     payload may borrow another field of the H3Connection that owns `quic`.
     """
     var n = varint_len(UInt64(len(payload)))
-    var head = InlineArray[Byte, 9](fill=0)
+    var head = Array[Byte, 9](fill=0)
     head[0] = frame_type
     for i in range(n):
         head[n - i] = UInt8((UInt64(len(payload)) >> UInt64(8 * i)) & 0xFF)
@@ -792,11 +792,11 @@ struct H3Connection(Movable, ResponseSink):
         # varint, and H3_DATAGRAM=1 (RFC 9297) only after
         # `enable_h3_datagrams()`, which also bumps the frame length.
         comptime assert H3_MAX_FIELD_SECTION_SIZE == 0x8000, "SETTINGS bytes hard-code it"
-        var ctrl: InlineArray[Byte, 12] = [0x00, 0x04, 0x07, 0x01, 0x00, 0x06, 0x80, 0x00, 0x80, 0x00, 0x33, 0x01]
+        var ctrl: Array[Byte, 12] = [0x00, 0x04, 0x07, 0x01, 0x00, 0x06, 0x80, 0x00, 0x80, 0x00, 0x33, 0x01]
         if self._local_h3_datagram_enabled:
             ctrl[2] = 0x09
         self._quic.send_stream_data(ctrl_sid, Span(ctrl)[: 12 if self._local_h3_datagram_enabled else 10], False)
-        var qpack_types: InlineArray[Byte, 2] = [0x02, 0x03]  # encoder, decoder
+        var qpack_types: Array[Byte, 2] = [0x02, 0x03]  # encoder, decoder
         self._quic.send_stream_data(qenc_sid, Span(qpack_types)[0:1], False)
         self._quic.send_stream_data(qdec_sid, Span(qpack_types)[1:2], False)
 

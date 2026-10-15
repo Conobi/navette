@@ -97,7 +97,7 @@ def _send_all(fd: Int32, data: List[Byte]) raises:
     if n == 0:
         return
     # Copy the remaining slice into a fresh buffer each retry to avoid
-    # pointer arithmetic (UnsafePointer has no .offset() in 0.26.2).
+    # pointer arithmetic (Pointer has no .offset() in 0.26.2).
     var remaining = List[Byte]()
     for i in range(n):
         remaining.append(data[i])

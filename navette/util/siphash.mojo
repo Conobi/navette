@@ -33,7 +33,7 @@ struct SipKey(Copyable, Movable):
         silently left zero would be public, letting a client precompute
         colliding inputs.
         """
-        var buf = InlineArray[UInt8, 16](fill=UInt8(0))
+        var buf = Array[UInt8, 16](fill=UInt8(0))
         fill_random(Span(buf))
         var k0 = UInt64(0)
         var k1 = UInt64(0)

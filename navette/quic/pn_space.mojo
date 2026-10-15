@@ -133,7 +133,7 @@ struct PacketNumberSpace(Copyable, Movable):
     var largest_acked_pn: Int              # -1 = no ACK from peer
     # Recv ranges, fixed capacity; `ack_ranges_len` tracks the valid prefix
     # so receiving ACK-eligible packets never heap-allocates.
-    var ack_ranges: InlineArray[AckRangeEntry, MAX_ACK_RANGE_ENTRIES]
+    var ack_ranges: Array[AckRangeEntry, MAX_ACK_RANGE_ENTRIES]
     var ack_ranges_len: Int
     var ack_eliciting_since_last_ack: Int
     var ack_needed: Bool
@@ -176,7 +176,7 @@ struct PacketNumberSpace(Copyable, Movable):
         self.next_pn = UInt64(0)
         self.largest_recv_pn = -1
         self.largest_acked_pn = -1
-        self.ack_ranges = InlineArray[AckRangeEntry, MAX_ACK_RANGE_ENTRIES](
+        self.ack_ranges = Array[AckRangeEntry, MAX_ACK_RANGE_ENTRIES](
             fill=AckRangeEntry(UInt64(0), UInt64(0))
         )
         self.ack_ranges_len = 0
@@ -208,7 +208,7 @@ struct PacketNumberSpace(Copyable, Movable):
         self.next_pn = copy.next_pn
         self.largest_recv_pn = copy.largest_recv_pn
         self.largest_acked_pn = copy.largest_acked_pn
-        self.ack_ranges = InlineArray[AckRangeEntry, MAX_ACK_RANGE_ENTRIES](
+        self.ack_ranges = Array[AckRangeEntry, MAX_ACK_RANGE_ENTRIES](
             copy=copy.ack_ranges
         )
         self.ack_ranges_len = copy.ack_ranges_len

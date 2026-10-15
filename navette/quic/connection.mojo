@@ -13,7 +13,7 @@
 #   var ev = conn.poll()                 # HANDSHAKE_COMPLETE, etc.
 
 from std.collections import Dict, Optional
-from std.memory import Pointer, UnsafePointer
+from std.memory import Pointer
 from std.collections import Span
 from std.utils import Variant
 from navette.util.owned_alloc import Owned
@@ -284,7 +284,7 @@ def _create_client_tls_conn(
     var sni_len = len(sni_bytes)
     if sni_len > _MAX_SNI_LEN:
         raise "quic_client_conn_new: server name longer than 255 bytes"
-    var sni = InlineArray[UInt8, _MAX_SNI_LEN](uninitialized=True)
+    var sni = Array[UInt8, _MAX_SNI_LEN](uninitialized=True)
     Span(sni)[:sni_len].copy_from(sni_bytes)
     var tp_len = len(tp_bytes)
     if tp_len == 0:
@@ -1118,7 +1118,7 @@ struct QuicConnection(Movable):
 
     def _run_anti_replay_check(mut self) raises:
         """Execute the one-shot anti-replay check against the early data store."""
-        var auth_buf = InlineArray[UInt8, 32](fill=Byte(0))
+        var auth_buf = Array[UInt8, 32](fill=Byte(0))
         var auth_len = UInt(0)
         var rc = self._invoke_replay_authenticator_ffi(auth_buf, auth_len)
         if rc != Int32(0):
@@ -2572,7 +2572,7 @@ struct QuicConnection(Movable):
         The 4 KB output buffer lives on the stack: this runs on the event
         loop's thread stack, never inside a 64 KB handler coroutine.
         """
-        var out_buf = InlineArray[UInt8, _WRITE_HS_BUF_SIZE](uninitialized=True)
+        var out_buf = Array[UInt8, _WRITE_HS_BUF_SIZE](uninitialized=True)
         while True:
             var written = Int32(0)
             var kc = UInt8(0)
@@ -2636,7 +2636,7 @@ struct QuicConnection(Movable):
         # Seed Application-space PN skipping from the CSPRNG: a seed the
         # peer can derive (it used to be our SCID) lets it predict every
         # skipped PN and ACK optimistically without tripping the check.
-        var seed_bytes = InlineArray[UInt8, 8](fill=UInt8(0))
+        var seed_bytes = Array[UInt8, 8](fill=UInt8(0))
         fill_random(Span(seed_bytes))
         var pn_skip_seed = UInt64(0)
         for i in range(8):
@@ -2680,7 +2680,7 @@ struct QuicConnection(Movable):
 
     def _apply_peer_transport_params(mut self, now: UInt64) raises:
         """Read, parse, validate, and apply peer transport parameters."""
-        var tp_buf = InlineArray[UInt8, _TP_BUF_SIZE](uninitialized=True)
+        var tp_buf = Array[UInt8, _TP_BUF_SIZE](uninitialized=True)
         var tp_written = Int32(0)
         var lib = self._lib.inner_ptr()
         var rc = lib[].quic_conn_transport_params(
@@ -2902,7 +2902,7 @@ struct QuicConnection(Movable):
 
     def _invoke_replay_authenticator_ffi(
         mut self,
-        mut out_buf: InlineArray[UInt8, 32],
+        mut out_buf: Array[UInt8, 32],
         mut out_len: UInt,
     ) -> Int32:
         """Delegate to zero_rtt.invoke_replay_authenticator_ffi."""

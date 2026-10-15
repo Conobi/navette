@@ -1,4 +1,4 @@
-fn handle(mut self):
+def handle(mut self):
     self._quic.close_app(0x0, "no tag here", now)
     var a = 1
     var b = 2

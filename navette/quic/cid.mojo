@@ -51,7 +51,7 @@ def clamp_local_active_limit(limit: UInt64) -> UInt64:
 
 # Key of the stateless reset tokens: one per server, so every connection of
 # the server derives the same token for a CID (RFC 9000 Section 10.3).
-comptime ResetKey = InlineArray[UInt8, 32]
+comptime ResetKey = Array[UInt8, 32]
 
 # Close reasons for CID frame violations.
 comptime CID_REASON_LIMIT = "NEW_CONNECTION_ID exceeds active_connection_id_limit"
@@ -149,7 +149,7 @@ struct CidManager(Movable):
         self.local_retire_prior_to = UInt64(0)
 
         # The peer's initial CID: its token, if any, is not tracked.
-        var zero_token = ByteVec[16](_storage=InlineArray[Byte, 16](fill=Byte(0)), _len=16)
+        var zero_token = ByteVec[16](_storage=Array[Byte, 16](fill=Byte(0)), _len=16)
         self.remote_cids = [
             CidEntry(CidBuf.from_span(initial_remote_cid), UInt64(0), zero_token^, CID_ACTIVE, False)
         ]
@@ -446,7 +446,7 @@ def _verdict(code: UInt64, reason: StaticString) -> Optional[GuardVerdict]:
 
 def random_cid() raises -> CidBuf:
     """A fresh 8-byte CID from the kernel CSPRNG; the server demux packs 8-byte DCIDs raw (`dcid_to_u64`)."""
-    var cid = CidBuf(data=InlineArray[UInt8, 20](fill=UInt8(0)), len=UInt8(8))
+    var cid = CidBuf(data=Array[UInt8, 20](fill=UInt8(0)), len=UInt8(8))
     fill_random(Span(cid.data)[:8])
     return cid^
 
@@ -463,9 +463,9 @@ def _hmac_sha256_truncate16(
     """
     if len(key) > 32 or len(msg) > 32:
         raise "HMAC-SHA256: key or message too long"
-    var k = InlineArray[UInt8, 32](fill=UInt8(0))
-    var m = InlineArray[UInt8, 32](fill=UInt8(0))
-    var mac = InlineArray[UInt8, 32](fill=UInt8(0))
+    var k = Array[UInt8, 32](fill=UInt8(0))
+    var m = Array[UInt8, 32](fill=UInt8(0))
+    var mac = Array[UInt8, 32](fill=UInt8(0))
     for i in range(len(key)):
         k[i] = key[i]
     for i in range(len(msg)):

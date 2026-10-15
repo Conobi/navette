@@ -473,6 +473,16 @@ def _encode_goaway_payload(last_stream_id: Int, error_code: Int) -> List[Byte]:
     return payload^
 
 
+@no_inline
+def _u32_to_int(v: UInt32) -> Int:
+    """Widen a SETTINGS value to `Int`, safe for the 0xFFFFFFFF "unlimited" default.
+
+    Mojo 1.1.0 constant-folds a compile-time-known 4294967295 converted to
+    `Int` into -1. `@no_inline` keeps the conversion out of reach of that fold.
+    """
+    return Int(v)
+
+
 def _append_setting(mut payload: List[Byte], id: Int, value: Int):
     """Append a 6-byte SETTINGS entry (2-byte id + 4-byte value)."""
     var base = len(payload)
@@ -542,8 +552,8 @@ struct H2Connection(Movable, ResponseSink):
         self._recv_window = DEFAULT_CONNECTION_WINDOW
         self._recv_window_consumed = 0
         var hpack_config = HpackConfig()
-        hpack_config.max_header_list_size = Int(self._config.max_header_list_size)
-        hpack_config.max_header_table_size = Int(self._config.header_table_size)
+        hpack_config.max_header_list_size = _u32_to_int(self._config.max_header_list_size)
+        hpack_config.max_header_table_size = _u32_to_int(self._config.header_table_size)
         self._hpack_encoder = HpackEncoder(hpack_config)
         self._hpack_decoder = HpackDecoder(hpack_config)
         self._expecting_continuation_for = UInt32(0)
@@ -619,14 +629,14 @@ struct H2Connection(Movable, ResponseSink):
         """Build and queue initial SETTINGS frame."""
         var payload = List[Byte]()
         _append_setting(payload, SETTINGS_ENABLE_PUSH, 0)
-        _append_setting(payload, SETTINGS_MAX_CONCURRENT_STREAMS, Int(self._config.max_concurrent_streams))
-        _append_setting(payload, SETTINGS_MAX_HEADER_LIST_SIZE, Int(self._config.max_header_list_size))
+        _append_setting(payload, SETTINGS_MAX_CONCURRENT_STREAMS, _u32_to_int(self._config.max_concurrent_streams))
+        _append_setting(payload, SETTINGS_MAX_HEADER_LIST_SIZE, _u32_to_int(self._config.max_header_list_size))
         if Int(self._config.initial_window_size) != DEFAULT_INITIAL_WINDOW_SIZE:
             _append_setting(payload, SETTINGS_INITIAL_WINDOW_SIZE, Int(self._config.initial_window_size))
         if Int(self._config.max_frame_size) != DEFAULT_MAX_FRAME_SIZE:
             _append_setting(payload, SETTINGS_MAX_FRAME_SIZE, Int(self._config.max_frame_size))
         if Int(self._config.header_table_size) != DEFAULT_HEADER_TABLE_SIZE:
-            _append_setting(payload, SETTINGS_HEADER_TABLE_SIZE, Int(self._config.header_table_size))
+            _append_setting(payload, SETTINGS_HEADER_TABLE_SIZE, _u32_to_int(self._config.header_table_size))
         if self._config.enable_connect_protocol:
             _append_setting(payload, SETTINGS_ENABLE_CONNECT_PROTOCOL, 1)
         var frame = Frame(len(payload), FRAME_SETTINGS, 0, 0, payload)
@@ -843,7 +853,7 @@ struct H2Connection(Movable, ResponseSink):
                 raise Error("Stream ID must be " + String(Int(self._next_stream_id)))
             if sid % 2 == 0:
                 raise Error("Client stream IDs must be odd")
-            if self._active_stream_count >= Int(self._local_settings.max_concurrent_streams):
+            if self._active_stream_count >= _u32_to_int(self._local_settings.max_concurrent_streams):
                 raise Error("Exceeds MAX_CONCURRENT_STREAMS")
             self._next_stream_id = UInt32(sid + 2)
             var stream = StreamState(
@@ -1455,7 +1465,7 @@ struct H2Connection(Movable, ResponseSink):
         self._locally_closed.advance(UInt32(stream_id))
         # Max concurrent streams: refuse the stream, keep the connection
         # (RFC 9113 Section 5.1.2, Section 8.7). The block is still decoded.
-        if self._active_stream_count >= Int(self._local_settings.max_concurrent_streams):
+        if self._active_stream_count >= _u32_to_int(self._local_settings.max_concurrent_streams):
             self._discard_header_block(frame, events, refuse=True)
             return
         var stream = StreamState(
@@ -1596,7 +1606,7 @@ struct H2Connection(Movable, ResponseSink):
         the block, each costing a copy of it.
         """
         self._continuation_count += 1
-        if block_size <= 2 * Int(self._local_settings.max_header_list_size) and self._continuation_count <= MAX_CONTINUATIONS:
+        if block_size <= 2 * _u32_to_int(self._local_settings.max_header_list_size) and self._continuation_count <= MAX_CONTINUATIONS:
             return False
         self._connection_error(events, H2_ENHANCE_YOUR_CALM, String("Header block too large"))
         return True

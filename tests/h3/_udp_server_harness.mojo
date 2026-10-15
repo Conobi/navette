@@ -15,7 +15,7 @@ outcome — the server legitimately emits nothing in the delayed-ACK,
 idle-reap and "second drain is empty" cases.
 """
 
-from std.collections import InlineArray, Optional, Span
+from std.collections import Array, Optional, Span
 from std.ffi import external_call
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
@@ -48,7 +48,7 @@ def _poll_readable(fd: Int32, timeout_ms: Int) -> Bool:
     """`poll(2)` one descriptor for POLLIN; False on timeout or error."""
     # struct pollfd { int fd; short events; short revents; } — 8 bytes,
     # events in the low half of the second word (little-endian host).
-    var pfd = InlineArray[Int32, 2](fill=Int32(0))
+    var pfd = Array[Int32, 2](fill=Int32(0))
     pfd[0] = fd
     pfd[1] = Int32(_POLLIN)
     var rc = external_call["poll", Int32](

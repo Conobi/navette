@@ -49,7 +49,7 @@ from interop.file_io import read_file
 
 def test_ptrbox_roundtrip() raises:
     var p = _heap_alloc[Int](1)
-    p.init_pointee_move(123)
+    p.unsafe_write(123)
     var box = PtrBox[Int](p)
     assert_true(box.is_some())
     assert_equal(box.ptr()[], 123)
@@ -58,7 +58,7 @@ def test_ptrbox_roundtrip() raises:
     assert_equal(box2.ptr()[], 123)
 
     var raw = box.ptr()
-    raw.destroy_pointee()
+    raw.unsafe_deinit_pointee()
     raw.free()
 
 
@@ -118,7 +118,7 @@ def _push_fake_slot(
 
     Lookup paths never deref h3, so null is safe — provided we drain
     these entries before the server drops (server's __del__ walks
-    conn_slots and would destroy_pointee+free a null h3).
+    conn_slots and would unsafe_deinit_pointee+free a null h3).
     """
     var slot = ConnSlot[StubHandler](
         null_ptr[H3HandlerServer[StubHandler], MutUntrackedOrigin](),
@@ -130,7 +130,7 @@ def _push_fake_slot(
 
 def _drain_fake_slots(mut server: H3UdpServer[StubHandler]):
     """Pop every fake slot before the server is dropped, so __del__
-    doesn't try to destroy_pointee+free their null h3 pointers."""
+    doesn't try to unsafe_deinit_pointee+free their null h3 pointers."""
     while len(server.conn_slots) > 0:
         _ = server.conn_slots.pop()
 

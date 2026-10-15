@@ -62,7 +62,7 @@ struct ByteVec[capacity: Int](Movable, Copyable, Sized):
     def remaining_capacity(self) -> Int:
         return Self.capacity - self._len
 
-    def unsafe_ptr(ref self) -> UnsafePointer[Byte, origin_of(self._storage)]:
+    def unsafe_ptr(ref self) -> Pointer[Byte, origin_of(self._storage)]:
         """Pointer to the first byte; valid only while `self` is alive."""
         return self._storage.unsafe_ptr()
 
@@ -119,6 +119,6 @@ struct OwnedBuf[capacity: Int](Movable, Sized):
     def remaining_capacity(self) -> Int:
         return Self.capacity - self._len
 
-    def unsafe_ptr(ref self) -> UnsafePointer[Byte, origin_of(self._storage[])]:
+    def unsafe_ptr(ref self) -> Pointer[Byte, origin_of(self._storage[])]:
         """Pointer to the heap backing store; valid only while `self` is alive."""
         return self._storage[].unsafe_ptr()

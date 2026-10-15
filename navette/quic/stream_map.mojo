@@ -7,7 +7,7 @@
 
 from std.collections import Dict, Optional
 from std.collections.deque import Deque
-from std.memory import Pointer, UnsafePointer
+from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 from navette.quic.flow_control import FlowControl, CONN_FC_MAX_WINDOW
 from navette.protect.governor import conn_limit
@@ -32,7 +32,7 @@ struct StreamMap(Movable):
     # Streams are heap-allocated and stored by pointer so that in-place
     # mutation (`stream_ref`/`stream_ptr`) never has to copy the ~5KB+
     # Stream (SendBuf/RecvBuf included) out of and back into the Dict.
-    var streams: Dict[Int, UnsafePointer[Stream, MutUntrackedOrigin]]
+    var streams: Dict[Int, Pointer[Stream, MutUntrackedOrigin]]
     var is_server: Bool
 
     # ── Connection-level flow control ─────────────────────────────────────────
@@ -98,7 +98,7 @@ struct StreamMap(Movable):
         local_window_bidi_remote: UInt64,
         local_window_uni: UInt64,
     ):
-        self.streams = Dict[Int, UnsafePointer[Stream, MutUntrackedOrigin]]()
+        self.streams = Dict[Int, Pointer[Stream, MutUntrackedOrigin]]()
         self.is_server = is_server
 
         self.conn_fc_recv = FlowControl(conn_recv_limit, conn_recv_window, CONN_FC_MAX_WINDOW)
@@ -404,7 +404,7 @@ struct StreamMap(Movable):
         """Cheaper `stream_id in self.streams` for callers about to take a ref."""
         return stream_id in self.streams
 
-    def stream_ptr(self, stream_id: Int) raises -> UnsafePointer[Stream, MutUntrackedOrigin]:
+    def stream_ptr(self, stream_id: Int) raises -> Pointer[Stream, MutUntrackedOrigin]:
         """Direct pointer to the stream for in-place mutation — no copy.
 
         The pointer stays valid until `maybe_cleanup` removes this
@@ -417,7 +417,7 @@ struct StreamMap(Movable):
 
     def try_stream_ptr(
         self, stream_id: Int,
-    ) -> Optional[UnsafePointer[Stream, MutUntrackedOrigin]]:
+    ) -> Optional[Pointer[Stream, MutUntrackedOrigin]]:
         """Look up a stream pointer without raising. Returns None if absent (1 probe)."""
         return self.streams.find(stream_id)
 

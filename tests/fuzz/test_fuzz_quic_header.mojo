@@ -22,7 +22,7 @@ from tests.fuzz.lib.report import FuzzReport, ObserveResult
 from navette.quic.packet import parse_packet_header
 
 
-alias _SCID_LEN_PIN: Int = 8
+comptime _SCID_LEN_PIN: Int = 8
 
 
 def _check_property(b: List[Byte]) -> ObserveResult:

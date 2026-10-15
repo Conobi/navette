@@ -153,7 +153,7 @@ def test_udp_construction_wires_profile() raises:
             " (got None)"
         )
 
-    h3_ptr.destroy_pointee()
+    h3_ptr.unsafe_deinit_pointee()
     h3_ptr.free()
     # Extend the server's lifetime past the FFI-dependent reads above so
     # ASAP-destruction does not free `server.profile` mid-assertion.

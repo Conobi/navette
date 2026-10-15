@@ -241,7 +241,7 @@ def seal_packet(
 
 def emit_one_stream_frame(
     sid: Int,
-    p: UnsafePointer[Stream, MutUntrackedOrigin],
+    p: Pointer[Stream, MutUntrackedOrigin],
     ss: SendState,
     limit: Int,
     mut sent_records: List[SentStreamFrame],

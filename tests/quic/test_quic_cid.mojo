@@ -418,7 +418,7 @@ def test_reset_tokens_distinct_over_10k_cids(lib: SharedLibrary) raises:
 
 def test_given_reset_key_is_used(lib: SharedLibrary) raises:
     """Managers built with one key agree on every token; a different key disagrees."""
-    var key = InlineArray[UInt8, 32](fill=UInt8(0x5A))
+    var key = Array[UInt8, 32](fill=UInt8(0x5A))
     var a = CidManager(lib, _make_cid(0xAA), _make_cid(0xBB), UInt64(4), UInt64(4), key.copy())
     var b = CidManager(lib, _make_cid(0xCC), _make_cid(0xDD), UInt64(4), UInt64(4), key.copy())
     var c = _make_manager(lib)

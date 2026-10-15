@@ -342,7 +342,7 @@ def test_h3_streaming_post_with_body() raises:
 def test_h3_streaming_trailers() raises:
     """POST with trailers → coroutine reads trailer header x-custom-trailer."""
     var found_ptr = _heap_alloc[Int](1)
-    found_ptr.init_pointee_move(Int(0))
+    found_ptr.unsafe_write(Int(0))
     var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(found_ptr)
     )
@@ -378,7 +378,7 @@ def test_h3_streaming_trailers() raises:
     now = _pump_streaming_client(server, client, now, 30)
 
     var found_val = found_ptr[]
-    found_ptr.destroy_pointee()
+    found_ptr.unsafe_deinit_pointee()
     found_ptr.free()
     assert_equal_int(found_val, 1, "trailer header x-custom-trailer not received by coroutine")
     print("  test_h3_streaming_trailers: PASS")
@@ -387,7 +387,7 @@ def test_h3_streaming_trailers() raises:
 def test_h3_streaming_rst_stream() raises:
     """Client resets a stream → coroutine receives H3StreamCancelled, sets signal=42."""
     var signal_ptr = _heap_alloc[Int](1)
-    signal_ptr.init_pointee_move(Int(0))
+    signal_ptr.unsafe_write(Int(0))
     var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(signal_ptr)
     )
@@ -420,7 +420,7 @@ def test_h3_streaming_rst_stream() raises:
     now = _pump_streaming_client(server, client, now, 20)
 
     var signal_val = signal_ptr[]
-    signal_ptr.destroy_pointee()
+    signal_ptr.unsafe_deinit_pointee()
     signal_ptr.free()
     assert_equal_int(signal_val, 42, "coroutine did not receive stream reset error")
     print("  test_h3_streaming_rst_stream: PASS")
@@ -442,7 +442,7 @@ def test_h3_streaming_cancel_via_rst_stream() raises:
        signal == 99.
     """
     var signal_ptr = _heap_alloc[Int](1)
-    signal_ptr.init_pointee_move(Int(0))
+    signal_ptr.unsafe_write(Int(0))
     var extra = Pointer[NoneType, MutUntrackedOrigin](
         unsafe_from_address=Int(signal_ptr)
     )
@@ -479,7 +479,7 @@ def test_h3_streaming_cancel_via_rst_stream() raises:
     now = _pump_streaming_client(server, client, now, 20)
 
     var signal_val = signal_ptr[]
-    signal_ptr.destroy_pointee()
+    signal_ptr.unsafe_deinit_pointee()
     signal_ptr.free()
 
     # Handler should have caught H3StreamCancelled and written 99

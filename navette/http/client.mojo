@@ -141,15 +141,20 @@ struct HttpClient(Movable):
             try:
                 ref slots = self._pool[origin]
                 var keep = List[SessionSlotPtr]()
+                # Routes are dropped after the walk: `_drop_routes` mutates
+                # `self` while `slots` still borrows `self._pool`.
+                var dropped = List[Int]()
                 for ref slot in slots:
                     var p = slot.ptr()
                     if p[].is_idle() and (now - p[].idle_since) > self._idle_timeout_ms:
-                        self._drop_routes(Int(slot.addr))
+                        dropped.append(Int(slot.addr))
                         p.unsafe_deinit_pointee()
                         p.unsafe_free()
                     else:
                         keep.append(SessionSlotPtr(copy=slot))
                 self._pool[Origin(copy=origin)] = keep^
+                for addr in dropped:
+                    self._drop_routes(addr)
             except:
                 pass
 
@@ -175,15 +180,20 @@ struct HttpClient(Movable):
         try:
             ref slots = self._pool[origin]
             var keep = List[SessionSlotPtr]()
+            # Routes are dropped after the walk: `_drop_routes` mutates
+            # `self` while `slots` still borrows `self._pool`.
+            var dropped = List[Int]()
             for ref slot in slots:
                 var p = slot.ptr()
                 if not p[].is_closed():
                     keep.append(SessionSlotPtr(copy=slot))
                     continue
-                self._drop_routes(Int(slot.addr))
+                dropped.append(Int(slot.addr))
                 p.unsafe_deinit_pointee()
                 p.unsafe_free()
             self._pool[Origin(copy=origin)] = keep^
+            for addr in dropped:
+                self._drop_routes(addr)
         except:
             pass
 

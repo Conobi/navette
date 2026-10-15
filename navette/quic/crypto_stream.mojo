@@ -40,7 +40,7 @@ struct CryptoStream(Copyable, Movable):
     var recv_buf: List[Byte]
     # Out-of-order fragments awaiting a contiguous predecessor, fixed
     # capacity; `pending_fragments_len` tracks the valid prefix.
-    var pending_fragments: InlineArray[CryptoFragment, MAX_PENDING_FRAGMENTS]
+    var pending_fragments: Array[CryptoFragment, MAX_PENDING_FRAGMENTS]
     var pending_fragments_len: Int
     var send_offset: UInt64
     var send_buf: List[Byte]
@@ -49,7 +49,7 @@ struct CryptoStream(Copyable, Movable):
     def __init__(out self):
         self.recv_offset = UInt64(0)
         self.recv_buf = List[Byte]()
-        self.pending_fragments = InlineArray[CryptoFragment, MAX_PENDING_FRAGMENTS](
+        self.pending_fragments = Array[CryptoFragment, MAX_PENDING_FRAGMENTS](
             fill=CryptoFragment(UInt64(0), List[Byte]())
         )
         self.pending_fragments_len = 0
@@ -60,7 +60,7 @@ struct CryptoStream(Copyable, Movable):
     def __init__(out self, *, copy: Self):
         self.recv_offset = copy.recv_offset
         self.recv_buf = List[Byte](copy=copy.recv_buf)
-        self.pending_fragments = InlineArray[CryptoFragment, MAX_PENDING_FRAGMENTS](
+        self.pending_fragments = Array[CryptoFragment, MAX_PENDING_FRAGMENTS](
             copy=copy.pending_fragments
         )
         self.pending_fragments_len = copy.pending_fragments_len

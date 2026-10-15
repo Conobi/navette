@@ -9,14 +9,14 @@ from std.sys.info import size_of
 struct CidBuf(Copyable, Movable, Sized, Equatable):
     """Fixed-capacity connection ID buffer (max 20 bytes per RFC 9000)."""
 
-    var data: InlineArray[UInt8, 20]
+    var data: Array[UInt8, 20]
     var len: UInt8
 
     @staticmethod
     def empty() -> Self:
         """Zero-length CID."""
         _check_cid_buf_size()
-        return Self(data=InlineArray[UInt8, 20](fill=Byte(0)), len=UInt8(0))
+        return Self(data=Array[UInt8, 20](fill=Byte(0)), len=UInt8(0))
 
     @staticmethod
     def from_span(src: Span[Byte, _]) -> Self:

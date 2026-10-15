@@ -65,13 +65,13 @@ def test_session_slot_ptr_round_trip() raises:
     var session = H1Session()
     var slot = SessionSlot.from_h1(session^)
     var ptr = _heap_alloc[SessionSlot](1)
-    ptr.init_pointee_move(slot^)
+    ptr.unsafe_write(slot^)
     var slot_ptr = SessionSlotPtr(UInt64(Int(ptr)))
     # Access through pointer
     var caps = slot_ptr.ptr()[].capabilities()
     assert_equal_int(caps.alpn, ALPN_H1, "ptr round-trip")
     # Cleanup
-    slot_ptr.ptr().destroy_pointee()
+    slot_ptr.ptr().unsafe_deinit_pointee()
     slot_ptr.ptr().free()
 
 

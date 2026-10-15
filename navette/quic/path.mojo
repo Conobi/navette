@@ -43,7 +43,7 @@ comptime MAX_PENDING_RESPONSES: Int = 3
 
 
 @always_inline
-def _addr_vector(addr: InlineArray[UInt8, 16]) -> SIMD[DType.uint8, 16]:
+def _addr_vector(addr: Array[UInt8, 16]) -> SIMD[DType.uint8, 16]:
     """The address as one vector, without unsafe loads: LLVM folds the lane inserts into a single 16-byte load."""
     var v = SIMD[DType.uint8, 16]()
     comptime for i in range(16):
@@ -63,11 +63,11 @@ struct PathKey(Copyable, Movable):
     """
 
     var family: Int32
-    var addr: InlineArray[UInt8, 16]
+    var addr: Array[UInt8, 16]
     var port: UInt16
     var scope_id: UInt32
 
-    def __init__(out self, family: Int32, var addr: InlineArray[UInt8, 16], port: UInt16, scope_id: UInt32 = 0):
+    def __init__(out self, family: Int32, var addr: Array[UInt8, 16], port: UInt16, scope_id: UInt32 = 0):
         """Construct from explicit family + 16-byte addr + port."""
         self.family = family
         self.addr = addr^
@@ -77,7 +77,7 @@ struct PathKey(Copyable, Movable):
     def __init__(out self, *, copy: Self):
         """Copy constructor."""
         self.family = copy.family
-        self.addr = InlineArray[UInt8, 16](copy=copy.addr)
+        self.addr = Array[UInt8, 16](copy=copy.addr)
         self.port = copy.port
         self.scope_id = copy.scope_id
 
@@ -99,7 +99,7 @@ struct PathKey(Copyable, Movable):
         seen always triggers the address-change branch unless the caller
         has already promoted the validated path.
         """
-        return Self(Int32(0), InlineArray[UInt8, 16](fill=Byte(0)), UInt16(0))
+        return Self(Int32(0), Array[UInt8, 16](fill=Byte(0)), UInt16(0))
 
     @staticmethod
     def from_v4(a: UInt8, b: UInt8, c: UInt8, d: UInt8, port: UInt16) -> Self:
@@ -108,7 +108,7 @@ struct PathKey(Copyable, Movable):
         The 4 octets occupy the last four bytes of the 16-byte buffer; the
         high 12 bytes are zero. Family is AF_INET (2).
         """
-        var buf = InlineArray[UInt8, 16](fill=Byte(0))
+        var buf = Array[UInt8, 16](fill=Byte(0))
         buf[12] = a
         buf[13] = b
         buf[14] = c

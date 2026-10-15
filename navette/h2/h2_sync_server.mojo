@@ -157,7 +157,7 @@ def _free_stream(ctx_ptr: Pointer[CoroStreamCtx, MutUntrackedOrigin]):
 # Recycles `CoroStreamCtx`-sized heap blocks across requests on the same
 # connection. The pool holds typed but uninitialised pointers (the
 # pointee has been destroyed before re-entry). On `acquire`, the caller
-# initialises the block in place via `init_pointee_move`; on `release`,
+# initialises the block in place via `unsafe_write`; on `release`,
 # the caller destroys the pointee then hands the bare memory back here.
 #
 # Why this exists: the pre-Path-A per-connection coroutine pool (bouclette's

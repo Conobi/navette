@@ -92,7 +92,7 @@ def test_h1_tcp_server_init_and_tick() raises:
 
     # -- 3. Heap-allocate for pointer stability --
     var srv_ptr = _heap_alloc[H1TcpServer[StubHandler]](1)
-    srv_ptr.init_pointee_move(server^)
+    srv_ptr.unsafe_write(server^)
 
     # -- 4. WatchLoop + start --
     var loop = WatchLoop(capacity=64)
@@ -107,7 +107,7 @@ def test_h1_tcp_server_init_and_tick() raises:
     srv_ptr[].reap_closed()
 
     # -- 7. Teardown --
-    srv_ptr.destroy_pointee()
+    srv_ptr.unsafe_deinit_pointee()
     srv_ptr.free()
 
     print("PASS: test_h1_tcp_server_init_and_tick")

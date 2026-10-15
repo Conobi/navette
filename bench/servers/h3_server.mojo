@@ -17,7 +17,7 @@
 
 from std.ffi import external_call
 from std.memory import Pointer
-from std.collections import Span, Optional, Dict, InlineArray
+from std.collections import Span, Optional, Dict, Array
 from std.memory.alloc import unsafe_alloc as _heap_alloc
 
 from navette.tls.lib import TlsBackend, SharedLibrary
@@ -1115,8 +1115,8 @@ struct H3UdpHandler(Movable):
         var now_t = external_call["time", Int64](
             Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=Int(0))
         )
-        var t_buf = InlineArray[Int64, 1](fill=now_t)
-        var tm_buf = InlineArray[UInt8, 56](fill=0)
+        var t_buf = Array[Int64, 1](fill=now_t)
+        var tm_buf = Array[UInt8, 56](fill=0)
         var tm_ptr = Pointer(to=tm_buf).unsafe_bitcast[UInt8]()
         var t_ptr = Pointer(to=t_buf).unsafe_bitcast[Int64]()
         _ = external_call[

@@ -7,15 +7,15 @@ requires-python = ">=3.11"
 dependencies = [
     "bouclette @ git+https://github.com/Conobi/bouclette",
     "mojox>=0.5",
-    "mojo-compiler==1.0.0",
-    "mojo-compiler-mojo-libs==1.0.0",
+    "mojo-compiler==1.1.0",
+    "mojo-compiler-mojo-libs==1.1.0",
 ]
 
 [dependency-groups]
 dev = [
     # Developer toolchain: mojo-lsp-server, mojo-lldb, lldb-dap and the mblack
     # formatter. Not the compiler -- mojo-compiler above provides that.
-    "mojo==1.0.0",
+    "mojo==1.1.0",
     # Python reference implementations, used as conformance oracles.
     "aioquic>=1.3.0",
     "cryptography>=44.0",
@@ -32,8 +32,8 @@ dev = [
 requires = [
     "mojox-build>=0.5",
     "mojox-core>=0.5",
-    "mojo-compiler==1.0.0",
-    "mojo-compiler-mojo-libs==1.0.0",
+    "mojo-compiler==1.1.0",
+    "mojo-compiler-mojo-libs==1.1.0",
     # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
     # which resolves cross-package imports). PEP 517 build envs are isolated from
     # the project's runtime deps, so bouclette is pinned here too.
@@ -140,5 +140,5 @@ pythonpath = ["."]
 prerelease = "allow"
 
 [tool.uv.sources]
-bouclette = { git = "https://github.com/Conobi/bouclette", rev = "020957e" }
+bouclette = { git = "https://github.com/Conobi/bouclette", rev = "9e9ce231d31829fbb60b1dd6a394a3d61f354398" }
 

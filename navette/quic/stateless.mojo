@@ -6,7 +6,7 @@ bytes), so a flood of junk Initials costs crypto work, not heap traffic.
 Bounds and admission are the caller's job; these only encode.
 """
 
-from std.collections import InlineArray, Span
+from std.collections import Array, Span
 
 from navette.quic.codec import varint_len, varint_encode_at
 from navette.quic.packet_protect import PacketProtect
@@ -64,9 +64,9 @@ def build_retry(
 
     var key = materialize[RETRY_INTEGRITY_KEY]()
     var nonce = materialize[RETRY_INTEGRITY_NONCE]()
-    var tag = InlineArray[UInt8, _TAG_LEN](fill=UInt8(0))
-    var tag_len = InlineArray[Int32, 1](fill=Int32(0))
-    var no_plaintext = InlineArray[UInt8, 1](fill=UInt8(0))
+    var tag = Array[UInt8, _TAG_LEN](fill=UInt8(0))
+    var tag_len = Array[Int32, 1](fill=Int32(0))
+    var no_plaintext = Array[UInt8, 1](fill=UInt8(0))
     var rc = lib.inner_ptr()[].aes_gcm_128_seal(
         key.unsafe_ptr(), Int32(16),
         nonce.unsafe_ptr(), Int32(12),

@@ -1189,7 +1189,7 @@ struct FrameCursor[origin: Origin]:
     var _buf: Span[Byte, Self.origin]
     var _pos: Int
     var _count: Int
-    var _ack_buf: InlineArray[AckRange, MAX_ACK_RANGES]
+    var _ack_buf: Array[AckRange, MAX_ACK_RANGES]
     var _ack_buf_len: Int
     var _byte_data: Span[Byte, Self.origin]
     var type_id: UInt64
@@ -1217,7 +1217,7 @@ struct FrameCursor[origin: Origin]:
         self._buf = buf
         self._pos = 0
         self._count = 0
-        self._ack_buf = InlineArray[AckRange, MAX_ACK_RANGES](uninitialized=True)
+        self._ack_buf = Array[AckRange, MAX_ACK_RANGES](uninitialized=True)
         self._ack_buf_len = 0
         self._byte_data = Span[Byte, Self.origin]()
         self.type_id = UInt64(0)

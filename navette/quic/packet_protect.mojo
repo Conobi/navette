@@ -182,7 +182,7 @@ struct PacketProtect(Movable):
         if dcid_len > 20:
             raise "derive_initial_keys: DCID longer than 20 bytes"
         self.discard_keys(0)  # Free existing Initial keys if any
-        var dcid_buf = InlineArray[UInt8, 20](uninitialized=True)
+        var dcid_buf = Array[UInt8, 20](uninitialized=True)
         Span(dcid_buf)[:dcid_len].copy_from(dcid)
 
         var is_client_i32 = Int32(1) if is_client else Int32(0)

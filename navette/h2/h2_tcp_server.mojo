@@ -36,7 +36,7 @@ negotiation).
 # Per-conn handler factory
 
 Same model as `H1TcpServer` and `H3UdpServer`: pass a
-`make_handler: fn () raises -> H` to `__init__`. Server calls
+`make_handler: def () raises -> H` to `__init__`. Server calls
 the factory once per accepted TCP connection.
 
 # Integration

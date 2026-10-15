@@ -8,7 +8,7 @@ older than the window are no longer marked; the caller treats them as
 ordinary closed streams.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 
 comptime LOCALLY_CLOSED_WINDOW: Int = 1024
 comptime _WORDS: Int = LOCALLY_CLOSED_WINDOW // 64
@@ -17,11 +17,11 @@ comptime _WORDS: Int = LOCALLY_CLOSED_WINDOW // 64
 struct LocallyClosedSet(Copyable, Movable):
     """`advance` must follow every increase of the peer's highest stream id before `mark` / `is_marked`."""
 
-    var _bits: InlineArray[UInt64, _WORDS]
+    var _bits: Array[UInt64, _WORDS]
     var _last: UInt32
 
     def __init__(out self):
-        self._bits = InlineArray[UInt64, _WORDS](fill=UInt64(0))
+        self._bits = Array[UInt64, _WORDS](fill=UInt64(0))
         self._last = 0
 
     @always_inline

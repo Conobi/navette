@@ -1,4 +1,4 @@
-fn handle(mut self):
+def handle(mut self):
     self._quic.close_app(0, reason_buf, now)
     var trailer_a = 1
     var trailer_b = 2

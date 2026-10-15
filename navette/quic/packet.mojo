@@ -87,7 +87,7 @@ struct PacketHeader(Copyable, Movable):
     """Decoded QUIC packet header (RFC 9000 Section 17).
 
     Variable-length wire fields (token, VN supported-versions list) are
-    stored in fixed-capacity `InlineArray`s with a companion `_len` field
+    stored in fixed-capacity `Array`s with a companion `_len` field
     tracking the number of valid entries, rather than heap-backed `List`s,
     so parsing a packet header never allocates. `token` is populated only
     for Initial/Retry packets, `supported_versions`/`versions_len` only for
@@ -100,13 +100,13 @@ struct PacketHeader(Copyable, Movable):
     var version: UInt32
     var dcid: CidBuf
     var scid: CidBuf
-    var token: InlineArray[UInt8, MAX_TOKEN_LEN]
+    var token: Array[UInt8, MAX_TOKEN_LEN]
     var token_len: UInt8
     var payload_length: UInt64
     var pn_offset: Int
-    var supported_versions: InlineArray[UInt32, MAX_SUPPORTED_VERSIONS]
+    var supported_versions: Array[UInt32, MAX_SUPPORTED_VERSIONS]
     var versions_len: UInt8
-    var retry_integrity_tag: InlineArray[UInt8, RETRY_INTEGRITY_TAG_LEN]
+    var retry_integrity_tag: Array[UInt8, RETRY_INTEGRITY_TAG_LEN]
 
     def __init__(out self):
         _check_packet_header_size()
@@ -115,13 +115,13 @@ struct PacketHeader(Copyable, Movable):
         self.version = UInt32(0)
         self.dcid = CidBuf.empty()
         self.scid = CidBuf.empty()
-        self.token = InlineArray[UInt8, MAX_TOKEN_LEN](fill=Byte(0))
+        self.token = Array[UInt8, MAX_TOKEN_LEN](fill=Byte(0))
         self.token_len = UInt8(0)
         self.payload_length = UInt64(0)
         self.pn_offset = 0
-        self.supported_versions = InlineArray[UInt32, MAX_SUPPORTED_VERSIONS](fill=UInt32(0))
+        self.supported_versions = Array[UInt32, MAX_SUPPORTED_VERSIONS](fill=UInt32(0))
         self.versions_len = UInt8(0)
-        self.retry_integrity_tag = InlineArray[UInt8, RETRY_INTEGRITY_TAG_LEN](fill=Byte(0))
+        self.retry_integrity_tag = Array[UInt8, RETRY_INTEGRITY_TAG_LEN](fill=Byte(0))
 
     def __init__(out self, *, copy: Self):
         self.is_long_header = copy.is_long_header
@@ -129,13 +129,13 @@ struct PacketHeader(Copyable, Movable):
         self.version = copy.version
         self.dcid = CidBuf(copy=copy.dcid)
         self.scid = CidBuf(copy=copy.scid)
-        self.token = InlineArray[UInt8, MAX_TOKEN_LEN](copy=copy.token)
+        self.token = Array[UInt8, MAX_TOKEN_LEN](copy=copy.token)
         self.token_len = copy.token_len
         self.payload_length = copy.payload_length
         self.pn_offset = copy.pn_offset
-        self.supported_versions = InlineArray[UInt32, MAX_SUPPORTED_VERSIONS](copy=copy.supported_versions)
+        self.supported_versions = Array[UInt32, MAX_SUPPORTED_VERSIONS](copy=copy.supported_versions)
         self.versions_len = copy.versions_len
-        self.retry_integrity_tag = InlineArray[UInt8, RETRY_INTEGRITY_TAG_LEN](copy=copy.retry_integrity_tag)
+        self.retry_integrity_tag = Array[UInt8, RETRY_INTEGRITY_TAG_LEN](copy=copy.retry_integrity_tag)
 
     def token_span(self) -> Span[Byte, origin_of(self.token)]:
         """Borrow the active token bytes (length `token_len`, not the full backing capacity)."""

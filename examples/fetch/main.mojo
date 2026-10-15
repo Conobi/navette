@@ -105,7 +105,7 @@ def _monotonic_ms() -> UInt64:
     )
     # Read tv_sec (8 bytes LE) and tv_nsec (8 bytes LE)
     var sec_ptr = ts.bitcast[Int64]()
-    var nsec_ptr = UnsafePointer[Int64, MutAnyOrigin](
+    var nsec_ptr = Pointer[Int64, MutAnyOrigin](
         unsafe_from_address=Int(ts) + 8
     )
     var sec = Int(sec_ptr[])
@@ -230,7 +230,7 @@ def _set_recv_timeout_ms(fd: Int32, ms: Int) raises:
         tv[i] = UInt8(0)
     var sec_ptr = tv.bitcast[Int64]()
     sec_ptr[] = Int64(ms // 1000)
-    var usec_ptr = UnsafePointer[Int64, MutAnyOrigin](
+    var usec_ptr = Pointer[Int64, MutAnyOrigin](
         unsafe_from_address=Int(tv) + 8
     )
     usec_ptr[] = Int64((ms % 1000) * 1000)

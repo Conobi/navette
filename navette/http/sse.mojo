@@ -257,7 +257,7 @@ def try_write_event(
     caller can observe backpressure.
 
     Spec deviation note: the original §7.3 sketch proposed a stateful
-    EventStreamWriter struct wrapping an `UnsafePointer[ResponseWriter]`,
+    EventStreamWriter struct wrapping an `Pointer[ResponseWriter]`,
     but that contradicts the sketch's own "does NOT take ownership" line
     and adds lifetime risk in Mojo 0.26.2. SSE writers need no per-call
     state, so a free function is both simpler and safer. A future change can

@@ -39,7 +39,7 @@ def takes_store[S: EarlyDataStore](mut s: S) raises -> Bool:
     """Same pattern for the store trait — verifies `EarlyDataStore`
     is a usable bound from the public surface. Takes `mut s` (borrow)
     rather than `var s` (own) because `EarlyDataStore` is not declared
-    `ImplicitlyDestructible`; consuming the store inside a generic
+    `Deinitable`; consuming the store inside a generic
     function would leave Mojo 1.0.0b1 with no way to drop it."""
     var auth = List[Byte]()
     for _ in range(32):

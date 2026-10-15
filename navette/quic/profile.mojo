@@ -167,12 +167,12 @@ comptime _CT_HIST_SIZE: Int = N_CALL_IDS * _CT_HIST_BUCKETS
 struct CallTracker(Copyable, Movable):
     """Per-call cycle-cost tracker with log2 histograms, zero heap allocation."""
 
-    var stats: InlineArray[UInt64, _CT_STATS_SIZE]
-    var hist: InlineArray[UInt64, _CT_HIST_SIZE]
+    var stats: Array[UInt64, _CT_STATS_SIZE]
+    var hist: Array[UInt64, _CT_HIST_SIZE]
 
     def __init__(out self):
-        self.stats = InlineArray[UInt64, _CT_STATS_SIZE](fill=UInt64(0))
-        self.hist = InlineArray[UInt64, _CT_HIST_SIZE](fill=UInt64(0))
+        self.stats = Array[UInt64, _CT_STATS_SIZE](fill=UInt64(0))
+        self.hist = Array[UInt64, _CT_HIST_SIZE](fill=UInt64(0))
         for i in range(N_CALL_IDS):
             self.stats[i * _CT_STATS_PER_ID + 2] = ~UInt64(0)
 
@@ -269,7 +269,7 @@ struct CallTracker(Copyable, Movable):
 
 
 def _ct_percentile(
-    hist: InlineArray[UInt64, _CT_HIST_SIZE],
+    hist: Array[UInt64, _CT_HIST_SIZE],
     base: Int,
     total: UInt64,
     pct: Int,
@@ -288,10 +288,10 @@ struct AcceptProfile(Copyable, Movable):
     """QUIC accept-loop profile counters with data-driven counter table.
 
     WARNING: holds List[UInt64] histogram fields — each copy triggers deep
-    copies. Production code threads via UnsafePointer, never copy.
+    copies. Production code threads via Pointer, never copy.
     """
     var run_start_us: UInt64
-    var counters: InlineArray[UInt64, N_COUNTERS]
+    var counters: Array[UInt64, N_COUNTERS]
     # Gauge / sampling fields.
     var last_gauge_sample_us: UInt64
     var active_drive_count: UInt32
@@ -323,7 +323,7 @@ struct AcceptProfile(Copyable, Movable):
 
     def __init__(out self):
         self.run_start_us = monotonic_us()
-        self.counters = InlineArray[UInt64, N_COUNTERS](fill=UInt64(0))
+        self.counters = Array[UInt64, N_COUNTERS](fill=UInt64(0))
         self.last_gauge_sample_us = UInt64(0)
         self.active_drive_count = UInt32(0)
         self.active_bouclette_count_samples = List[UInt32]()

@@ -428,7 +428,7 @@ def test_error_short_header_fixed_bit() raises:
 
 def test_error_initial_token_too_long() raises:
     # Initial packet whose wire-declared token length (233) exceeds the
-    # 232-byte InlineArray capacity backing PacketHeader.token -- must raise
+    # 232-byte Array capacity backing PacketHeader.token -- must raise
     # rather than overflow the fixed-size buffer.
     var w = ByteWriter()
     w.write_u8(UInt8(0xC0))  # long header + fixed bit, ptype bits 00 = Initial
@@ -472,7 +472,7 @@ def test_error_retry_token_too_long() raises:
 
 def test_error_vn_too_many_versions() raises:
     # Version Negotiation packet listing 17 versions -- exceeds the 16-slot
-    # InlineArray capacity backing PacketHeader.supported_versions.
+    # Array capacity backing PacketHeader.supported_versions.
     var wire = List[Byte]()
     wire.append(UInt8(0x80))  # long header form bit; VN's fixed bit is undefined
     wire.append(UInt8(0x00))

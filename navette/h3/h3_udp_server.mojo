@@ -290,7 +290,7 @@ def _sockaddr_to_path_key(
         # AF_INET6 — 16-octet address at offset+8.
         if addr_len < 24:
             return PathKey.zero()
-        var addr = InlineArray[UInt8, 16](fill=Byte(0))
+        var addr = Array[UInt8, 16](fill=Byte(0))
         for i in range(16):
             addr[i] = buf_ptr[unsafe_offset=addr_offset + 8 + i]
         var scope = UInt32(0)
@@ -317,7 +317,7 @@ def _set_msg_peer(mut msg: Message, key: PathKey):
 
 
 @always_inline
-def _seg(a: InlineArray[UInt8, 16], i: Int) -> UInt16:
+def _seg(a: Array[UInt8, 16], i: Int) -> UInt16:
     """Host-order IPv6 segment `i` of the network-order address `a`."""
     return (UInt16(a[2 * i]) << 8) | UInt16(a[2 * i + 1])
 
@@ -424,7 +424,7 @@ struct ConnSlot[H: StreamHandler](Copyable, Movable):
     deduplicates the slot in that pass's drain list.
 
     `Copyable` is required by `List[ConnSlot[H]]` storage; aliasing
-    `h3` across copies matches the prior `List[UnsafePointer[...]]`
+    `h3` across copies matches the prior `List[Pointer[...]]`
     semantics (the underlying pointer was already trivially copied
     when the list grew).
     """
@@ -1502,7 +1502,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
         # Both pointers wired unconditionally
 
-        `UnsafePointer(to=self.profile)` is passed to `QuicConnection.server`
+        `Pointer(to=self.profile)` is passed to `QuicConnection.server`
         and `H3HandlerServer`'s `profile_ptr` kwarg with no compile-time or
         runtime guard. This is cheap by construction: every record site is
         `comptime if PROFILE_ACCEPT` gated, so a default
@@ -1511,7 +1511,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
 
         # Pointer stability
 
-        `UnsafePointer(to=self.profile)` is only valid while `self` stays
+        `Pointer(to=self.profile)` is only valid while `self` stays
         put. The server must be heap-allocated with `wire_context()` called
         BEFORE any connection exists, so the profile's address is fixed by
         the time the first handler is built; `H3UdpServer` must not be moved
@@ -1529,7 +1529,7 @@ struct H3UdpServer[H: StreamHandler, test_hooks: Bool = False](Movable):
         Returns:
             A heap-allocated, move-initialized `H3HandlerServer[Self.H]`
             pointer. The caller owns it and is responsible for
-            `destroy_pointee()` + `free()` (or transferring ownership into
+            `unsafe_deinit_pointee()` + `free()` (or transferring ownership into
             a `ConnSlot`).
 
         Raises:

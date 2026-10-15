@@ -79,18 +79,18 @@ struct KeyTag(Copyable, Movable, KeyElement):
     only job is to satisfy Mojo Dict's KeyElement traits without
     pulling in a crypto dependency.
     """
-    var bytes: InlineArray[UInt8, 32]
+    var bytes: Array[UInt8, 32]
 
     def __init__(out self):
-        self.bytes = InlineArray[UInt8, 32](fill=Byte(0))
+        self.bytes = Array[UInt8, 32](fill=Byte(0))
 
     def __init__(out self, *, copy: Self):
-        self.bytes = InlineArray[UInt8, 32](fill=Byte(0))
+        self.bytes = Array[UInt8, 32](fill=Byte(0))
         for i in range(32):
             self.bytes[i] = copy.bytes[i]
 
     def __init__(out self, *, deinit move: Self):
-        self.bytes = InlineArray[UInt8, 32](fill=Byte(0))
+        self.bytes = Array[UInt8, 32](fill=Byte(0))
         for i in range(32):
             self.bytes[i] = move.bytes[i]
 

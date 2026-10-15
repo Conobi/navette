@@ -65,7 +65,7 @@ def build_huffman_table() -> List[HuffmanEntry]:
     """Return the 256-entry encode table from RFC 7541 Appendix B."""
     # RFC-frozen data as dense arrays — the signal is the hex codes and bit
     # lengths, not the scaffolding that loads them.
-    var codes: InlineArray[UInt32, 256] = [
+    var codes: Array[UInt32, 256] = [
         0x1ff8, 0x7fffd8, 0xfffffe2, 0xfffffe3, 0xfffffe4, 0xfffffe5, 0xfffffe6, 0xfffffe7,
         0xfffffe8, 0xffffea, 0x3ffffffc, 0xfffffe9, 0xfffffea, 0x3ffffffd, 0xfffffeb, 0xfffffec,
         0xfffffed, 0xfffffee, 0xfffffef, 0xffffff0, 0xffffff1, 0xffffff2, 0x3ffffffe, 0xffffff3,
@@ -99,7 +99,7 @@ def build_huffman_table() -> List[HuffmanEntry]:
         0x3ffffeb, 0x7ffffe6, 0x3ffffec, 0x3ffffed, 0x7ffffe7, 0x7ffffe8, 0x7ffffe9, 0x7ffffea,
         0x7ffffeb, 0xffffffe, 0x7ffffec, 0x7ffffed, 0x7ffffee, 0x7ffffef, 0x7fffff0, 0x3ffffee,
     ]
-    var nbits: InlineArray[UInt8, 256] = [
+    var nbits: Array[UInt8, 256] = [
         13, 23, 28, 28, 28, 28, 28, 28, 28, 24, 30, 28, 28, 30, 28, 28,
         28, 28, 28, 28, 28, 28, 30, 28, 28, 28, 28, 28, 28, 28, 28, 28,
         6, 10, 10, 12, 13, 6, 8, 11, 10, 10, 8, 11, 8, 6, 6, 6,

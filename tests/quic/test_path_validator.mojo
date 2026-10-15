@@ -156,10 +156,10 @@ def test_pathkey_equality() raises:
 
 def test_pathkey_equality_sees_every_address_byte() raises:
     """Flipping any one of the 16 address bytes makes the keys unequal."""
-    var base = InlineArray[UInt8, 16](fill=UInt8(0xA5))
-    var a = PathKey(Int32(10), InlineArray[UInt8, 16](copy=base), UInt16(443))
+    var base = Array[UInt8, 16](fill=UInt8(0xA5))
+    var a = PathKey(Int32(10), Array[UInt8, 16](copy=base), UInt16(443))
     for i in range(16):
-        var flipped = InlineArray[UInt8, 16](copy=base)
+        var flipped = Array[UInt8, 16](copy=base)
         flipped[i] = flipped[i] ^ UInt8(1)
         var b = PathKey(Int32(10), flipped^, UInt16(443))
         assert_false(a == b, "keys differing only at address byte " + String(i) + " are unequal")

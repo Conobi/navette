@@ -182,7 +182,7 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     # Heap-allocate a shared AcceptProfile so both server connections accumulate
     # into the same counters.
     var profile_heap = _heap_alloc[AcceptProfile](1)
-    profile_heap.init_pointee_move(AcceptProfile())
+    profile_heap.unsafe_write(AcceptProfile())
     var p_ptr = profile_heap
 
     var params = _resumption_params()
@@ -316,7 +316,7 @@ def test_resumption_kind_after_two_handshakes_against_same_config() raises:
     # destruction would free a handle mid-statement).
     _ = server1.conn_handle
     _ = server2.conn_handle
-    profile_heap.destroy_pointee()
+    profile_heap.unsafe_deinit_pointee()
     profile_heap.free()
     _ = tls^
     print("  test_resumption_kind_after_two_handshakes_against_same_config: PASS")
@@ -346,7 +346,7 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
 
     # Heap-allocate AcceptProfile so it has a stable address for profile_ptr.
     var profile_heap = _heap_alloc[AcceptProfile](1)
-    profile_heap.init_pointee_move(AcceptProfile())
+    profile_heap.unsafe_write(AcceptProfile())
     var p_ptr = profile_heap
 
     var client = QuicConnection.client(
@@ -420,7 +420,7 @@ def test_double_count_guard_on_handshake_complete_idempotent() raises:
                 + String(full_final + resumed_final),
         )
 
-    profile_heap.destroy_pointee()
+    profile_heap.unsafe_deinit_pointee()
     profile_heap.free()
     _ = tls^
     print("  test_double_count_guard_on_handshake_complete_idempotent: PASS")
@@ -447,7 +447,7 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
 
     # Heap-allocate AcceptProfile so it has a stable address for profile_ptr.
     var profile_heap = _heap_alloc[AcceptProfile](1)
-    profile_heap.init_pointee_move(AcceptProfile())
+    profile_heap.unsafe_write(AcceptProfile())
     var p_ptr = profile_heap
 
     var params = _resumption_params()
@@ -504,7 +504,7 @@ def test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets() raises:
         )
 
     _ = server.conn_handle
-    profile_heap.destroy_pointee()
+    profile_heap.unsafe_deinit_pointee()
     profile_heap.free()
     _ = tls^
     print("  test_fresh_conn_ffi_us_total_survives_per_pkt_iter_resets: PASS")

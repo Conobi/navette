@@ -57,11 +57,11 @@ def kwait_us(rmem: UInt64, deliveries_prev: UInt64, t: UInt64) -> UInt64:
 struct DelayHist(Copyable, Movable):
     """Per-interval wait samples in µs, log2 buckets: bucket `b` holds `[2^(b-1), 2^b - 1]`, the top one everything above."""
 
-    var buckets: InlineArray[UInt32, _BUCKETS]
+    var buckets: Array[UInt32, _BUCKETS]
     var total: UInt64
 
     def __init__(out self):
-        self.buckets = InlineArray[UInt32, _BUCKETS](fill=0)
+        self.buckets = Array[UInt32, _BUCKETS](fill=0)
         self.total = 0
 
     def insert(mut self, us: UInt64):

@@ -3102,7 +3102,7 @@ def test_is_expected_dcid_initial_and_local() raises:
 
     # NOT expected: an arbitrary unrelated DCID.
     var other = List[Byte]()
-    for b in InlineArray[UInt8, 8](fill=UInt8(0xCD)):
+    for b in Array[UInt8, 8](fill=UInt8(0xCD)):
         other.append(b)
     assert_false(
         server.is_expected_dcid(Span(other)),
@@ -3166,13 +3166,13 @@ def test_dcid_demux_disambiguates_two_conns() raises:
 
     # Three distinct 8-byte DCIDs.
     var dcid_a = List[Byte]()
-    for b in InlineArray[UInt8, 8](fill=UInt8(0xAA)):
+    for b in Array[UInt8, 8](fill=UInt8(0xAA)):
         dcid_a.append(b)
     var dcid_b = List[Byte]()
-    for b in InlineArray[UInt8, 8](fill=UInt8(0xBB)):
+    for b in Array[UInt8, 8](fill=UInt8(0xBB)):
         dcid_b.append(b)
     var dcid_c = List[Byte]()
-    for b in InlineArray[UInt8, 8](fill=UInt8(0xCC)):
+    for b in Array[UInt8, 8](fill=UInt8(0xCC)):
         dcid_c.append(b)
 
     var hex_a = _bytes_to_hex(Span(dcid_a))

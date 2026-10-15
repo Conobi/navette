@@ -7,7 +7,7 @@ supplies the clock and acts on the verdict. Counters use the
 `ProtectionStats` names.
 """
 
-from std.collections import InlineArray, Span
+from std.collections import Array, Span
 
 from navette.protect.config import ProtectionStats
 from navette.quic.error import CONNECTION_REFUSED, INVALID_TOKEN
@@ -71,11 +71,11 @@ struct IngressGuard(Movable):
     var retry_scid: List[Byte]
     var unvalidated_retry_threshold: Int
     var _lib: SharedLibrary
-    var _secret: InlineArray[UInt8, 16]
+    var _secret: Array[UInt8, 16]
     var _scratch: RetryTokenScratch
     var _token: List[Byte]
     var _close_protect: PacketProtect
-    var _server_scid: InlineArray[UInt8, RETRY_SCID_LEN]
+    var _server_scid: Array[UInt8, RETRY_SCID_LEN]
     var _responses: Int
 
     def __init__(out self, lib: SharedLibrary) raises:
@@ -86,12 +86,12 @@ struct IngressGuard(Movable):
         self.retry_scid = List[Byte](capacity=_MAX_V1_CID_LEN)
         self.unvalidated_retry_threshold = UNVALIDATED_RETRY_THRESHOLD
         self._lib = SharedLibrary(copy=lib)
-        self._secret = InlineArray[UInt8, 16](fill=UInt8(0))
+        self._secret = Array[UInt8, 16](fill=UInt8(0))
         fill_random(Span(self._secret))
         self._scratch = RetryTokenScratch()
         self._token = List[Byte](capacity=RETRY_TOKEN_MAX_LEN)
         self._close_protect = PacketProtect(lib)
-        self._server_scid = InlineArray[UInt8, RETRY_SCID_LEN](fill=UInt8(0))
+        self._server_scid = Array[UInt8, RETRY_SCID_LEN](fill=UInt8(0))
         self._responses = 0
 
     def begin_pass(mut self):

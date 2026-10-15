@@ -64,7 +64,7 @@ def test_reset_key_is_not_the_retry_secret() raises:
         Int(reset.unsafe_ptr()) != Int(retry.unsafe_ptr()), "distinct buffers"
     )
     assert_true(Span(reset)[:16] != Span(retry), "distinct values")
-    var zero = InlineArray[UInt8, 32](fill=UInt8(0))
+    var zero = Array[UInt8, 32](fill=UInt8(0))
     assert_true(Span(reset) != Span(zero), "reset key drawn")
     _ = h.slot_count()
     print("PASS: test_reset_key_is_not_the_retry_secret")

@@ -102,7 +102,7 @@ def test_v4_unchanged() raises:
 def test_wire_sockaddr_matches_reference() raises:
     var v4 = PathKey.from_v4(203, 0, 113, 9, UInt16(4433))
     _assert_same(_wire_sockaddr(v4), _reference_sockaddr(v4), "IPv4")
-    var addr = InlineArray[UInt8, 16](fill=Byte(0))
+    var addr = Array[UInt8, 16](fill=Byte(0))
     for i in range(16):
         addr[i] = UInt8(0xF0 + i) if i < 2 else UInt8(i * 17)
     var v6 = PathKey(Int32(10), addr^, UInt16(0xBEEF), UInt32(0xA1B2C3D4))

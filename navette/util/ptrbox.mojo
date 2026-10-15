@@ -1,5 +1,5 @@
 """PtrBox[T] — typed, Copyable+Movable wrapper around a heap-allocated
-UnsafePointer[T, MutUntrackedOrigin].
+Pointer[T, MutUntrackedOrigin].
 
 Replaces the scattered `UInt64`-as-address pattern previously used in h2/h3
 session and server adapters (`_ClientStreamPtr`, `_StreamPtr`,
@@ -7,9 +7,9 @@ session and server adapters (`_ClientStreamPtr`, `_StreamPtr`,
 `h2_sync_server`). Stores the pointer directly — no `Int(...)` roundtrip.
 
 Invariant: a PtrBox is either null (default-constructed via `null()`) or
-points to a live, `init_pointee_move`-d T on the heap. Copying a PtrBox
+points to a live, `unsafe_write`-d T on the heap. Copying a PtrBox
 aliases the pointer; the unique owner is responsible for exactly-one
-`destroy_pointee()` + `free()` on the pointee+memory it manages.
+`unsafe_deinit_pointee()` + `free()` on the pointee+memory it manages.
 """
 
 from std.memory import Pointer

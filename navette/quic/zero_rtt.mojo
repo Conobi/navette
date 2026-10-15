@@ -57,7 +57,7 @@ struct ZeroRttState(Movable):
 def invoke_replay_authenticator_ffi(
     lib: SharedLibrary,
     conn_handle: Int32,
-    mut out_buf: InlineArray[UInt8, 32],
+    mut out_buf: Array[UInt8, 32],
     mut out_len: UInt,
 ) -> Int32:
     """Call `rlsm_quic_server_conn_replay_authenticator`.
