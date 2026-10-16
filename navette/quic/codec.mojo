@@ -16,7 +16,7 @@ struct ByteReader[origin: Origin]:
 
     @always_inline
     def read_u8(mut self) raises -> UInt8:
-        if self.pos >= len(self._buf):
+        if self.pos < 0 or self.pos >= len(self._buf):
             raise "ByteReader: underflow reading u8"
         var v = self._buf[self.pos]
         self.pos += 1
@@ -76,7 +76,7 @@ struct ByteReader[origin: Origin]:
 
     @always_inline
     def peek_u8(self) raises -> UInt8:
-        if self.pos >= len(self._buf):
+        if self.pos < 0 or self.pos >= len(self._buf):
             raise "ByteReader: underflow peeking u8"
         return self._buf[self.pos]
 

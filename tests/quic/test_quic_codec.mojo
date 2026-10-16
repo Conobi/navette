@@ -97,6 +97,118 @@ def test_byte_reader_underflow() raises:
     print("  byte_reader_underflow: PASS")
 
 
+def _bytes(*values: Int) -> List[Byte]:
+    var out = List[Byte]()
+    for v in values:
+        out.append(UInt8(v))
+    return out^
+
+
+def _read_u8_raises[o: Origin](mut r: ByteReader[o]) -> Bool:
+    try:
+        _ = r.read_u8()
+    except:
+        return True
+    return False
+
+
+def _peek_u8_raises[o: Origin](r: ByteReader[o]) -> Bool:
+    try:
+        _ = r.peek_u8()
+    except:
+        return True
+    return False
+
+
+def _varint_raises[o: Origin](mut r: ByteReader[o]) -> Bool:
+    try:
+        _ = varint_decode(r)
+    except:
+        return True
+    return False
+
+
+def test_byte_reader_empty_span_raises() raises:
+    var data = List[Byte]()
+    var r = ByteReader(Span(data))
+    if not _read_u8_raises(r): raise "read_u8 on empty span should raise"
+    if not _peek_u8_raises(r): raise "peek_u8 on empty span should raise"
+    if r.pos != 0: raise "failed read on empty span moved pos"
+    print("  byte_reader_empty_span_raises: PASS")
+
+
+def test_byte_reader_exact_end() raises:
+    var data = _bytes(0x11, 0x22, 0x33)
+    var r = ByteReader(Span(data))
+    if r.peek_u8() != UInt8(0x11): raise "peek_u8 at 0 mismatch"
+    if r.read_u8() != UInt8(0x11): raise "read_u8 at 0 mismatch"
+    if r.read_u8() != UInt8(0x22): raise "read_u8 at 1 mismatch"
+    if r.peek_u8() != UInt8(0x33): raise "peek_u8 at last byte mismatch"
+    if r.read_u8() != UInt8(0x33): raise "read_u8 at last byte mismatch"
+    if not _read_u8_raises(r): raise "read_u8 past end should raise"
+    if not _peek_u8_raises(r): raise "peek_u8 at end should raise"
+    if r.pos != 3: raise "failed reads at end moved pos to " + String(r.pos)
+    print("  byte_reader_exact_end: PASS")
+
+
+def test_byte_reader_sub_span_bound() raises:
+    # The parent holds bytes past the view; a wrong guard would leak them.
+    var parent = _bytes(0xA0, 0xA1, 0xEE, 0xEF)
+    var r = ByteReader(Span(parent)[0:2])
+    if r.read_u8() != UInt8(0xA0): raise "sub-span read 0 mismatch"
+    if r.read_u8() != UInt8(0xA1): raise "sub-span read 1 mismatch"
+    if not _peek_u8_raises(r): raise "peek_u8 at sub-span end read the parent's byte"
+    if not _read_u8_raises(r): raise "read_u8 at sub-span end read the parent's byte"
+    if r.pos != 2: raise "failed sub-span reads moved pos to " + String(r.pos)
+    print("  byte_reader_sub_span_bound: PASS")
+
+
+def test_byte_reader_negative_pos_raises() raises:
+    # pos is public; a negative value must not index before the view.
+    var parent = _bytes(0x55, 0x66, 0x77)
+    var r = ByteReader(Span(parent)[1:3])
+    r.pos = -1
+    if not _read_u8_raises(r): raise "read_u8 at negative pos should raise"
+    if not _peek_u8_raises(r): raise "peek_u8 at negative pos should raise"
+    if r.pos != -1: raise "failed reads at negative pos moved pos"
+    print("  byte_reader_negative_pos_raises: PASS")
+
+
+def test_varint_truncated_each_prefix() raises:
+    # Full encodings of 2-, 4- and 8-byte varints, each cut by one byte.
+    var encodings = List[List[Byte]]()
+    encodings.append(_bytes(0x40, 0x25))
+    encodings.append(_bytes(0x80, 0x01, 0x02, 0x03))
+    encodings.append(_bytes(0xC0, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07))
+    for i in range(len(encodings)):
+        var full = encodings[i].copy()
+        var n = len(full)
+        var cut = List[Byte](full[0 : n - 1])
+        var r = ByteReader(Span(cut))
+        if not _varint_raises(r):
+            raise "varint_decode should raise on " + String(n) + "-byte varint missing its last byte"
+        # Same truncation as a view whose parent still holds the missing byte.
+        var rs = ByteReader(Span(full)[0 : n - 1])
+        if not _varint_raises(rs):
+            raise "varint_decode read past a " + String(n) + "-byte sub-span into its parent"
+        # The untruncated encoding ends exactly at the span end and decodes.
+        var rf = ByteReader(Span(full))
+        _ = varint_decode(rf)
+        if rf.remaining() != 0:
+            raise "varint_decode left bytes on an exact " + String(n) + "-byte span"
+    print("  varint_truncated_each_prefix: PASS")
+
+
+def test_varint_ends_at_sub_span_end() raises:
+    # 2-byte varint 0x4025 = 37 filling a view, followed by parent bytes.
+    var parent = _bytes(0x40, 0x25, 0xFF, 0xFF)
+    var r = ByteReader(Span(parent)[0:2])
+    if varint_decode(r) != UInt64(0x25): raise "varint at sub-span end mismatch"
+    if r.remaining() != 0: raise "varint at sub-span end left bytes"
+    if not _varint_raises(r): raise "varint_decode past sub-span end should raise"
+    print("  varint_ends_at_sub_span_end: PASS")
+
+
 def test_byte_writer_bytes() raises:
     var w = ByteWriter()
     var src = List[Byte]()
@@ -197,6 +309,12 @@ def main() raises:
     test_varint_truncation()
     test_byte_reader_writer_roundtrip()
     test_byte_reader_underflow()
+    test_byte_reader_empty_span_raises()
+    test_byte_reader_exact_end()
+    test_byte_reader_sub_span_bound()
+    test_byte_reader_negative_pos_raises()
+    test_varint_truncated_each_prefix()
+    test_varint_ends_at_sub_span_end()
     test_byte_writer_bytes()
     test_is_long_header_initial_5_cases()
     test_is_long_header_zero_rtt_5_cases()
