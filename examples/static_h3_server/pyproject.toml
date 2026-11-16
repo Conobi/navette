@@ -40,4 +40,4 @@ prerelease = "allow"
 
 [tool.uv.sources]
 navette     = { path = "../..", editable = true }
-bouclette   = { git = "https://github.com/Conobi/bouclette", rev = "9e9ce231d31829fbb60b1dd6a394a3d61f354398" }
+bouclette   = { git = "https://github.com/Conobi/bouclette", rev = "e9d6ccfc8d30c241d9929d40e2b9f21e004dad2f" }

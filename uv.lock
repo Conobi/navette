@@ -43,7 +43,7 @@ wheels = [
 [[package]]
 name = "bouclette"
 version = "0.1.0"
-source = { git = "https://github.com/Conobi/bouclette?rev=9e9ce231d31829fbb60b1dd6a394a3d61f354398#9e9ce231d31829fbb60b1dd6a394a3d61f354398" }
+source = { git = "https://github.com/Conobi/bouclette?rev=e9d6ccfc8d30c241d9929d40e2b9f21e004dad2f#e9d6ccfc8d30c241d9929d40e2b9f21e004dad2f" }
 dependencies = [
     { name = "mojo-compiler" },
     { name = "mojo-compiler-mojo-libs" },
@@ -412,7 +412,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bouclette", git = "https://github.com/Conobi/bouclette?rev=9e9ce231d31829fbb60b1dd6a394a3d61f354398" },
+    { name = "bouclette", git = "https://github.com/Conobi/bouclette?rev=e9d6ccfc8d30c241d9929d40e2b9f21e004dad2f" },
     { name = "mojo-compiler", specifier = "==1.1.0" },
     { name = "mojo-compiler-mojo-libs", specifier = "==1.1.0" },
     { name = "mojox", specifier = ">=0.5" },
