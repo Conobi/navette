@@ -29,10 +29,10 @@ def _wire_sockaddr(key: PathKey) -> List[Byte]:
     """The sockaddr bytes egress hands the kernel for `key`."""
     var msg = Message(List[Byte]())
     _set_msg_peer(msg, key)
-    var p = msg._peer.addr_unsafe_ptr()
-    var out = List[Byte]()
-    for i in range(Int(msg._peer.len)):
-        out.append(p[unsafe_offset=i])
+    var b = msg._peer.addr_bytes()
+    var out = List[Byte](capacity=len(b))
+    for i in range(len(b)):
+        out.append(b[i])
     return out^
 
 
