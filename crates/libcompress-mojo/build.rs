@@ -75,9 +75,10 @@ fn main() {
 
     // Even after +whole-archive pulls the .o files in, rustc's cdylib
     // version script restricts .dynsym to Rust-declared #[no_mangle]
-    // exports — `local:*;` hides every C symbol from the static
-    // archive. Layering our own version script merges an extra global
-    // clause so the lcm_* symbols stay visible for dlopen + dlsym.
+    // exports, hiding every C symbol. Our own version script adds the
+    // lcm_* globals. Two anonymous version scripts only merge under lld
+    // (GNU ld rejects them), so force it.
+    println!("cargo:rustc-link-arg-cdylib=-fuse-ld=lld");
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo");
     println!(
         "cargo:rustc-link-arg-cdylib=-Wl,--version-script={}/lcm_export.ver",

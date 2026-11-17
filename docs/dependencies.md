@@ -113,7 +113,7 @@ Resolution: **bouclette** is a navette runtime dep — declared in `pyproject.to
 
 ### In-repo crate: `crates/librustls-mojo/`
 
-Single workspace, `edition = "2021"`, crate-type `["cdylib", "rlib"]`. Toolchain pinned to **1.88.0** by `rust-toolchain.toml` (matches `bench/quic_perf/Dockerfile.tquic` base).
+Single workspace, `edition = "2021"`, crate-type `["cdylib", "rlib"]`. Toolchain follows the **stable** channel via `rust-toolchain.toml`.
 
 Build script: `scripts/build_rustls.sh {dev|release|bench}` — only `dev` includes the `insecure` feature (which exports `rlsm_client_config_new_insecure` + `rlsm_quic_client_config_new_insecure` for accept-any-cert dev workflows).
 
@@ -167,7 +167,8 @@ All loaded via `external_call[...]` from Mojo or transitively through bouclette:
 | Mojo compiler  | 0.26.2.0           | `pyproject.toml` runtime deps + `uv.lock`               |
 | mojox          | ≥0.2               | PyPI                                                    |
 | uv             | latest             | Installed in Dockerfiles via `curl -LsSf https://astral.sh/uv/install.sh` |
-| Rust           | 1.88.0             | `crates/librustls-mojo/rust-toolchain.toml`             |
+| Rust           | stable             | `crates/*/rust-toolchain.toml`                          |
+| lld            | host-provided      | `crates/libcompress-mojo` links with it (apt: `lld`)    |
 | Cargo          | bundled with rustc | (matches rust-toolchain)                                |
 | Docker         | host-provided      | bench / interop images                                  |
 | Python         | ≥3.11              | `pyproject.toml`                                        |

@@ -1,6 +1,5 @@
-# Mirror crates/librustls-mojo/rust-toolchain.toml so both shims build
-# with the same Rust regardless of host default.
+# Stable Rust; the compression shim needs lld, which rustup toolchains and CI both provide.
 [toolchain]
-channel    = "1.88.0"
+channel    = "stable"
 components = ["rustfmt", "clippy"]
 profile    = "minimal"

@@ -73,7 +73,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config zlib1g-dev libbrotli-dev brotli
+            pkg-config lld zlib1g-dev libbrotli-dev brotli
 
       - name: Install uv and Python
         uses: astral-sh/setup-uv@v5
