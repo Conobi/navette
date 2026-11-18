@@ -8,7 +8,7 @@ prerelease-mode = "allow"
 [[package]]
 name = "bouclette"
 version = "0.1.0"
-source = { git = "https://github.com/Conobi/bouclette?rev=e9d6ccfc8d30c241d9929d40e2b9f21e004dad2f#e9d6ccfc8d30c241d9929d40e2b9f21e004dad2f" }
+source = { git = "https://github.com/Conobi/bouclette?rev=be614960d9190e5a139f55d0f3d9481a7d8f5e2f#be614960d9190e5a139f55d0f3d9481a7d8f5e2f" }
 dependencies = [
     { name = "mojo-compiler" },
     { name = "mojo-compiler-mojo-libs" },
@@ -86,27 +86,27 @@ wheels = [
 
 [[package]]
 name = "mojox"
-version = "0.5.0"
+version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mojo-compiler" },
     { name = "mojox-core" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b3/a9/4003595b239152e16d014e342367693fc99b3f905f4272a210be2e1b1286/mojox-0.5.0.tar.gz", hash = "sha256:1dc49ff800aeff20e6ad7594c9256d5296886e0f627586ccec14d8ac4694b97f", size = 39254, upload-time = "2026-08-16T02:00:56.109Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/32/0f/47d0b9a3e6948d188dacec7b28863dd404f17f3d9ee15a7d334502aaf057/mojox-0.7.0.tar.gz", hash = "sha256:09c08ebf0d6bfca18aa5d8b0feb0315bed5b4577d8bba899531fee2e13f72d8e", size = 106517, upload-time = "2026-11-18T09:09:49.93Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/55/e22e786d88d0298a18a0d756d50e4bff7291cd43552b9fb8b36ad2b206be/mojox-0.5.0-py3-none-any.whl", hash = "sha256:c670935294ff9154dc44d70ef9ad0249ab5b10390ade7db5cd58640e0e647c8a", size = 25616, upload-time = "2026-08-16T02:00:55.113Z" },
+    { url = "https://files.pythonhosted.org/packages/97/b5/8ae03f138a6c5e6f9cb63561b8521eb1650f3142069d2ce834d25af82e43/mojox-0.7.0-py3-none-any.whl", hash = "sha256:7faf5d59f772893854610eba2fa27bc9006824d93f7c25926145098016bc5da3", size = 54382, upload-time = "2026-11-18T09:09:48.75Z" },
 ]
 
 [[package]]
 name = "mojox-core"
-version = "0.5.0"
+version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "packaging" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/49/8b17814c8423647f79b2ec6ac542b961fe2e53d2a8771602da0d1af48747/mojox_core-0.5.0.tar.gz", hash = "sha256:e9d13ed21f3e8e251f21b25e7601846afb73a5e81135e5366172295117b04417", size = 28581, upload-time = "2026-08-16T00:46:33.291Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4f/f0/2ca3ef3566b29d6b851857382587f73fadb7e048ea68a59bf30115a973ca/mojox_core-0.7.0.tar.gz", hash = "sha256:12accca7bafce21f0b8e9b605c30c8f403070b4c86690886301f490fc1c66747", size = 74252, upload-time = "2026-11-18T00:26:17.331Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8e/b9/f7e8f283bcf8b7fe3d809ab788d1e1785e8cbbdfd669dd58fbfe9b15f5e5/mojox_core-0.5.0-py3-none-any.whl", hash = "sha256:78d30f2daa818b24b63715c8837372865dbea03dbbdb1ba5fb065640a915c132", size = 24214, upload-time = "2026-08-16T00:46:32.29Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/4b/440c430d5b89434aea7a4645361f8010f1333cb3eecab5d25353f2b7aca2/mojox_core-0.7.0-py3-none-any.whl", hash = "sha256:c06a5ac30c78d82c8800a2987f5ebe0a80067fc95adfc3b400d6bb1ce8a75323", size = 44198, upload-time = "2026-11-18T00:26:15.987Z" },
 ]
 
 [[package]]
@@ -131,10 +131,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bouclette", git = "https://github.com/Conobi/bouclette?rev=e9d6ccfc8d30c241d9929d40e2b9f21e004dad2f" },
+    { name = "bouclette", git = "https://github.com/Conobi/bouclette?rev=be614960d9190e5a139f55d0f3d9481a7d8f5e2f" },
     { name = "mojo-compiler", specifier = "==1.1.0" },
     { name = "mojo-compiler-mojo-libs", specifier = "==1.1.0" },
-    { name = "mojox", specifier = ">=0.5" },
+    { name = "mojox", specifier = ">=0.7" },
 ]
 
 [package.metadata.requires-dev]
@@ -169,9 +169,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bouclette", git = "https://github.com/Conobi/bouclette?rev=e9d6ccfc8d30c241d9929d40e2b9f21e004dad2f" },
+    { name = "bouclette", git = "https://github.com/Conobi/bouclette?rev=be614960d9190e5a139f55d0f3d9481a7d8f5e2f" },
     { name = "mojo-compiler", specifier = "==1.1.0" },
-    { name = "mojox", specifier = ">=0.5" },
+    { name = "mojox", specifier = ">=0.7" },
     { name = "navette", editable = "../../" },
 ]
 

@@ -6,7 +6,7 @@ license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "bouclette @ git+https://github.com/Conobi/bouclette",
-    "mojox>=0.5",
+    "mojox>=0.7",
     "mojo-compiler==1.1.0",
     "mojo-compiler-mojo-libs==1.1.0",
 ]
@@ -30,8 +30,8 @@ dev = [
 
 [build-system]
 requires = [
-    "mojox-build>=0.5",
-    "mojox-core>=0.5",
+    "mojox-build>=0.7",
+    "mojox-core>=0.7",
     "mojo-compiler==1.1.0",
     "mojo-compiler-mojo-libs==1.1.0",
     # Mojo deps must be available at BUILD time (mojox-build calls `mojo package`,
@@ -140,5 +140,5 @@ pythonpath = ["."]
 prerelease = "allow"
 
 [tool.uv.sources]
-bouclette = { git = "https://github.com/Conobi/bouclette", rev = "e9d6ccfc8d30c241d9929d40e2b9f21e004dad2f" }
+bouclette = { git = "https://github.com/Conobi/bouclette", rev = "be614960d9190e5a139f55d0f3d9481a7d8f5e2f" }
 
