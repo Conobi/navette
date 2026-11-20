@@ -11,10 +11,9 @@
 # data-structure module — no I/O, no socket access; the caller serializes
 # PATH_CHALLENGE/RESPONSE frames and computes "now" timestamps.
 
-from std.ffi import external_call
 from std.collections import Span
-from std.memory.alloc import unsafe_alloc as _pv_alloc
 from navette.quic.frame import Frame
+from navette.util.secure_random import _GetrandomFn, _getrandom, _fill_random_with
 
 
 # ── RFC 9000 limits ───────────────────────────────────────────────────────────
@@ -234,14 +233,20 @@ struct PathValidator(Movable):
         Returns an empty list, drawing no randomness, when
         `MAX_PENDING_CHALLENGES` are already pending: validation of that
         address is simply not attempted until one completes or expires.
+        Raises, queueing nothing, if the kernel CSPRNG fails.
         """
+        return self._start_challenge_with[_getrandom](target^, now_ns)
+
+    def _start_challenge_with[source: _GetrandomFn](
+        mut self,
+        var target: PathKey,
+        now_ns: UInt64,
+    ) raises -> List[Byte]:
+        """`start_challenge` drawing its token from `source` (test seam)."""
         if len(self.pending) >= MAX_PENDING_CHALLENGES:
             return List[Byte]()
-        var buf = _pv_alloc[UInt8](PATH_TOKEN_LEN)
-        _ = external_call["getrandom", Int](buf, UInt64(PATH_TOKEN_LEN), UInt32(0))
-        var token = List[Byte](capacity=PATH_TOKEN_LEN)
-        token.extend(Span(unsafe_ptr=buf, length=PATH_TOKEN_LEN))
-        buf.unsafe_free()
+        var token = List[Byte](length=PATH_TOKEN_LEN, fill=0)
+        _fill_random_with[source](Span(token))
         var token_copy = List[Byte](copy=token)
         var chal = PathChallenge(token_copy^, target^, now_ns)
         self.pending.append(chal^)

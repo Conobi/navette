@@ -4,9 +4,10 @@ from std.testing import assert_equal, assert_true, assert_raises
 
 from navette.net._dns_wire import (
     _parse_resolv_conf, _first_nameserver, _encode_qname,
-    _build_query, _decode_name, _read_u16,
+    _build_query, _decode_name, _read_u16, _random_txn_id, _random_txn_id_with,
     _ANS_INVALID, _ANS_NONE, _ANS_RECORD, _ANS_TRUNCATED,
 )
+
 from navette.net.svcb import _parse_alpn, _parse_https_answer
 
 
@@ -434,7 +435,33 @@ def test_answer_zero_alpn_record_does_not_mask_valid_h3() raises:
     assert_true(has_h3)
 
 
+def _failing_source(p: Pointer[UInt8, MutAnyOrigin], n: Int) -> Int:
+    return -38  # ENOSYS
+
+
+def _fixed_source(p: Pointer[UInt8, MutAnyOrigin], n: Int) -> Int:
+    for i in range(n):
+        p[unsafe_offset=i] = UInt8(0xA0 + i)
+    return n
+
+
+def test_txn_id_raises_when_getrandom_fails() raises:
+    with assert_raises(contains="getrandom failed"):
+        _ = _random_txn_id_with[_failing_source]()
+
+
+def test_txn_id_from_source_bytes() raises:
+    assert_equal(_random_txn_id_with[_fixed_source](), UInt16(0xA0A1))
+
+
+def test_txn_id_real_source_succeeds() raises:
+    _ = _random_txn_id()
+
+
 def main() raises:
+    test_txn_id_raises_when_getrandom_fails()
+    test_txn_id_from_source_bytes()
+    test_txn_id_real_source_succeeds()
     test_resolv_conf_first_ipv4_nameserver()
     test_resolv_conf_skips_ipv6_nameserver()
     test_resolv_conf_no_nameserver_returns_empty()

@@ -7,6 +7,7 @@
 
 from std.collections import Span
 
+from navette.util.secure_random import _GetrandomFn
 from tests._test_util import assert_true, assert_false, assert_equal_int
 from navette.quic.path import (
     PathChallenge,
@@ -166,7 +167,39 @@ def test_pathkey_equality_sees_every_address_byte() raises:
     assert_true(a == PathKey(Int32(10), base^, UInt16(443)), "identical keys are equal")
 
 
+def _failing_source(p: Pointer[UInt8, MutAnyOrigin], n: Int) -> Int:
+    return -38  # ENOSYS
+
+
+def _fixed_source(p: Pointer[UInt8, MutAnyOrigin], n: Int) -> Int:
+    for i in range(n):
+        p[unsafe_offset=i] = UInt8(0x10 + i)
+    return n
+
+
+def test_start_challenge_raises_and_queues_nothing_when_getrandom_fails() raises:
+    var pv = PathValidator()
+    var raised = False
+    try:
+        _ = pv._start_challenge_with[_failing_source](_make_addr_a(), UInt64(1000))
+    except:
+        raised = True
+    assert_true(raised, "failing CSPRNG makes start_challenge raise")
+    assert_equal_int(len(pv.pending), 0, "no challenge queued on failure")
+
+
+def test_start_challenge_token_comes_from_source() raises:
+    var pv = PathValidator()
+    var token = pv._start_challenge_with[_fixed_source](_make_addr_a(), UInt64(1000))
+    assert_equal_int(len(token), PATH_TOKEN_LEN, "token length is 8 bytes")
+    for i in range(PATH_TOKEN_LEN):
+        assert_equal_int(Int(token[i]), 0x10 + i, "token byte from source")
+    assert_equal_int(len(pv.pending), 1, "one challenge queued")
+
+
 def main() raises:
+    test_start_challenge_raises_and_queues_nothing_when_getrandom_fails()
+    test_start_challenge_token_comes_from_source()
     print("test_path_validator:")
     test_start_challenge_produces_eight_byte_token()
     print("  test_start_challenge_produces_eight_byte_token: PASS")

@@ -6,10 +6,12 @@ Internal module — no public API guarantees.
 """
 
 from std.ffi import external_call
+from std.collections import Span
 from std.memory import Pointer
 from std.io.file import FileHandle
 
 from navette.util.owned_alloc import Owned
+from navette.util.secure_random import _GetrandomFn, _getrandom, _fill_random_with
 
 from bouclette.net.ip import IpAddrV4
 
@@ -322,13 +324,19 @@ def _build_query_into(mut buf: List[Byte], host: String, txn_id: UInt16, qtype: 
     buf.extend(Span(tail))
 
 
-def _random_txn_id() -> UInt16:
-    """A random 16-bit DNS transaction id via getrandom(2) (anti-spoof)."""
-    var buf = Owned[UInt8](2)
-    var p = buf.ptr()
-    p[unsafe_offset=0] = UInt8(0); p[unsafe_offset=1] = UInt8(0)
-    _ = external_call["getrandom", Int](p, UInt64(2), UInt32(0))
-    return (UInt16(p[unsafe_offset=0]) << 8) | UInt16(p[unsafe_offset=1])
+def _random_txn_id_with[source: _GetrandomFn]() raises -> UInt16:
+    """Transaction id drawn from `source`; the testable core of `_random_txn_id`."""
+    var b = List[UInt8](length=2, fill=0)
+    _fill_random_with[source](Span(b))
+    return (UInt16(b[0]) << 8) | UInt16(b[1])
+
+
+def _random_txn_id() raises -> UInt16:
+    """A random 16-bit DNS transaction id (anti-spoof); raises if the kernel CSPRNG fails.
+
+    Never falls back to a fixed id: a predictable id makes spoofed replies easy.
+    """
+    return _random_txn_id_with[_getrandom]()
 
 
 # ── clock helpers ──────────────────────────────────────────────────────────
