@@ -15,7 +15,7 @@ from navette.tls.config import QuicServerConfig, QuicClientConfig
 from navette.quic.connection import QuicConnection
 from navette.quic.event import QuicEvent
 from navette.quic.trans_param import TransportParams, default_transport_params
-from tests._test_util import assert_true, assert_equal_str, assert_equal_int, load_test_cert, load_test_ca
+from tests._test_util import assert_true, assert_equal_str, assert_equal_int, load_test_cert, load_test_ca, TempDir
 from interop.http09 import http09_request, http09_collect, http09_parse_path, http09_serve
 from interop.file_io import read_file, write_file, mkdir_p
 
@@ -131,7 +131,8 @@ def test_parse_path_root() raises:
 def test_http09_loopback() raises:
     """Full QUIC loopback: client GET -> server serve file -> client collects."""
     # ── Set up the test file ──────────────────────────────────────────────
-    var www_dir = "/tmp/interop_test_www"
+    var td = TempDir()
+    var www_dir = td.path("www")
     mkdir_p(www_dir)
     var test_data = List[Byte](capacity=1024)
     for i in range(1024):
@@ -206,6 +207,7 @@ def test_http09_loopback() raises:
             break
     assert_true(data_ok, "response data does not match test file")
 
+    _ = td^
     print("  PASS test_http09_loopback")
 
 

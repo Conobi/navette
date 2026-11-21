@@ -4,7 +4,7 @@
 # Run with: uv run mojo run -I . tests/test_interop_file_io.mojo
 
 from interop.file_io import read_file, write_file, mkdir_p, list_dir, getenv, getenv_opt, setenv, basename
-from tests._test_util import assert_true, assert_equal_int
+from tests._test_util import assert_true, assert_equal_int, TempDir
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -24,11 +24,14 @@ def _make_data(size: Int, seed: Int = 0) -> List[Byte]:
 def test_write_and_read_file() raises:
     var size = 256
     var data = _make_data(size)
-    write_file("/tmp/mojo_test_rw.bin", Span(data))
-    var got = read_file("/tmp/mojo_test_rw.bin")
+    var td = TempDir()
+    var path = td.path("rw.bin")
+    write_file(path, Span(data))
+    var got = read_file(path)
     assert_equal_int(len(got), size, "read length")
     for i in range(size):
         assert_equal_int(Int(got[i]), Int(data[i]), "byte " + String(i))
+    _ = td^
     print("PASS test_write_and_read_file")
 
 
@@ -38,13 +41,16 @@ def test_write_and_read_file() raises:
 def test_read_large_file() raises:
     var size = 1024 * 1024  # 1 MB
     var data = _make_data(size, seed=7)
-    write_file("/tmp/mojo_test_large.bin", Span(data))
-    var got = read_file("/tmp/mojo_test_large.bin")
+    var td = TempDir()
+    var path = td.path("large.bin")
+    write_file(path, Span(data))
+    var got = read_file(path)
     assert_equal_int(len(got), size, "large read length")
     assert_equal_int(Int(got[0]), Int(data[0]), "first byte")
     assert_equal_int(Int(got[size - 1]), Int(data[size - 1]), "last byte")
     assert_equal_int(Int(got[65535]), Int(data[65535]), "boundary byte 65535")
     assert_equal_int(Int(got[65536]), Int(data[65536]), "boundary byte 65536")
+    _ = td^
     print("PASS test_read_large_file")
 
 
@@ -52,10 +58,11 @@ def test_read_large_file() raises:
 
 
 def test_mkdir_p() raises:
-    var dir = "/tmp/mojo_test_mkdir_p_a/b/c"
+    var td = TempDir()
+    var dir = td.path("a/b/c")
     mkdir_p(dir)
     # Write a file inside the nested directory
-    var path = "/tmp/mojo_test_mkdir_p_a/b/c/hello.bin"
+    var path = dir + "/hello.bin"
     var data = List[Byte]()
     data.append(0xAB); data.append(0xCD)
     write_file(path, Span(data))
@@ -63,6 +70,7 @@ def test_mkdir_p() raises:
     assert_equal_int(len(got), 2, "mkdir_p file length")
     assert_equal_int(Int(got[0]), 0xAB, "mkdir_p byte 0")
     assert_equal_int(Int(got[1]), 0xCD, "mkdir_p byte 1")
+    _ = td^
     print("PASS test_mkdir_p")
 
 
@@ -70,7 +78,8 @@ def test_mkdir_p() raises:
 
 
 def test_list_dir() raises:
-    var dir = "/tmp/mojo_test_listdir2"
+    var td = TempDir()
+    var dir = td.path("listdir")
     mkdir_p(dir)
     # Create two known files
     var empty = List[Byte]()
@@ -86,6 +95,7 @@ def test_list_dir() raises:
             found_beta = True
     assert_true(found_alpha, "list_dir found alpha.txt")
     assert_true(found_beta, "list_dir found beta.txt")
+    _ = td^
     print("PASS test_list_dir")
 
 

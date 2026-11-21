@@ -6,6 +6,7 @@
 from std.python import Python
 from std.testing import assert_equal, assert_true
 
+from tests._test_util import TempDir
 from tests.fuzz.lib.prng import SplitMix64
 from tests.fuzz.lib.generators import random_bytes_geom, mutate, weighted_pick
 from tests.fuzz.lib.corpus import (
@@ -110,13 +111,8 @@ def test_weighted_pick_honors_weights() raises:
 
 
 def test_corpus_load_save() raises:
-    var os = Python.import_module("os")
-    var tmp = String("/tmp/fuzz_corpus_infra_test")
-    # Cleanup any prior state.
-    var shutil = Python.import_module("shutil")
-    if Bool(os.path.isdir(tmp)):
-        shutil.rmtree(tmp)
-    os.makedirs(tmp)
+    var td = TempDir()
+    var tmp = td.dir
 
     # Write three seed files via Python.
     var builtins = Python.import_module("builtins")
@@ -140,6 +136,7 @@ def test_corpus_load_save() raises:
     assert_equal(len(entries[0].bytes), 3, "a.bin length")
     assert_equal(Int(entries[0].bytes[0]), 1)
     assert_equal(len(entries[1].bytes), 4, "b.bin length")
+    _ = td^
 
 
 def test_save_disagreement_roundtrip() raises:
