@@ -4,7 +4,7 @@
 # Iterates examples/*/pyproject.toml and, for each, force-rebuilds the editable
 # navette pkg from current source (`uv sync --reinstall-package navette`) before
 # building the example via `uv run --project examples/<name> mojox build
-# main.mojo -o /tmp/_examples_smoke_<name>` with zero -I flags. The reinstall is
+# main.mojo -o <tmpdir>/<name>` with zero -I flags. The reinstall is
 # load-bearing: `uv run` does not rebuild an editable Mojo package on source
 # change, so without it the gate builds against a stale .venv pkg and tracks
 # freshness, not correctness. Reports every example (no fail-fast).
@@ -21,6 +21,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIB_DIR="$REPO_ROOT/lib"
+
+# Private scratch dir (mktemp: unique, mode 0700), so fixed /tmp names cannot be
+# pre-created or symlinked by another user (CWE-377). Removed on success; kept
+# (path printed) on failure so the logs named in the output stay readable.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/navette-examples-XXXXXX")
+trap 'rc=$?; if [ "$rc" -eq 0 ]; then rm -rf "$WORK"; else echo "logs kept in $WORK" >&2; fi' EXIT
 
 if [ ! -d "$LIB_DIR" ]; then
     echo "FAIL: $LIB_DIR not present — run scripts/build_rustls.sh first" >&2
@@ -51,7 +57,8 @@ for ex_dir in "${EXAMPLES[@]}"; do
         echo "  $name: SKIP (no main.mojo)"
         continue
     fi
-    out_bin="/tmp/_examples_smoke_$name"
+    out_bin="$WORK/$name"
+    log="$WORK/$name.log"
     printf "  %-22s " "$name:"
     # Rebuild the editable navette .mojopkg from current source first: `uv run`
     # does NOT rebuild an editable Mojo package when navette/** changes, so
@@ -62,20 +69,20 @@ for ex_dir in "${EXAMPLES[@]}"; do
     # never goes stale; only the editable navette path-dep needs the reinstall.
     if LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
        uv sync --project "$ex_dir" --reinstall-package navette \
-       > "/tmp/_examples_smoke_$name.log" 2>&1 \
+       > "$log" 2>&1 \
        && LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
        uv run --project "$ex_dir" mojox build "$main_file" -o "$out_bin" \
-       >> "/tmp/_examples_smoke_$name.log" 2>&1; then
+       >> "$log" 2>&1; then
         echo "OK"
-        rm -f "$out_bin" "/tmp/_examples_smoke_$name.log"
+        rm -f "$out_bin" "$log"
     else
         echo "FAIL"
         FAIL_COUNT=$((FAIL_COUNT + 1))
         FAILED+=("$name")
-        echo "    --- log: /tmp/_examples_smoke_$name.log ---" >&2
+        echo "    --- log: $log ---" >&2
         # Print the last 30 lines of the failure log to surface the actual error
         # without flooding stdout for a successful run.
-        tail -n 30 "/tmp/_examples_smoke_$name.log" >&2 || true
+        tail -n 30 "$log" >&2 || true
         echo "    --- end log ---" >&2
     fi
 done

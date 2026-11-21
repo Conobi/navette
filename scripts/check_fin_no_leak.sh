@@ -19,6 +19,11 @@
 # real mojo binary holding the port across runs.
 
 set -u
+# Private scratch dir (mktemp: unique, mode 0700), so fixed /tmp names cannot be
+# pre-created or symlinked by another user (CWE-377). Removed on success; kept
+# (path printed) on failure so the logs named in the output stay readable.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/navette-fin-leak-XXXXXX")
+trap 'rc=$?; if [ "$rc" -eq 0 ]; then rm -rf "$WORK"; else echo "logs kept in $WORK" >&2; fi' EXIT
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 H1_PORT="${HELLO_H1_PORT:-8080}"
 H2_PORT="${HELLO_H2_PORT:-8443}"
@@ -44,14 +49,14 @@ run_one() {
   [ "$CONCURRENCY" -gt 1 ] && mode="concurrent x${CONCURRENCY}"
   echo "--- $proto: $N $mode Connection: close ($scheme) ---"
   setsid bash -c "cd '$dir' && exec env LD_LIBRARY_PATH='$REPO/lib' uv run --project . mojox run main.mojo" \
-    >"/tmp/${proto}_server.log" 2>&1 &
+    >"$WORK/${proto}_server.log" 2>&1 &
   local server_pid=$!
   for i in $(seq 1 100); do
-    grep -q "listening" "/tmp/${proto}_server.log" 2>/dev/null && break
+    grep -q "listening" "$WORK/${proto}_server.log" 2>/dev/null && break
     sleep 0.1
   done
-  if ! grep -q "listening" "/tmp/${proto}_server.log"; then
-    echo "FAIL: $proto server did not start (see /tmp/${proto}_server.log)"
+  if ! grep -q "listening" "$WORK/${proto}_server.log"; then
+    echo "FAIL: $proto server did not start (see $WORK/${proto}_server.log)"
     kill_tree "$server_pid"
     wait "$server_pid" 2>/dev/null
     return 1

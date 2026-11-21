@@ -8,6 +8,11 @@
 # Usage:   bash scripts/bench_fin_leak_drift.sh [h1|h2]
 
 set -u
+# Private scratch dir (mktemp: unique, mode 0700), so fixed /tmp names cannot be
+# pre-created or symlinked by another user (CWE-377). Removed on success; kept
+# (path printed) on failure so the logs named in the output stay readable.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/navette-fin-drift-XXXXXX")
+trap 'rc=$?; if [ "$rc" -eq 0 ]; then rm -rf "$WORK"; else echo "logs kept in $WORK" >&2; fi' EXIT
 PROTO="${1:?usage: $0 h1|h2}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 case "$PROTO" in
@@ -62,15 +67,15 @@ run_iter() {
   echo "--- $PROTO iter $n ---"
   : > "$rps_file"
   setsid bash -c "cd '$DIR' && exec env LD_LIBRARY_PATH='$REPO/lib' uv run --project . mojox run main.mojo" \
-    >"/tmp/${PROTO}_iter${n}.log" 2>&1 &
+    >"$WORK/${PROTO}_iter${n}.log" 2>&1 &
   local server_pid=$!
   # 600 * 0.1s = 60s readiness window; covers first-time mojox rebuild after a library swap.
   for i in $(seq 1 600); do
-    grep -q "listening" "/tmp/${PROTO}_iter${n}.log" 2>/dev/null && break
+    grep -q "listening" "$WORK/${PROTO}_iter${n}.log" 2>/dev/null && break
     sleep 0.1
   done
-  if ! grep -q "listening" "/tmp/${PROTO}_iter${n}.log"; then
-    echo "ABORT: $PROTO iter $n server did not become ready (see /tmp/${PROTO}_iter${n}.log)"
+  if ! grep -q "listening" "$WORK/${PROTO}_iter${n}.log"; then
+    echo "ABORT: $PROTO iter $n server did not become ready (see $WORK/${PROTO}_iter${n}.log)"
     kill_tree "$server_pid"
     wait "$server_pid" 2>/dev/null
     return 1
@@ -101,7 +106,7 @@ run_iter() {
 
 declare -a RPS
 for n in 1 2 3; do
-  rps_file="/tmp/${PROTO}_iter${n}.rps"
+  rps_file="$WORK/${PROTO}_iter${n}.rps"
   run_iter "$n" "$rps_file" || { echo "iter $n aborted; exiting"; exit 3; }
   rps_val=$(cat "$rps_file" 2>/dev/null | tr -d '[:space:]')
   if ! [[ "$rps_val" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then

@@ -1,12 +1,17 @@
 #!/bin/bash
 # Measure allocation counts per request for navette and TQUIC under identical long-conn load.
 # Usage: bash bench/alloc_count/measure.sh
+# Logs and the TQUIC data dir live in a private temp dir, removed on success and
+# kept (path printed) on failure.
 
 set -euo pipefail
 
 SHIM="$(dirname "$0")/liballoc_count.so"
 EXAMPLE_DIR="/home/donokami/Projets/perso/navette/examples/static_h3_server"
-DATA_DIR="/tmp/tquic-data"
+# mktemp: unique, mode 0700, unlike fixed /tmp names (CWE-377).
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/navette-alloc-count-XXXXXX")
+trap 'rc=$?; if [ "$rc" -eq 0 ]; then rm -rf "$WORK"; else echo "logs kept in $WORK" >&2; fi' EXIT
+DATA_DIR="$WORK/tquic-data"
 DURATION=10
 CONNS=25
 THREADS=4
@@ -22,7 +27,7 @@ echo "=== NAVETTE SERVER ==="
 # Start navette with alloc counting
 STATIC_PORT=8445 STATIC_BODY_SIZE=5120 \
   LD_PRELOAD="$SHIM" \
-  "$EXAMPLE_DIR/static_h3_server" 2>/tmp/navette-alloc.log &
+  "$EXAMPLE_DIR/static_h3_server" 2>"$WORK/navette-alloc.log" &
 NAVETTE_PID=$!
 sleep 2
 
@@ -32,7 +37,7 @@ sleep 0.5
 
 # Run client
 echo "Running client for ${DURATION}s..."
-$CLIENT_CMD 2>&1 | tee /tmp/navette-client.log
+$CLIENT_CMD 2>&1 | tee "$WORK/navette-client.log"
 
 # Dump counters
 sleep 1
@@ -41,11 +46,11 @@ sleep 0.5
 
 # Extract results
 echo "--- navette alloc counts ---"
-grep '\[alloc_count\]' /tmp/navette-alloc.log | tail -1
+grep '\[alloc_count\]' "$WORK/navette-alloc.log" | tail -1
 
 # Extract rps from client
 echo "--- navette client output (rps) ---"
-grep -iE 'requests|total|succeeded|rps|throughput' /tmp/navette-client.log || true
+grep -iE 'requests|total|succeeded|rps|throughput' "$WORK/navette-client.log" || true
 
 kill $NAVETTE_PID 2>/dev/null
 wait $NAVETTE_PID 2>/dev/null || true
@@ -78,7 +83,7 @@ sleep 0.5
 
 # Run client
 echo "Running client for ${DURATION}s..."
-$CLIENT_CMD 2>&1 | tee /tmp/tquic-client.log
+$CLIENT_CMD 2>&1 | tee "$WORK/tquic-client.log"
 
 # Dump counters
 sleep 1
@@ -90,7 +95,7 @@ echo "--- TQUIC alloc counts ---"
 docker exec tquic-alloc-test cat /tmp/tquic-alloc.log 2>/dev/null | grep '\[alloc_count\]' | tail -1
 
 echo "--- TQUIC client output (rps) ---"
-grep -iE 'requests|total|succeeded|rps|throughput' /tmp/tquic-client.log || true
+grep -iE 'requests|total|succeeded|rps|throughput' "$WORK/tquic-client.log" || true
 
 # Cleanup
 docker stop tquic-alloc-test 2>/dev/null || true

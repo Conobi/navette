@@ -24,9 +24,14 @@ if [ ! -f "$CERT_DIR/proxy_cert.pem" ] || [ ! -f "$CERT_DIR/backend_cert.pem" ];
     bash scripts/gen_test_certs.sh
 fi
 
-H1_BACKEND_LOG="$(mktemp -t mojo-proxy-h1-backend.XXXXXX.log)"
-H2_BACKEND_LOG="$(mktemp -t mojo-proxy-h2-backend.XXXXXX.log)"
-PROXY_LOG="$(mktemp -t mojo-proxy-proxy.XXXXXX.log)"
+# Private scratch dir (mktemp: unique, mode 0700) for logs and the proxy binary,
+# so fixed /tmp names cannot be pre-created or symlinked by another user
+# (CWE-377). Removed on success; kept on failure (logs are also printed below).
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/navette-reverse-proxy-XXXXXX")"
+H1_BACKEND_LOG="$WORK/h1-backend.log"
+H2_BACKEND_LOG="$WORK/h2-backend.log"
+PROXY_LOG="$WORK/proxy.log"
+PROXY_BIN="$WORK/reverse_proxy"
 H1_BACKEND_PID=""
 H2_BACKEND_PID=""
 PROXY_PID=""
@@ -48,6 +53,9 @@ cleanup() {
         echo ""
         echo "=== Proxy log ($PROXY_LOG) ==="
         cat "$PROXY_LOG" 2>/dev/null || true
+        echo "logs kept in $WORK" >&2
+    else
+        rm -rf "$WORK"
     fi
     exit $rc
 }
@@ -79,14 +87,14 @@ fi
 echo "Building unified reverse proxy..."
 rm -f ./*.mojopkg 2>/dev/null || true
 LD_LIBRARY_PATH=lib uv run --project examples/reverse_proxy mojox build \
-    examples/reverse_proxy/main.mojo -o /tmp/mojo_reverse_proxy \
+    examples/reverse_proxy/main.mojo -o "$PROXY_BIN" \
     >"$PROXY_LOG" 2>&1
 
 echo "Starting reverse proxy on port $PROXY_PORT (H1→$H1_BACKEND_PORT, H2→$H2_BACKEND_PORT)..."
 LISTEN_PORT="$PROXY_PORT" \
 H1_BACKEND_PORT="$H1_BACKEND_PORT" \
 H2_BACKEND_PORT="$H2_BACKEND_PORT" \
-LD_LIBRARY_PATH=lib /tmp/mojo_reverse_proxy >>"$PROXY_LOG" 2>&1 &
+LD_LIBRARY_PATH=lib "$PROXY_BIN" >>"$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
 sleep 2
 
